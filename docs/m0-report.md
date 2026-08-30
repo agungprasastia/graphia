@@ -13,7 +13,7 @@ Single Rust crate with focused `scan`, `parser`, `model`, `graph`, `storage`, `c
 - Syntactic imports and direct calls.
 - Deterministic node and edge IDs.
 - Atomic canonical JSON output.
-- `scan`, `build`, and `stats` commands.
+- `scan`, `build`, `load`, and `stats` commands.
 - Focused unit tests for scanner, parser, graph IDs, and serialization.
 - Cross-language fixture and integration coverage for ordering, language detection, typed extracted
   facts, concrete locations/callers, containment/import/call edges, root-independent IDs, and
@@ -25,7 +25,7 @@ See `docs/graphify-compatibility.md`. Structural code behavior is retained; sema
 
 ## Known Gaps
 
-M0 is complete. M0.1-M0.4 milestone acceptance covers stable identity across graph changes, confidence metadata, adjacency indexes, binary storage, incremental indexing, and benchmark hardening; those capabilities are not accepted in this M0 report. M0 uses conservative helper-file resolution for direct fixture imports and calls.
+M0 is complete. M0.1-M0.4 reports cover stable identity, confidence metadata, adjacency indexes, binary storage, and incremental indexing. Initial graph construction and resolver emit symbol-level `Calls` edges only for same-file or uniquely imported targets; unique unimported targets remain unresolved.
 
 ## Tests
 
@@ -35,4 +35,4 @@ storage, CLI, and integration coverage. Strict `cargo check`, `cargo clippy --al
 
 ## Recommended Next Work
 
-M0.1: introduce explicit identity and confidence semantics, graph invariants, and conservative cross-file resolution.
+Plan post-M0.5/M1 work and address remaining documented gaps, including unresolved unique unimported targets and unavailable RSS/Graphify comparisons.

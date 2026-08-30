@@ -175,11 +175,19 @@ fn graph_has_file_containment_and_stable_ids() {
             .find(|node| node.qualified_name == file)
             .expect("file node")
             .id;
-        let helper_id = first
+        let helper_file_id = first
             .nodes
             .iter()
             .find(|node| node.qualified_name == file.replace("basic", "helper"))
-            .expect("helper node")
+            .expect("helper file node")
+            .id;
+        let helper_id = first
+            .nodes
+            .iter()
+            .find(|node| {
+                node.qualified_name == format!("{}::helper", file.replace("basic", "helper"))
+            })
+            .expect("helper symbol node")
             .id;
         let caller_id = first
             .nodes
@@ -188,7 +196,7 @@ fn graph_has_file_containment_and_stable_ids() {
             .expect("caller node")
             .id;
         assert!(first.edges.iter().any(|edge| {
-            edge.kind == EdgeKind::Imports && edge.from == file_id && edge.to == helper_id
+            edge.kind == EdgeKind::Imports && edge.from == file_id && edge.to == helper_file_id
         }));
         assert!(first.edges.iter().any(|edge| {
             edge.kind == EdgeKind::Calls && edge.from == caller_id && edge.to == helper_id

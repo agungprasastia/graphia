@@ -159,4 +159,42 @@ mod tests {
         assert_eq!(files.len(), 1);
         assert_eq!(files[0].relative_path, "keep.rs");
     }
+
+    #[cfg(unix)]
+    #[test]
+    fn scan_skips_symlinked_files() {
+        use std::os::unix::fs::symlink;
+
+        let dir = TempDir::new().unwrap();
+        fs::write(dir.path().join("real.rs"), "fn real() {}").unwrap();
+        symlink(dir.path().join("real.rs"), dir.path().join("linked.rs")).unwrap();
+        let files = scan_repo(dir.path()).unwrap();
+        assert_eq!(
+            files
+                .iter()
+                .map(|file| file.relative_path.as_str())
+                .collect::<Vec<_>>(),
+            ["real.rs"]
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn scan_skips_symlinked_files() {
+        use std::os::windows::fs::symlink_file;
+
+        let dir = TempDir::new().unwrap();
+        fs::write(dir.path().join("real.rs"), "fn real() {}").unwrap();
+        if symlink_file(dir.path().join("real.rs"), dir.path().join("linked.rs")).is_err() {
+            return;
+        }
+        let files = scan_repo(dir.path()).unwrap();
+        assert_eq!(
+            files
+                .iter()
+                .map(|file| file.relative_path.as_str())
+                .collect::<Vec<_>>(),
+            ["real.rs"]
+        );
+    }
 }

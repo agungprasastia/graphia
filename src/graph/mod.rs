@@ -455,27 +455,35 @@ pub fn build_graph(files: Vec<(String, Option<Language>, ParsedFile)>) -> Graph 
                 .iter()
                 .filter(|(_, _, file)| file == &entry.path)
                 .collect();
+            let imported_files: Vec<_> = entry
+                .parsed
+                .imports
+                .iter()
+                .filter_map(|import| resolve_import(&entry.path, &import.path, &entries))
+                .collect();
+            let imported_candidates: Vec<_> = language_candidates
+                .iter()
+                .filter(|(_, _, file)| imported_files.iter().any(|imported| imported == file))
+                .copied()
+                .collect();
             let candidate = if same_file.len() == 1 {
                 Some(same_file[0])
-            } else if language_candidates.len() == 1 {
-                Some(language_candidates[0])
+            } else if imported_candidates.len() == 1 {
+                Some(imported_candidates[0])
             } else {
-                if same_file.is_empty() && language_candidates.len() > 1 {
+                if same_file.is_empty() && imported_candidates.len() > 1 {
                     resolution.ambiguous_calls += 1;
                 } else {
                     resolution.unresolved_calls += 1;
                 }
                 None
             };
-            if let Some((_, _, callee_file)) = candidate
-                && let Some(&callee_id) = file_node_ids.get(callee_file)
-                && caller_id != callee_id
-            {
+            if let Some((_, callee_id, _)) = candidate {
                 resolution.resolved_calls += 1;
                 add_edge(
                     EdgeKind::Calls,
                     caller_id,
-                    callee_id,
+                    *callee_id,
                     Confidence::Inferred,
                     None,
                 );
@@ -707,5 +715,92 @@ mod tests {
             ("c.rs".to_string(), Some(Language::Rust), pf_c),
         ]);
         assert!(g.edges.iter().all(|edge| edge.kind != EdgeKind::Calls));
+    }
+
+    #[test]
+    fn unique_unimported_target_is_not_resolved() {
+        let caller = ParsedFile {
+            symbols: vec![Symbol {
+                kind: NodeKind::Function,
+                name: "caller".to_string(),
+                qualified_name: "a.rs::caller".to_string(),
+                location: loc("a.rs"),
+                parent: None,
+            }],
+            imports: vec![],
+            calls: vec![Call {
+                caller: "a.rs::caller".to_string(),
+                callee: "target".to_string(),
+                location: loc("a.rs"),
+            }],
+        };
+        let target = ParsedFile {
+            symbols: vec![Symbol {
+                kind: NodeKind::Function,
+                name: "target".to_string(),
+                qualified_name: "b.rs::target".to_string(),
+                location: loc("b.rs"),
+                parent: None,
+            }],
+            imports: vec![],
+            calls: vec![],
+        };
+        let graph = build_graph(vec![
+            ("a.rs".to_string(), Some(Language::Rust), caller),
+            ("b.rs".to_string(), Some(Language::Rust), target),
+        ]);
+        assert!(graph.edges.iter().all(|edge| edge.kind != EdgeKind::Calls));
+    }
+
+    #[test]
+    fn initial_calls_edge_points_to_target_symbol() {
+        let caller = ParsedFile {
+            symbols: vec![Symbol {
+                kind: NodeKind::Function,
+                name: "caller".to_string(),
+                qualified_name: "a.rs::caller".to_string(),
+                location: loc("a.rs"),
+                parent: None,
+            }],
+            imports: vec![crate::parser::Import {
+                path: "b.rs".to_string(),
+                location: loc("a.rs"),
+            }],
+            calls: vec![Call {
+                caller: "a.rs::caller".to_string(),
+                callee: "target".to_string(),
+                location: loc("a.rs"),
+            }],
+        };
+        let target = ParsedFile {
+            symbols: vec![Symbol {
+                kind: NodeKind::Function,
+                name: "target".to_string(),
+                qualified_name: "b.rs::target".to_string(),
+                location: loc("b.rs"),
+                parent: None,
+            }],
+            imports: vec![],
+            calls: vec![],
+        };
+        let graph = build_graph(vec![
+            ("a.rs".to_string(), Some(Language::Rust), caller),
+            ("b.rs".to_string(), Some(Language::Rust), target),
+        ]);
+        let caller_id = graph
+            .nodes
+            .iter()
+            .find(|node| node.qualified_name == "a.rs::caller")
+            .unwrap()
+            .id;
+        let target_id = graph
+            .nodes
+            .iter()
+            .find(|node| node.qualified_name == "b.rs::target")
+            .unwrap()
+            .id;
+        assert!(graph.edges.iter().any(|edge| edge.kind == EdgeKind::Calls
+            && edge.from == caller_id
+            && edge.to == target_id));
     }
 }

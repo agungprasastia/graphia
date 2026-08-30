@@ -19,6 +19,9 @@ pub enum Commands {
         #[arg(long)]
         clean: bool,
     },
+    Load {
+        repo: PathBuf,
+    },
     Stats {
         repo: PathBuf,
     },
@@ -77,6 +80,15 @@ pub fn run(cli: Cli) -> crate::error::Result<()> {
                 counts.changed
             );
             println!("{}", format_change_summary(&counts));
+            Ok(())
+        }
+        Commands::Load { repo } => {
+            let graph = load_or_build(&repo)?;
+            println!(
+                "loaded graph: {} nodes, {} edges",
+                graph.node_count(),
+                graph.edge_count()
+            );
             Ok(())
         }
         Commands::Stats { repo } => {
@@ -276,6 +288,26 @@ mod tests {
     fn cli_build_accepts_clean_flag() {
         let cli = Cli::try_parse_from(["graphia", "build", ".", "--clean"]).expect("parse");
         assert!(matches!(cli.command, Commands::Build { clean: true, .. }));
+    }
+
+    #[test]
+    fn cli_load_accepts_repository() {
+        let cli = Cli::try_parse_from(["graphia", "load", "."]).expect("parse");
+        assert!(matches!(cli.command, Commands::Load { .. }));
+    }
+
+    #[test]
+    fn cli_load_reads_existing_repository() {
+        let repo = tempdir().expect("temporary repository");
+        let graph = crate::graph::Graph::new(vec![], vec![]);
+        crate::storage::save_graph_binary(&graph, &repo.path().join(".graphia/index.bin"))
+            .expect("save index");
+        run(Cli {
+            command: Commands::Load {
+                repo: repo.path().to_path_buf(),
+            },
+        })
+        .expect("load graph");
     }
 
     #[test]
