@@ -15,8 +15,10 @@ use crate::scan::{ScannedFile, scan_repo};
 const MAGIC: &[u8; 4] = b"GRPH";
 const VERSION: u32 = 2;
 const ENDIAN_MARKER: u32 = 0x0102_0304;
-const HEADER_SIZE: usize = 72;
-const FILE_SCHEMA_VERSION: u32 = 1;
+const HEADER_SIZE: usize = 96;
+const MIN_NODE_RECORD_SIZE: usize = 42;
+const MIN_EDGE_RECORD_SIZE: usize = 27;
+pub(crate) const FILE_SCHEMA_VERSION: u32 = 1;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct SerializedGraph {
@@ -25,19 +27,19 @@ struct SerializedGraph {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct FileMetadata {
-    path: String,
-    size: u64,
-    modified_ns: Option<u128>,
-    hash: [u8; 32],
-    language: Option<Language>,
-    parser_version: u32,
+pub struct FileMetadata {
+    pub path: String,
+    pub size: u64,
+    pub modified_ns: Option<u128>,
+    pub hash: [u8; 32],
+    pub language: Option<Language>,
+    pub parser_version: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Metadata {
-    schema_version: u32,
-    files: Vec<FileMetadata>,
+    pub schema_version: u32,
+    pub files: Vec<FileMetadata>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -147,37 +149,35 @@ pub fn load_graph_json(path: &Path) -> Result<Graph> {
 pub fn save_graph_binary(graph: &Graph, output: &Path) -> Result<()> {
     graph.validate()?;
     let canonical = canonical_graph(graph);
-    let mut body = Vec::new();
-    write_u32(&mut body, canonical.nodes.len())?;
-    write_u32(&mut body, canonical.edges.len())?;
+    let mut nodes = Vec::new();
     for node in &canonical.nodes {
-        write_u64(&mut body, node.id.0)?;
-        body.push(node.kind.code());
-        body.push(node.language.map_or(0, Language::code));
-        write_string(&mut body, &node.name)?;
-        write_string(&mut body, &node.qualified_name)?;
-        write_string(&mut body, &node.file)?;
-        write_location(&mut body, &node.location)?;
+        write_node(&mut nodes, node)?;
     }
+    let mut edges = Vec::new();
     for edge in &canonical.edges {
-        write_u64(&mut body, edge.id.0)?;
-        body.push(edge.kind.code());
-        body.push(edge.confidence.code());
-        write_u64(&mut body, edge.from.0)?;
-        write_u64(&mut body, edge.to.0)?;
-        write_optional_string(&mut body, edge.label.as_deref())?;
+        write_edge(&mut edges, edge)?;
     }
-    let checksum = Sha256::digest(&body);
-    let mut data = Vec::with_capacity(HEADER_SIZE + body.len());
+    let node_offset = HEADER_SIZE as u64;
+    let edge_offset = node_offset
+        .checked_add(nodes.len() as u64)
+        .ok_or_else(|| storage_error("graph index size overflow"))?;
+    let mut sections = Vec::with_capacity(nodes.len() + edges.len());
+    sections.extend_from_slice(&nodes);
+    sections.extend_from_slice(&edges);
+    let checksum = Sha256::digest(&sections);
+    let mut data = Vec::with_capacity(HEADER_SIZE + sections.len());
     data.extend_from_slice(MAGIC);
     data.extend_from_slice(&VERSION.to_le_bytes());
     data.extend_from_slice(&ENDIAN_MARKER.to_le_bytes());
     data.extend_from_slice(&(HEADER_SIZE as u32).to_le_bytes());
-    data.extend_from_slice(&(body.len() as u64).to_le_bytes());
+    data.extend_from_slice(&node_offset.to_le_bytes());
+    data.extend_from_slice(&(nodes.len() as u64).to_le_bytes());
+    data.extend_from_slice(&edge_offset.to_le_bytes());
+    data.extend_from_slice(&(edges.len() as u64).to_le_bytes());
     data.extend_from_slice(&(canonical.nodes.len() as u64).to_le_bytes());
     data.extend_from_slice(&(canonical.edges.len() as u64).to_le_bytes());
     data.extend_from_slice(&checksum);
-    data.extend_from_slice(&body);
+    data.extend_from_slice(&sections);
     atomic_write(output, &data)
 }
 
@@ -200,35 +200,47 @@ pub fn load_graph_binary(path: &Path) -> Result<Graph> {
             "invalid graph index byte order or header size",
         ));
     }
-    let body_len = read_u64(&data[16..24])? as usize;
-    let node_count = read_u64(&data[24..32])? as usize;
-    let edge_count = read_u64(&data[32..40])? as usize;
-    let expected_end = HEADER_SIZE
-        .checked_add(body_len)
-        .ok_or_else(|| storage_error("graph index size overflow"))?;
-    if expected_end != data.len() {
-        return Err(storage_error("graph index body length mismatch"));
+    let node_offset = usize::try_from(read_u64(&data[16..24])?)
+        .map_err(|_| storage_error("graph index offset exceeds platform limits"))?;
+    let node_len = usize::try_from(read_u64(&data[24..32])?)
+        .map_err(|_| storage_error("graph index section exceeds platform limits"))?;
+    let edge_offset = usize::try_from(read_u64(&data[32..40])?)
+        .map_err(|_| storage_error("graph index offset exceeds platform limits"))?;
+    let edge_len = usize::try_from(read_u64(&data[40..48])?)
+        .map_err(|_| storage_error("graph index section exceeds platform limits"))?;
+    let node_count = usize::try_from(read_u64(&data[48..56])?)
+        .map_err(|_| storage_error("graph index node count exceeds platform limits"))?;
+    let edge_count = usize::try_from(read_u64(&data[56..64])?)
+        .map_err(|_| storage_error("graph index edge count exceeds platform limits"))?;
+    let node_end = node_offset
+        .checked_add(node_len)
+        .ok_or_else(|| storage_error("graph index offset overflow"))?;
+    let edge_end = edge_offset
+        .checked_add(edge_len)
+        .ok_or_else(|| storage_error("graph index offset overflow"))?;
+    if node_offset != HEADER_SIZE || node_end != edge_offset || edge_end != data.len() {
+        return Err(storage_error("invalid graph index section offsets"));
     }
-    let body = &data[HEADER_SIZE..];
-    if Sha256::digest(body).as_slice() != &data[40..72] {
+    let sections = &data[HEADER_SIZE..];
+    if Sha256::digest(sections).as_slice() != &data[64..96] {
         return Err(storage_error("graph index checksum mismatch"));
     }
-    let mut cursor = Cursor::new(body);
-    let encoded_nodes = read_u32_from(&mut cursor)? as usize;
-    let encoded_edges = read_u32_from(&mut cursor)? as usize;
-    if encoded_nodes != node_count || encoded_edges != edge_count {
-        return Err(storage_error("graph index count mismatch"));
+    if node_count > node_len / MIN_NODE_RECORD_SIZE || edge_count > edge_len / MIN_EDGE_RECORD_SIZE
+    {
+        return Err(storage_error("graph index counts exceed section lengths"));
     }
+    let mut cursor = Cursor::new(&data[node_offset..node_end]);
     let mut nodes = Vec::with_capacity(node_count);
     for _ in 0..node_count {
         nodes.push(read_node(&mut cursor)?);
     }
+    let mut edge_cursor = Cursor::new(&data[edge_offset..edge_end]);
     let mut edges = Vec::with_capacity(edge_count);
     for _ in 0..edge_count {
-        edges.push(read_edge(&mut cursor)?);
+        edges.push(read_edge(&mut edge_cursor)?);
     }
-    if cursor.position() != body.len() as u64 {
-        return Err(storage_error("trailing graph index data"));
+    if cursor.position() != node_len as u64 || edge_cursor.position() != edge_len as u64 {
+        return Err(storage_error("trailing graph index section data"));
     }
     let graph = Graph::new(nodes, edges);
     graph.validate()?;
@@ -251,9 +263,13 @@ fn load_metadata(root: &Path) -> Result<Option<Metadata>> {
         path: path.clone(),
         message: error.to_string(),
     })?;
-    let metadata = serde_json::from_str(&data).map_err(|error| GraphiaError::Storage {
-        message: error.to_string(),
-    })?;
+    let metadata: Metadata =
+        serde_json::from_str(&data).map_err(|error| GraphiaError::Storage {
+            message: error.to_string(),
+        })?;
+    if metadata.schema_version != FILE_SCHEMA_VERSION {
+        return Ok(None);
+    }
     Ok(Some(metadata))
 }
 
@@ -332,14 +348,37 @@ pub fn compare_metadata(previous: Option<&Metadata>, current: &Metadata) -> Vec<
 pub fn build_or_update(root: &Path, clean: bool) -> Result<(Graph, Vec<FileChangeRecord>)> {
     let scanned = scan_repo(root)?;
     let current = metadata_for_files(&scanned)?;
+    if clean {
+        match fs::remove_file(root.join(".graphia/parsed.json")) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(GraphiaError::Io {
+                    path: root.join(".graphia/parsed.json"),
+                    message: error.to_string(),
+                });
+            }
+        }
+    }
     let previous = if clean { None } else { load_metadata(root)? };
+    if !clean && previous.is_none() && root.join(".graphia/metadata.json").exists() {
+        match fs::remove_file(root.join(".graphia/parsed.json")) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(GraphiaError::Io {
+                    path: root.join(".graphia/parsed.json"),
+                    message: error.to_string(),
+                });
+            }
+        }
+    }
     let changes = compare_metadata(previous.as_ref(), &current);
-    let graph = build_graph_from_repo(root)?;
-    save_metadata(root, &current)?;
+    let graph = crate::incremental::update_repository(root)?;
     Ok((graph, changes))
 }
 
-fn atomic_write(path: &Path, bytes: &[u8]) -> Result<()> {
+pub(crate) fn atomic_write(path: &Path, bytes: &[u8]) -> Result<()> {
     if let Some(parent) = path.parent()
         && !parent.as_os_str().is_empty()
     {
@@ -472,6 +511,25 @@ fn write_u32(buffer: &mut Vec<u8>, value: usize) -> Result<()> {
 fn write_u64(buffer: &mut Vec<u8>, value: u64) -> Result<()> {
     buffer.extend_from_slice(&value.to_le_bytes());
     Ok(())
+}
+
+fn write_node(buffer: &mut Vec<u8>, node: &Node) -> Result<()> {
+    write_u64(buffer, node.id.0)?;
+    buffer.push(node.kind.code());
+    buffer.push(node.language.map_or(0, Language::code));
+    write_string(buffer, &node.name)?;
+    write_string(buffer, &node.qualified_name)?;
+    write_string(buffer, &node.file)?;
+    write_location(buffer, &node.location)
+}
+
+fn write_edge(buffer: &mut Vec<u8>, edge: &Edge) -> Result<()> {
+    write_u64(buffer, edge.id.0)?;
+    buffer.push(edge.kind.code());
+    buffer.push(edge.confidence.code());
+    write_u64(buffer, edge.from.0)?;
+    write_u64(buffer, edge.to.0)?;
+    write_optional_string(buffer, edge.label.as_deref())
 }
 
 fn write_string(buffer: &mut Vec<u8>, value: &str) -> Result<()> {
@@ -627,9 +685,173 @@ mod tests {
         save_graph_binary(&graph, &path).expect("write index");
         assert_eq!(load_graph_binary(&path).expect("read index"), graph);
         let mut bytes = fs::read(&path).expect("read bytes");
-        bytes[HEADER_SIZE] ^= 1;
+        bytes[0] ^= 1;
         fs::write(&path, bytes).expect("corrupt index");
         assert!(load_graph_binary(&path).is_err());
+    }
+
+    #[test]
+    fn binary_rejects_trailing_bytes_and_bad_section_offsets() {
+        let dir = tempdir().expect("tempdir");
+        let path = dir.path().join("index.bin");
+        save_graph_binary(&Graph::new(Vec::new(), Vec::new()), &path).expect("write index");
+        let mut bytes = fs::read(&path).expect("read bytes");
+        bytes.push(1);
+        fs::write(&path, &bytes).expect("append index");
+        assert!(load_graph_binary(&path).is_err());
+
+        save_graph_binary(&Graph::new(Vec::new(), Vec::new()), &path).expect("rewrite index");
+        let mut bytes = fs::read(&path).expect("read bytes");
+        bytes[16] = 1;
+        fs::write(&path, bytes).expect("corrupt offset");
+        assert!(load_graph_binary(&path).is_err());
+    }
+
+    fn sample_graph() -> Graph {
+        Graph::new(
+            vec![Node {
+                id: crate::graph::stable_node_id(&crate::model::NodeIdentity::new(
+                    "lib.rs",
+                    NodeKind::Function,
+                    "lib.rs::run",
+                    &SourceLocation {
+                        file: "lib.rs".to_string(),
+                        start_line: 1,
+                        start_col: 1,
+                        end_line: 1,
+                        end_col: 4,
+                    },
+                )),
+                kind: NodeKind::Function,
+                language: Some(Language::Rust),
+                name: "run".to_string(),
+                qualified_name: "lib.rs::run".to_string(),
+                file: "lib.rs".to_string(),
+                location: SourceLocation {
+                    file: "lib.rs".to_string(),
+                    start_line: 1,
+                    start_col: 1,
+                    end_line: 1,
+                    end_col: 4,
+                },
+            }],
+            Vec::new(),
+        )
+    }
+
+    fn rewrite_checksum(bytes: &mut [u8]) {
+        let checksum: [u8; 32] = Sha256::digest(&bytes[HEADER_SIZE..]).into();
+        bytes[64..96].copy_from_slice(&checksum);
+    }
+
+    #[test]
+    fn binary_rejects_invalid_header_fields() {
+        let dir = tempdir().expect("tempdir");
+        let path = dir.path().join("index.bin");
+        save_graph_binary(&Graph::new(Vec::new(), Vec::new()), &path).expect("write index");
+        for (offset, value) in [(4, 3_u32), (8, 0_u32), (12, 95_u32)] {
+            let mut bytes = fs::read(&path).expect("read index");
+            bytes[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
+            rewrite_checksum(&mut bytes);
+            fs::write(&path, bytes).expect("corrupt header");
+            assert!(matches!(
+                load_graph_binary(&path),
+                Err(GraphiaError::Storage { .. })
+            ));
+        }
+    }
+
+    #[test]
+    fn binary_rejects_truncation_and_count_overflow_without_allocating() {
+        let dir = tempdir().expect("tempdir");
+        let path = dir.path().join("index.bin");
+        save_graph_binary(&Graph::new(Vec::new(), Vec::new()), &path).expect("write index");
+        let mut bytes = fs::read(&path).expect("read index");
+        bytes[48..56].copy_from_slice(&u64::MAX.to_le_bytes());
+        rewrite_checksum(&mut bytes);
+        fs::write(&path, bytes).expect("corrupt count");
+        assert!(matches!(
+            load_graph_binary(&path),
+            Err(GraphiaError::Storage { .. })
+        ));
+        let mut bytes = fs::read(&path).expect("read index");
+        bytes.pop();
+        fs::write(&path, bytes).expect("truncate index");
+        assert!(matches!(
+            load_graph_binary(&path),
+            Err(GraphiaError::Storage { .. })
+        ));
+    }
+
+    #[test]
+    fn binary_rejects_enum_utf8_optional_and_dangling_edge_corruption() {
+        let dir = tempdir().expect("tempdir");
+        let path = dir.path().join("index.bin");
+        save_graph_binary(&sample_graph(), &path).expect("write index");
+        for offset in [104, 105] {
+            save_graph_binary(&sample_graph(), &path).expect("rewrite index");
+            let mut bytes = fs::read(&path).expect("read index");
+            bytes[offset] = 255;
+            rewrite_checksum(&mut bytes);
+            fs::write(&path, bytes).expect("corrupt record");
+            assert!(matches!(
+                load_graph_binary(&path),
+                Err(GraphiaError::Storage { .. })
+            ));
+        }
+        save_graph_binary(&sample_graph(), &path).expect("rewrite index");
+        let mut bytes = fs::read(&path).expect("read index");
+        bytes[110] = 255;
+        rewrite_checksum(&mut bytes);
+        fs::write(&path, bytes).expect("corrupt utf8");
+        assert!(matches!(
+            load_graph_binary(&path),
+            Err(GraphiaError::Storage { .. })
+        ));
+
+        let node_id = sample_graph().nodes[0].id;
+        let edge_identity = crate::model::EdgeIdentity::new(
+            node_id,
+            node_id,
+            EdgeKind::Calls,
+            Confidence::Extracted,
+            Some("label".to_string()),
+        );
+        let edge = Edge {
+            id: crate::graph::stable_edge_id(&edge_identity),
+            kind: EdgeKind::Calls,
+            from: node_id,
+            to: node_id,
+            confidence: Confidence::Extracted,
+            label: Some("label".to_string()),
+        };
+        let valid_edge = Edge {
+            to: node_id,
+            ..edge
+        };
+        let graph = Graph::new(sample_graph().nodes, vec![valid_edge]);
+        save_graph_binary(&graph, &path).expect("write edge");
+        let mut bytes = fs::read(&path).expect("read index");
+        let edge_offset = usize::try_from(read_u64(&bytes[32..40]).expect("edge offset"))
+            .expect("edge offset fits");
+        bytes[edge_offset + 26] = 255;
+        rewrite_checksum(&mut bytes);
+        fs::write(&path, bytes).expect("corrupt optional marker");
+        assert!(matches!(
+            load_graph_binary(&path),
+            Err(GraphiaError::Storage { .. })
+        ));
+        save_graph_binary(&graph, &path).expect("rewrite edge");
+        let mut bytes = fs::read(&path).expect("read index");
+        let edge_offset = usize::try_from(read_u64(&bytes[32..40]).expect("edge offset"))
+            .expect("edge offset fits");
+        bytes[edge_offset + 16..edge_offset + 24].copy_from_slice(&999_u64.to_le_bytes());
+        rewrite_checksum(&mut bytes);
+        fs::write(&path, bytes).expect("corrupt dangling edge");
+        assert!(matches!(
+            load_graph_binary(&path),
+            Err(GraphiaError::GraphInvariant { .. })
+        ));
     }
 
     #[test]

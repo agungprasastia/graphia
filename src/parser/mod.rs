@@ -1,8 +1,9 @@
+use serde::{Deserialize, Serialize};
 use tree_sitter::{Language, Parser, Tree};
 
 use crate::model::{Language as GraphiaLanguage, NodeKind, SourceLocation};
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Symbol {
     pub kind: NodeKind,
     pub name: String,
@@ -11,20 +12,20 @@ pub struct Symbol {
     pub parent: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Import {
     pub path: String,
     pub location: SourceLocation,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Call {
     pub caller: String,
     pub callee: String,
     pub location: SourceLocation,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ParsedFile {
     pub symbols: Vec<Symbol>,
     pub imports: Vec<Import>,

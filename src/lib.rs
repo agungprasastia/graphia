@@ -1,6 +1,7 @@
 pub mod cli;
 pub mod error;
 pub mod graph;
+pub mod incremental;
 pub mod model;
 pub mod parser;
 pub mod query;

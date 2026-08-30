@@ -20,6 +20,10 @@ tree-sitter-typescript = "0.23"
 [dev-dependencies]
 tempfile = "3.10"
 
+[[bench]]
+name = "m05"
+harness = false
+
 [lints.rust]
 warnings = "deny"
 missing_docs = "allow"
