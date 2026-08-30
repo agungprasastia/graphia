@@ -21,7 +21,7 @@ tree-sitter-typescript = "0.23"
 tempfile = "3.10"
 
 [[bench]]
-name = "m05"
+name = "performance"
 harness = false
 
 [lints.rust]

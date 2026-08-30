@@ -27,7 +27,7 @@ Initial languages are Rust, Python, and TypeScript. Tree-sitter grammar nodes pr
 ## M0 Baseline Coverage
 
 `tests/fixtures/` contains minimal Rust, Python, and TypeScript sources plus imported helper modules.
-`tests/integration_m0.rs` locks scanner ordering and language detection, parser symbols/imports/calls
+`tests/foundation.rs` locks scanner ordering and language detection, parser symbols/imports/calls
 and source locations, graph file/containment/import/call edges and repeated-build IDs, and
 byte-identical canonical JSON.
 The fixture tree uses relative paths so checks remain independent of checkout location.
