@@ -3,14 +3,24 @@ use std::collections::{BTreeMap, HashSet};
 use sha2::{Digest, Sha256};
 
 use crate::model::{
-    Confidence, Edge, EdgeId, EdgeKind, Language, Node, NodeId, NodeKind, SourceLocation,
+    Confidence, Edge, EdgeId, EdgeIdentity, EdgeKind, Language, Node, NodeId, NodeIdentity,
+    NodeKind, SourceLocation,
 };
-use crate::parser::{ParsedFile, Symbol};
+use crate::parser::{Call, ParsedFile, Symbol};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Graph {
     pub nodes: Vec<Node>,
     pub edges: Vec<Edge>,
+    resolution: ResolutionReport,
+    resolution_calls: Vec<(String, Call)>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ResolutionReport {
+    pub resolved_calls: usize,
+    pub unresolved_calls: usize,
+    pub ambiguous_calls: usize,
 }
 
 impl Graph {
@@ -49,8 +59,14 @@ impl Graph {
                 node.location.start_col,
             );
             if !identities.insert(identity) {
-                return Err(crate::error::GraphiaError::Storage {
+                return Err(crate::error::GraphiaError::GraphInvariant {
                     message: format!("duplicate node identity {}", node.qualified_name),
+                });
+            }
+            let expected = stable_node_id(&NodeIdentity::from_node(node));
+            if node.id != expected {
+                return Err(crate::error::GraphiaError::GraphInvariant {
+                    message: format!("node ID does not match identity {}", node.qualified_name),
                 });
             }
         }
@@ -62,17 +78,139 @@ impl Graph {
         }
         for edge in &self.edges {
             if !node_ids.contains(&edge.from) || !node_ids.contains(&edge.to) {
-                return Err(crate::error::GraphiaError::Storage {
+                return Err(crate::error::GraphiaError::GraphInvariant {
                     message: format!("dangling edge {}", edge.id.0),
                 });
             }
+            let expected = stable_edge_id(&EdgeIdentity::new(
+                edge.from,
+                edge.to,
+                edge.kind,
+                edge.confidence,
+                edge.label.clone(),
+            ));
+            if edge.id != expected {
+                return Err(crate::error::GraphiaError::GraphInvariant {
+                    message: format!("edge ID does not match identity {}", edge.id.0),
+                });
+            }
+        }
+        if self.nodes.windows(2).any(|pair| {
+            (
+                pair[0].qualified_name.as_str(),
+                pair[0].kind.code(),
+                pair[0].id,
+            ) > (
+                pair[1].qualified_name.as_str(),
+                pair[1].kind.code(),
+                pair[1].id,
+            )
+        }) || self.edges.windows(2).any(|pair| {
+            (pair[0].kind.code(), pair[0].from, pair[0].to, pair[0].id)
+                > (pair[1].kind.code(), pair[1].from, pair[1].to, pair[1].id)
+        }) {
+            return Err(crate::error::GraphiaError::GraphInvariant {
+                message: "records are not canonicalized".into(),
+            });
         }
         Ok(())
     }
 
     #[must_use]
     pub fn new(nodes: Vec<Node>, edges: Vec<Edge>) -> Self {
-        Self { nodes, edges }
+        Self {
+            nodes,
+            edges,
+            resolution: ResolutionReport::default(),
+            resolution_calls: Vec::new(),
+        }
+    }
+
+    pub fn resolve_cross_file(&mut self) -> crate::error::Result<ResolutionReport> {
+        self.nodes.sort_by(|a, b| {
+            a.qualified_name
+                .cmp(&b.qualified_name)
+                .then(a.kind.code().cmp(&b.kind.code()))
+                .then(a.id.0.cmp(&b.id.0))
+        });
+        self.edges.sort_by(|a, b| {
+            a.kind
+                .code()
+                .cmp(&b.kind.code())
+                .then(a.from.0.cmp(&b.from.0))
+                .then(a.to.0.cmp(&b.to.0))
+                .then(a.id.0.cmp(&b.id.0))
+        });
+        self.edges.retain(|edge| {
+            !(edge.kind == EdgeKind::Calls && edge.confidence == Confidence::Inferred)
+        });
+        let imports: Vec<(NodeId, NodeId)> = self
+            .edges
+            .iter()
+            .filter(|edge| edge.kind == EdgeKind::Imports)
+            .map(|edge| (edge.from, edge.to))
+            .collect();
+        let mut report = ResolutionReport::default();
+        let mut resolved = Vec::new();
+        for (file, call) in &self.resolution_calls {
+            let Some(caller) = self
+                .nodes
+                .iter()
+                .find(|node| node.qualified_name == call.caller)
+            else {
+                report.unresolved_calls += 1;
+                continue;
+            };
+            let imported_files: Vec<NodeId> = imports
+                .iter()
+                .filter_map(|(from, to)| (*from == self.file_node_id(file)).then_some(*to))
+                .collect();
+            let candidates: Vec<&Node> = self
+                .nodes
+                .iter()
+                .filter(|node| {
+                    node.name == call.callee
+                        && node.kind != NodeKind::File
+                        && imported_files.contains(&self.file_node_id(&node.file))
+                })
+                .collect();
+            if candidates.len() != 1 {
+                if candidates.len() > 1 {
+                    report.ambiguous_calls += 1;
+                } else {
+                    report.unresolved_calls += 1;
+                }
+                continue;
+            }
+            let target = candidates[0];
+            let identity = EdgeIdentity::new(
+                caller.id,
+                target.id,
+                EdgeKind::Calls,
+                Confidence::Inferred,
+                None,
+            );
+            resolved.push(Edge {
+                id: stable_edge_id(&identity),
+                kind: EdgeKind::Calls,
+                from: caller.id,
+                to: target.id,
+                confidence: Confidence::Inferred,
+                label: None,
+            });
+            report.resolved_calls += 1;
+        }
+        self.edges.extend(resolved);
+        self.resolution = report;
+        self.canonicalize()?;
+        Ok(self.resolution.clone())
+    }
+
+    fn file_node_id(&self, file: &str) -> NodeId {
+        self.nodes
+            .iter()
+            .find(|node| node.kind == NodeKind::File && node.file == file)
+            .map_or(NodeId(0), |node| node.id)
     }
 
     #[must_use]
@@ -93,19 +231,32 @@ fn stable_id(seed: &str) -> u64 {
     u64::from_le_bytes(digest[..8].try_into().unwrap_or([0; 8]))
 }
 
-fn unique_id(seed: &str, used: &mut HashSet<u64>) -> u64 {
-    let mut attempt = 0u64;
-    loop {
-        let candidate = if attempt == 0 {
-            stable_id(seed)
-        } else {
-            stable_id(&format!("{seed}\0{attempt}"))
-        };
-        if used.insert(candidate) {
-            return candidate;
-        }
-        attempt = attempt.saturating_add(1);
-    }
+#[must_use]
+pub fn stable_node_id(identity: &NodeIdentity) -> NodeId {
+    NodeId(stable_id(&format!(
+        "node\0{}\0{}\0{}\0{}:{}:{}:{}:{}",
+        identity.file,
+        identity.kind.code(),
+        identity.qualified_name,
+        identity.location.file,
+        identity.location.start_line,
+        identity.location.start_col,
+        identity.location.end_line,
+        identity.location.end_col,
+    )))
+}
+
+#[must_use]
+pub fn stable_edge_id(identity: &EdgeIdentity) -> EdgeId {
+    EdgeId(stable_id(&format!(
+        "edge\0{}\0{}\0{}\0{}\0{}\0{}",
+        identity.from.0,
+        identity.to.0,
+        identity.kind.code(),
+        identity.confidence.code(),
+        identity.label.is_some(),
+        identity.label.as_deref().unwrap_or(""),
+    )))
 }
 
 #[derive(Debug, Clone)]
@@ -154,12 +305,30 @@ pub fn build_graph(files: Vec<(String, Option<Language>, ParsedFile)>) -> Graph 
     let mut file_node_ids = BTreeMap::new();
     let mut symbol_node_ids: BTreeMap<String, Vec<NodeId>> = BTreeMap::new();
     let mut name_to_symbols: BTreeMap<String, Vec<(String, NodeId, String)>> = BTreeMap::new();
-    let mut used_node_ids = HashSet::new();
 
+    let mut resolution = ResolutionReport::default();
+    let mut resolution_calls = Vec::new();
     for entry in &entries {
-        let id = NodeId(unique_id(
-            &format!("file:{}", entry.path),
-            &mut used_node_ids,
+        resolution_calls.extend(
+            entry
+                .parsed
+                .calls
+                .iter()
+                .cloned()
+                .map(|call| (entry.path.clone(), call)),
+        );
+        let location = SourceLocation {
+            file: entry.path.clone(),
+            start_line: 1,
+            start_col: 1,
+            end_line: 1,
+            end_col: 1,
+        };
+        let id = stable_node_id(&NodeIdentity::new(
+            &entry.path,
+            NodeKind::File,
+            &entry.path,
+            &location,
         ));
         file_node_ids.insert(entry.path.clone(), id);
         nodes.push(Node {
@@ -180,14 +349,12 @@ pub fn build_graph(files: Vec<(String, Option<Language>, ParsedFile)>) -> Graph 
     }
 
     for (file, symbol) in &all_symbols {
-        let seed = format!(
-            "symbol:{file}:{}:{}:{}:{}",
-            symbol.qualified_name,
-            symbol.kind.as_str(),
-            symbol.location.start_line,
-            symbol.location.start_col
-        );
-        let id = NodeId(unique_id(&seed, &mut used_node_ids));
+        let id = stable_node_id(&NodeIdentity::new(
+            file,
+            symbol.kind,
+            &symbol.qualified_name,
+            &symbol.location,
+        ));
         symbol_node_ids
             .entry(symbol.qualified_name.clone())
             .or_default()
@@ -272,6 +439,7 @@ pub fn build_graph(files: Vec<(String, Option<Language>, ParsedFile)>) -> Graph 
                 continue;
             };
             let Some(candidates) = name_to_symbols.get(&call.callee) else {
+                resolution.unresolved_calls += 1;
                 continue;
             };
             let language_candidates: Vec<_> = candidates
@@ -292,12 +460,18 @@ pub fn build_graph(files: Vec<(String, Option<Language>, ParsedFile)>) -> Graph 
             } else if language_candidates.len() == 1 {
                 Some(language_candidates[0])
             } else {
+                if same_file.is_empty() && language_candidates.len() > 1 {
+                    resolution.ambiguous_calls += 1;
+                } else {
+                    resolution.unresolved_calls += 1;
+                }
                 None
             };
             if let Some((_, _, callee_file)) = candidate
                 && let Some(&callee_id) = file_node_ids.get(callee_file)
                 && caller_id != callee_id
             {
+                resolution.resolved_calls += 1;
                 add_edge(
                     EdgeKind::Calls,
                     caller_id,
@@ -317,30 +491,45 @@ pub fn build_graph(files: Vec<(String, Option<Language>, ParsedFile)>) -> Graph 
             .then(a.3.code().cmp(&b.3.code()))
             .then(a.4.cmp(&b.4))
     });
-    let mut used_edge_ids = HashSet::new();
     let edges = edge_specs
         .into_iter()
-        .map(|(kind, from, to, confidence, label)| {
-            let seed = format!(
-                "edge:{}:{}:{}:{}:{}",
-                kind.as_str(),
-                from.0,
-                to.0,
-                confidence.code(),
-                label.as_deref().unwrap_or("")
-            );
-            Edge {
-                id: EdgeId(unique_id(&seed, &mut used_edge_ids)),
-                kind,
+        .map(|(kind, from, to, confidence, label)| Edge {
+            id: stable_edge_id(&EdgeIdentity::new(
                 from,
                 to,
+                kind,
                 confidence,
-                label,
-            }
+                label.clone(),
+            )),
+            kind,
+            from,
+            to,
+            confidence,
+            label,
         })
         .collect();
 
-    Graph { nodes, edges }
+    let mut graph = Graph {
+        nodes,
+        edges,
+        resolution,
+        resolution_calls,
+    };
+    graph.nodes.sort_by(|a, b| {
+        a.qualified_name
+            .cmp(&b.qualified_name)
+            .then(a.kind.code().cmp(&b.kind.code()))
+            .then(a.id.0.cmp(&b.id.0))
+    });
+    graph.edges.sort_by(|a, b| {
+        a.kind
+            .code()
+            .cmp(&b.kind.code())
+            .then(a.from.0.cmp(&b.from.0))
+            .then(a.to.0.cmp(&b.to.0))
+            .then(a.id.0.cmp(&b.id.0))
+    });
+    graph
 }
 
 fn resolve_import(
@@ -367,11 +556,16 @@ fn resolve_import(
     } else if text.contains("::") {
         text.trim_end_matches(';').replace("::", "/")
     } else {
-        text.strip_prefix("from ")?
-            .split_whitespace()
-            .next()
-            .unwrap_or("")
-            .replace('.', "/")
+        text.strip_prefix("from ").map_or_else(
+            || text.to_string(),
+            |value| {
+                value
+                    .split_whitespace()
+                    .next()
+                    .unwrap_or("")
+                    .replace('.', "/")
+            },
+        )
     };
     if candidate.is_empty() {
         return None;

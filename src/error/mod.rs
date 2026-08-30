@@ -6,6 +6,7 @@ pub enum GraphiaError {
     Parse { file: String, message: String },
     Storage { message: String },
     InvalidArgument(String),
+    GraphInvariant { message: String },
 }
 
 impl std::fmt::Display for GraphiaError {
@@ -15,6 +16,7 @@ impl std::fmt::Display for GraphiaError {
             Self::Parse { file, message } => write!(f, "parse error in {file}: {message}"),
             Self::Storage { message } => write!(f, "storage error: {message}"),
             Self::InvalidArgument(msg) => write!(f, "invalid argument: {msg}"),
+            Self::GraphInvariant { message } => write!(f, "graph invariant violated: {message}"),
         }
     }
 }

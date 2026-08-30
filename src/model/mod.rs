@@ -12,6 +12,75 @@ pub struct NodeId(pub u64);
 #[serde(transparent)]
 pub struct EdgeId(pub u64);
 
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct NodeIdentity {
+    pub file: String,
+    pub kind: NodeKind,
+    pub qualified_name: String,
+    pub location: SourceLocation,
+}
+
+impl NodeIdentity {
+    #[must_use]
+    pub fn new(
+        file: &str,
+        kind: NodeKind,
+        qualified_name: &str,
+        location: &SourceLocation,
+    ) -> Self {
+        Self {
+            file: normalize_identity_path(file),
+            kind,
+            qualified_name: qualified_name.to_string(),
+            location: SourceLocation {
+                file: normalize_identity_path(&location.file),
+                ..location.clone()
+            },
+        }
+    }
+
+    #[must_use]
+    pub fn from_node(node: &Node) -> Self {
+        Self::new(&node.file, node.kind, &node.qualified_name, &node.location)
+    }
+}
+
+fn normalize_identity_path(path: &str) -> String {
+    let normalized = path.replace('\\', "/");
+    match normalized.split_once("/repo/") {
+        Some((_, relative)) => relative.to_string(),
+        None => normalized,
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct EdgeIdentity {
+    pub from: NodeId,
+    pub to: NodeId,
+    pub kind: EdgeKind,
+    pub confidence: Confidence,
+    pub label: Option<String>,
+}
+
+impl EdgeIdentity {
+    #[must_use]
+    pub fn new(
+        from: NodeId,
+        to: NodeId,
+        kind: EdgeKind,
+        confidence: Confidence,
+        label: Option<String>,
+    ) -> Self {
+        Self {
+            from,
+            to,
+            kind,
+            confidence,
+            label,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum Language {
     Rust,
