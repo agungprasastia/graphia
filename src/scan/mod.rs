@@ -85,9 +85,12 @@ pub fn scan_repo(root: &Path) -> Result<Vec<ScannedFile>> {
         let entry = match entry {
             Ok(e) => e,
             Err(err) => {
-                // graceful: skip unreadable entries
-                eprintln!("warning: walk error: {err}");
-                continue;
+                return Err(GraphiaError::Io {
+                    path: err
+                        .path()
+                        .map_or_else(|| canonical_root.clone(), Path::to_path_buf),
+                    message: err.to_string(),
+                });
             }
         };
         if !entry.file_type().is_file() {

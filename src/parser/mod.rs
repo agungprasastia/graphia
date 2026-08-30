@@ -67,20 +67,33 @@ fn parse_tree(lang: GraphiaLanguage, source: &[u8]) -> Option<Tree> {
 
 #[must_use]
 pub fn parse_file(path: &str, lang: GraphiaLanguage, content: &str) -> ParsedFile {
-    let source = content.as_bytes();
+    parse_bytes(path, lang, content.as_bytes()).expect("validated UTF-8")
+}
+
+pub fn parse_bytes(
+    path: &str,
+    lang: GraphiaLanguage,
+    source: &[u8],
+) -> crate::error::Result<ParsedFile> {
+    if std::str::from_utf8(source).is_err() {
+        return Err(crate::error::GraphiaError::Parse {
+            file: path.to_string(),
+            message: "invalid UTF-8".to_string(),
+        });
+    }
     let Some(tree) = parse_tree(lang, source) else {
-        return ParsedFile {
+        return Ok(ParsedFile {
             symbols: Vec::new(),
             imports: Vec::new(),
             calls: Vec::new(),
-        };
+        });
     };
     let root = tree.root_node();
-    match lang {
+    Ok(match lang {
         GraphiaLanguage::Rust => parse_rust(path, &root, source),
         GraphiaLanguage::Python => parse_python(path, &root, source),
         GraphiaLanguage::TypeScript => parse_typescript(path, &root, source),
-    }
+    })
 }
 
 fn children_vec<'a>(node: &tree_sitter::Node<'a>) -> Vec<tree_sitter::Node<'a>> {
@@ -156,7 +169,10 @@ fn parse_rust(file: &str, root: &tree_sitter::Node<'_>, source: &[u8]) -> Parsed
                 }
             }
             "use_declaration" => {
-                let text = node_text(&node, source).trim().to_string();
+                let text = node_text(&node, source)
+                    .trim()
+                    .trim_end_matches(';')
+                    .to_string();
                 let path = text
                     .trim_start_matches("use")
                     .trim()
@@ -182,7 +198,7 @@ fn parse_rust(file: &str, root: &tree_sitter::Node<'_>, source: &[u8]) -> Parsed
                                 if sub.kind() == "function_item" {
                                     if let Some(name_node) = sub.child_by_field_name("name") {
                                         let name = node_text(&name_node, source).to_string();
-                                        let qualified = format!("{file}::{tname}::{name}");
+                                        let qualified = format!("{file}::{name}");
                                         let loc = location_for_node(file, &sub);
                                         symbols.push(Symbol {
                                             kind: NodeKind::Method,
@@ -273,11 +289,7 @@ fn parse_python(file: &str, root: &tree_sitter::Node<'_>, source: &[u8]) -> Pars
                 if let Some(name_node) = node.child_by_field_name("name") {
                     let name = node_text(&name_node, source).to_string();
                     let is_method = parent_class.is_some();
-                    let qualified = if let Some(ref p) = parent_class {
-                        format!("{file}::{p}::{name}")
-                    } else {
-                        format!("{file}::{name}")
-                    };
+                    let qualified = format!("{file}::{name}");
                     let loc = location_for_node(file, &node);
                     symbols.push(Symbol {
                         kind: if is_method {
@@ -406,11 +418,7 @@ fn parse_typescript(file: &str, root: &tree_sitter::Node<'_>, source: &[u8]) -> 
             "method_definition" => {
                 if let Some(name_node) = node.child_by_field_name("name") {
                     let name = node_text(&name_node, source).to_string();
-                    let qualified = if let Some(ref p) = parent_class {
-                        format!("{file}::{p}::{name}")
-                    } else {
-                        format!("{file}::{name}")
-                    };
+                    let qualified = format!("{file}::{name}");
                     let loc = location_for_node(file, &node);
                     symbols.push(Symbol {
                         kind: NodeKind::Method,
@@ -459,7 +467,10 @@ fn parse_typescript(file: &str, root: &tree_sitter::Node<'_>, source: &[u8]) -> 
                 }
             }
             "import_statement" => {
-                let text = node_text(&node, source).trim().to_string();
+                let text = node_text(&node, source)
+                    .trim()
+                    .trim_end_matches(';')
+                    .to_string();
                 let loc = location_for_node(file, &node);
                 imports.push(Import {
                     path: text,

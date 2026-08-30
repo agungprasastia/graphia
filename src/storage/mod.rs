@@ -1,6 +1,7 @@
 use std::fs;
 use std::io::{Cursor, Read, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -8,13 +9,13 @@ use sha2::{Digest, Sha256};
 use crate::error::{GraphiaError, Result};
 use crate::graph::{Graph, build_graph};
 use crate::model::{Confidence, Edge, EdgeKind, Language, Node, NodeKind, SourceLocation};
-use crate::parser::parse_file;
+use crate::parser::parse_bytes;
 use crate::scan::{ScannedFile, scan_repo};
 
 const MAGIC: &[u8; 4] = b"GRPH";
 const VERSION: u32 = 2;
 const ENDIAN_MARKER: u32 = 0x0102_0304;
-const HEADER_SIZE: usize = 64;
+const HEADER_SIZE: usize = 72;
 const FILE_SCHEMA_VERSION: u32 = 1;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -34,7 +35,7 @@ struct FileMetadata {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct Metadata {
+pub struct Metadata {
     schema_version: u32,
     files: Vec<FileMetadata>,
 }
@@ -61,7 +62,9 @@ pub struct FileChangeRecord {
 pub fn build_graph_from_repo(root: &Path) -> Result<Graph> {
     let files = scan_repo(root)?;
     let parsed_files = parse_scanned_files(&files)?;
-    Ok(build_graph(parsed_files))
+    let mut graph = build_graph(parsed_files);
+    graph.canonicalize()?;
+    Ok(graph)
 }
 
 fn parse_scanned_files(
@@ -72,17 +75,19 @@ fn parse_scanned_files(
         let Some(language) = scanned.language else {
             continue;
         };
-        let content = match fs::read_to_string(&scanned.absolute_path) {
+        let content = match fs::read(&scanned.absolute_path) {
             Ok(content) => content,
             Err(error) => {
-                eprintln!("warning: skip {}: {error}", scanned.relative_path);
-                continue;
+                return Err(GraphiaError::Io {
+                    path: scanned.absolute_path.clone(),
+                    message: error.to_string(),
+                });
             }
         };
         parsed_files.push((
             scanned.relative_path.clone(),
             Some(language),
-            parse_file(&scanned.relative_path, language, &content),
+            parse_bytes(&scanned.relative_path, language, &content)?,
         ));
     }
     Ok(parsed_files)
@@ -113,7 +118,9 @@ fn canonical_graph(graph: &Graph) -> SerializedGraph {
 
 /// Save graph as canonical JSON using an atomic replacement.
 pub fn save_graph_json(graph: &Graph, output: &Path) -> Result<()> {
-    let json = serde_json::to_vec_pretty(&canonical_graph(graph)).map_err(|error| {
+    let mut graph = graph.clone();
+    graph.canonicalize()?;
+    let json = serde_json::to_vec_pretty(&canonical_graph(&graph)).map_err(|error| {
         GraphiaError::Storage {
             message: error.to_string(),
         }
@@ -203,7 +210,7 @@ pub fn load_graph_binary(path: &Path) -> Result<Graph> {
         return Err(storage_error("graph index body length mismatch"));
     }
     let body = &data[HEADER_SIZE..];
-    if Sha256::digest(body).as_slice() != &data[40..64] {
+    if Sha256::digest(body).as_slice() != &data[40..72] {
         return Err(storage_error("graph index checksum mismatch"));
     }
     let mut cursor = Cursor::new(body);
@@ -341,11 +348,8 @@ fn atomic_write(path: &Path, bytes: &[u8]) -> Result<()> {
             message: error.to_string(),
         })?;
     }
-    let tmp = temporary_path(path);
-    let mut file = fs::File::create(&tmp).map_err(|error| GraphiaError::Io {
-        path: tmp.clone(),
-        message: error.to_string(),
-    })?;
+    let (tmp, mut file) = temporary_file(path)?;
+    let cleanup = TempCleanup(tmp.clone());
     file.write_all(bytes).map_err(|error| GraphiaError::Io {
         path: tmp.clone(),
         message: error.to_string(),
@@ -355,20 +359,101 @@ fn atomic_write(path: &Path, bytes: &[u8]) -> Result<()> {
         message: error.to_string(),
     })?;
     drop(file);
-    if let Err(error) = fs::rename(&tmp, path) {
+    let replacement = replace_file(&tmp, path);
+    if let Err(error) = replacement {
         let _ = fs::remove_file(&tmp);
         return Err(GraphiaError::Io {
             path: path.to_path_buf(),
             message: error.to_string(),
         });
     }
+    std::mem::forget(cleanup);
     Ok(())
 }
 
-fn temporary_path(path: &Path) -> PathBuf {
+fn temporary_path(path: &Path, attempt: u64) -> PathBuf {
     let mut tmp = path.as_os_str().to_os_string();
-    tmp.push(".tmp");
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    tmp.push(format!(
+        ".tmp-{}-{}-{}",
+        std::process::id(),
+        COUNTER.fetch_add(1, Ordering::Relaxed),
+        attempt
+    ));
     PathBuf::from(tmp)
+}
+
+fn temporary_file(path: &Path) -> Result<(PathBuf, fs::File)> {
+    for attempt in 0..100 {
+        let tmp = temporary_path(path, attempt);
+        match fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&tmp)
+        {
+            Ok(file) => return Ok((tmp, file)),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => {
+                return Err(GraphiaError::Io {
+                    path: tmp,
+                    message: error.to_string(),
+                });
+            }
+        }
+    }
+    Err(storage_error("temporary file name collision"))
+}
+
+struct TempCleanup(PathBuf);
+
+impl Drop for TempCleanup {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.0);
+    }
+}
+
+#[cfg(not(windows))]
+fn replace_file(source: &Path, destination: &Path) -> std::io::Result<()> {
+    fs::rename(source, destination)
+}
+
+#[cfg(windows)]
+fn replace_file(source: &Path, destination: &Path) -> std::io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+
+    unsafe extern "system" {
+        fn ReplaceFileW(
+            replaced_file_name: *const u16,
+            replacement_file_name: *const u16,
+            backup_file_name: *const u16,
+            replace_flags: u32,
+            exclude: *mut std::ffi::c_void,
+            reserved: *mut std::ffi::c_void,
+        ) -> i32;
+    }
+    let replaced: Vec<u16> = destination.as_os_str().encode_wide().chain([0]).collect();
+    let replacement: Vec<u16> = source.as_os_str().encode_wide().chain([0]).collect();
+    // SAFETY: buffers are NUL-terminated UTF-16 paths valid for this call; null optional pointers are documented.
+    let result = unsafe {
+        ReplaceFileW(
+            replaced.as_ptr(),
+            replacement.as_ptr(),
+            std::ptr::null(),
+            0,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+        )
+    };
+    if result == 0 {
+        let error = std::io::Error::last_os_error();
+        if error.kind() == std::io::ErrorKind::NotFound {
+            fs::rename(source, destination)
+        } else {
+            Err(error)
+        }
+    } else {
+        Ok(())
+    }
 }
 
 fn storage_error(message: &str) -> GraphiaError {

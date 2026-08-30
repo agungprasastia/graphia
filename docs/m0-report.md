@@ -15,6 +15,9 @@ Single Rust crate with focused `scan`, `parser`, `model`, `graph`, `storage`, `c
 - Atomic canonical JSON output.
 - `scan`, `build`, and `stats` commands.
 - Focused unit tests for scanner, parser, graph IDs, and serialization.
+- Cross-language fixture and integration coverage for ordering, language detection, typed extracted
+  facts, concrete locations/callers, containment/import/call edges, root-independent IDs, and
+  byte-identical canonical JSON.
 
 ## Compatibility
 
@@ -22,11 +25,13 @@ See `docs/graphify-compatibility.md`. Structural code behavior is retained; sema
 
 ## Known Gaps
 
-Stable identity across graph changes, confidence metadata, cross-file symbol resolution, adjacency indexes, binary storage, incremental indexing, and benchmark hardening remain for later milestones.
+M0 is complete. M0.1-M0.4 milestone acceptance covers stable identity across graph changes, confidence metadata, adjacency indexes, binary storage, incremental indexing, and benchmark hardening; those capabilities are not accepted in this M0 report. M0 uses conservative helper-file resolution for direct fixture imports and calls.
 
 ## Tests
 
-`cargo test --lib` passes after aligning `tree-sitter-rust` with the Tree-sitter runtime ABI.
+M0 tests pass with `cargo test --all-targets --all-features`, including scanner, parser, graph,
+storage, CLI, and integration coverage. Strict `cargo check`, `cargo clippy --all-targets
+--all-features -- -D warnings`, and `cargo fmt -- --check` also pass.
 
 ## Recommended Next Work
 

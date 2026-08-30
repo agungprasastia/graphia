@@ -14,6 +14,24 @@ pub struct Graph {
 }
 
 impl Graph {
+    pub fn canonicalize(&mut self) -> crate::error::Result<()> {
+        self.nodes.sort_by(|a, b| {
+            a.qualified_name
+                .cmp(&b.qualified_name)
+                .then(a.kind.code().cmp(&b.kind.code()))
+                .then(a.id.0.cmp(&b.id.0))
+        });
+        self.edges.sort_by(|a, b| {
+            a.kind
+                .code()
+                .cmp(&b.kind.code())
+                .then(a.from.0.cmp(&b.from.0))
+                .then(a.to.0.cmp(&b.to.0))
+                .then(a.id.0.cmp(&b.id.0))
+        });
+        self.validate()
+    }
+
     pub fn validate(&self) -> crate::error::Result<()> {
         let node_ids: HashSet<NodeId> = self.nodes.iter().map(|node| node.id).collect();
         if node_ids.len() != self.nodes.len() {
@@ -256,18 +274,28 @@ pub fn build_graph(files: Vec<(String, Option<Language>, ParsedFile)>) -> Graph 
             let Some(candidates) = name_to_symbols.get(&call.callee) else {
                 continue;
             };
+            let language_candidates: Vec<_> = candidates
+                .iter()
+                .filter(|(_, _, file)| match entry.language {
+                    Some(Language::Rust) => file.ends_with(".rs"),
+                    Some(Language::Python) => file.ends_with(".py"),
+                    Some(Language::TypeScript) => file.ends_with(".ts") || file.ends_with(".tsx"),
+                    None => true,
+                })
+                .collect();
             let same_file: Vec<_> = candidates
                 .iter()
                 .filter(|(_, _, file)| file == &entry.path)
                 .collect();
             let candidate = if same_file.len() == 1 {
-                Some(same_file[0].1)
-            } else if candidates.len() == 1 {
-                Some(candidates[0].1)
+                Some(same_file[0])
+            } else if language_candidates.len() == 1 {
+                Some(language_candidates[0])
             } else {
                 None
             };
-            if let Some(callee_id) = candidate
+            if let Some((_, _, callee_file)) = candidate
+                && let Some(&callee_id) = file_node_ids.get(callee_file)
                 && caller_id != callee_id
             {
                 add_edge(
@@ -321,7 +349,7 @@ fn resolve_import(
     entries: &[FileEntry],
 ) -> Option<String> {
     let text = import_path.trim();
-    let candidate = if let Some(quoted) = text
+    let candidate = if let Some(candidate) = text
         .split(['\'', '"'])
         .find(|part| part.starts_with('.') || part.starts_with('/'))
     {
@@ -336,13 +364,14 @@ fn resolve_import(
         path.trim_end_matches(';')
             .trim_start_matches("crate::")
             .replace("::", "/")
-    } else if let Some(path) = text.strip_prefix("from ") {
-        path.split_whitespace()
+    } else if text.contains("::") {
+        text.trim_end_matches(';').replace("::", "/")
+    } else {
+        text.strip_prefix("from ")?
+            .split_whitespace()
             .next()
             .unwrap_or("")
             .replace('.', "/")
-    } else {
-        return None;
     };
     if candidate.is_empty() {
         return None;
@@ -360,6 +389,10 @@ fn resolve_import(
                 .unwrap_or(&entry.path);
             candidate == *stem
                 || candidate == entry.path
+                || candidate == format!("{stem}.rs")
+                || candidate == format!("{stem}.py")
+                || candidate == format!("{stem}.ts")
+                || candidate == format!("{stem}.tsx")
                 || candidate == format!("{stem}/mod")
                 || candidate == format!("{stem}/index")
         })

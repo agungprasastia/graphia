@@ -14,7 +14,7 @@ Graphia uses file and symbol nodes. Supported symbol kinds are `File`, `Module`,
 
 ## Identity and Ordering
 
-Node IDs are compact sequential integers assigned after paths and symbols are sorted. Edge IDs are reassigned after canonical edge sorting. This keeps output deterministic for identical input and avoids hash-map iteration ordering in persistent output.
+Node and edge IDs are fixed-width values derived from SHA-256 identity seeds, with deterministic collision resolution. Canonical sorting keeps output deterministic for identical input and avoids hash-map iteration ordering in persistent output.
 
 ## Language and Parsing
 
@@ -24,6 +24,14 @@ Initial languages are Rust, Python, and TypeScript. Tree-sitter grammar nodes pr
 
 `graph.json` contains canonical `nodes` and `edges` arrays. `graphia scan`, `graphia build`, and `graphia stats` expose the initial CLI behavior. Writes use temporary files followed by replacement.
 
+## M0 Baseline Coverage
+
+`tests/fixtures/` contains minimal Rust, Python, and TypeScript sources plus imported helper modules.
+`tests/integration_m0.rs` locks scanner ordering and language detection, parser symbols/imports/calls
+and source locations, graph file/containment/import/call edges and repeated-build IDs, and
+byte-identical canonical JSON.
+The fixture tree uses relative paths so checks remain independent of checkout location.
+
 ## Compatibility Gaps
 
-Graphia does not yet reproduce Graphify's inferred semantic edges, community detection, heterogeneous document ingestion, rich provenance metadata, query/explain/path commands, binary index, or incremental index. Those belong to M0.1-M0.4.
+M0 is complete. M0.1-M0.4 milestone acceptance covers inferred semantic edges, community detection, heterogeneous document ingestion, rich provenance metadata, query/explain/path commands, binary index, and incremental index; those capabilities are outside this M0 compatibility claim, not declared absent from the codebase.
