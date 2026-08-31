@@ -57,6 +57,6 @@ Graphia's link resolver (`src/graph/mod.rs`) resolves:
 
 ## Verification & Quality Summary
 
-- **Total Unit & Integration Tests**: 74 tests passing across `src/lib.rs`, `phase_a_languages.rs`, `phase_b_languages.rs`, `phase_c_languages.rs`, `phase_d_languages.rs`, `foundation.rs`, `correctness.rs`, `incremental.rs`, `query.rs`.
+- **Total Unit & Integration Tests**: 74 tests passing across `src/lib.rs`, `javascript_languages.rs`, `systems_languages.rs`, `managed_languages.rs`, `modern_languages.rs`, `foundation.rs`, `correctness.rs`, `incremental.rs`, `query.rs`.
 - **Linter & Formatting**: 0 compiler warnings, 0 clippy warnings (`cargo clippy --all-targets --all-features -- -D warnings`), `cargo fmt --check` clean.
-- **Fixture Verification**: Dedicated multi-file test suites and malformed resilience test suites under `tests/fixtures/phase_a`, `phase_b`, `phase_c`, and `phase_d`.
+- **Fixture Verification**: Dedicated multi-file test suites and malformed resilience test suites under `tests/fixtures/` organized per language (`javascript`, `jsx`, `tsx`, `go`, `c`, `cpp`, `java`, `csharp`, `kotlin`, `zig`, `php`, `ruby`, `swift`, `rust`, `python`, `typescript`).

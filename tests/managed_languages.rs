@@ -116,7 +116,7 @@ fn test_kotlin_analyzer_trait_implementation() {
 
 #[test]
 fn test_parse_java_sample_fixture() {
-    let content = include_str!("fixtures/phase_c/SampleService.java");
+    let content = include_str!("fixtures/java/SampleService.java");
     let parsed = parse_file("SampleService.java", Language::Java, content);
 
     // Package symbol
@@ -196,7 +196,7 @@ fn test_parse_java_sample_fixture() {
 
 #[test]
 fn test_parse_csharp_sample_fixture() {
-    let content = include_str!("fixtures/phase_c/SampleService.cs");
+    let content = include_str!("fixtures/csharp/SampleService.cs");
     let parsed = parse_file("SampleService.cs", Language::CSharp, content);
 
     // Namespace
@@ -297,7 +297,7 @@ fn test_parse_csharp_sample_fixture() {
 
 #[test]
 fn test_parse_kotlin_sample_fixture() {
-    let content = include_str!("fixtures/phase_c/SampleService.kt");
+    let content = include_str!("fixtures/kotlin/SampleService.kt");
     let parsed = parse_file("SampleService.kt", Language::Kotlin, content);
 
     // Package
@@ -379,7 +379,7 @@ fn test_parse_kotlin_sample_fixture() {
 
 #[test]
 fn test_malformed_syntax_error_recovery_phase_c() {
-    let java_content = include_str!("fixtures/phase_c/malformed.java");
+    let java_content = include_str!("fixtures/java/malformed.java");
     let java_parsed = parse_file("malformed.java", Language::Java, java_content);
     assert!(
         java_parsed
@@ -388,7 +388,7 @@ fn test_malformed_syntax_error_recovery_phase_c() {
             .any(|s| s.name == "validMethodAfter" && s.kind == NodeKind::Method)
     );
 
-    let cs_content = include_str!("fixtures/phase_c/malformed.cs");
+    let cs_content = include_str!("fixtures/csharp/malformed.cs");
     let cs_parsed = parse_file("malformed.cs", Language::CSharp, cs_content);
     assert!(
         cs_parsed
@@ -397,7 +397,7 @@ fn test_malformed_syntax_error_recovery_phase_c() {
             .any(|s| s.name == "ValidCSharpAfter" && s.kind == NodeKind::Method)
     );
 
-    let kt_content = include_str!("fixtures/phase_c/malformed.kt");
+    let kt_content = include_str!("fixtures/kotlin/malformed.kt");
     let kt_parsed = parse_file("malformed.kt", Language::Kotlin, kt_content);
     assert!(
         kt_parsed
@@ -412,12 +412,12 @@ fn test_phase_c_graph_build_and_resolution() {
     let temp_dir = TempDir::new().expect("temp dir");
     let root = temp_dir.path();
 
-    let sample_java = include_str!("fixtures/phase_c/SampleService.java");
-    let helper_java = include_str!("fixtures/phase_c/Helper.java");
-    let sample_cs = include_str!("fixtures/phase_c/SampleService.cs");
-    let helper_cs = include_str!("fixtures/phase_c/CSharpHelper.cs");
-    let sample_kt = include_str!("fixtures/phase_c/SampleService.kt");
-    let helper_kt = include_str!("fixtures/phase_c/KotlinHelper.kt");
+    let sample_java = include_str!("fixtures/java/SampleService.java");
+    let helper_java = include_str!("fixtures/java/Helper.java");
+    let sample_cs = include_str!("fixtures/csharp/SampleService.cs");
+    let helper_cs = include_str!("fixtures/csharp/CSharpHelper.cs");
+    let sample_kt = include_str!("fixtures/kotlin/SampleService.kt");
+    let helper_kt = include_str!("fixtures/kotlin/KotlinHelper.kt");
 
     std::fs::write(root.join("SampleService.java"), sample_java).expect("write SampleService.java");
     std::fs::write(root.join("Helper.java"), helper_java).expect("write Helper.java");

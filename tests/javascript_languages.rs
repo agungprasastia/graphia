@@ -51,7 +51,7 @@ fn test_javascript_analyzer_trait_implementation() {
 
 #[test]
 fn test_parse_javascript_sample_fixture() {
-    let content = include_str!("fixtures/phase_a/sample.js");
+    let content = include_str!("fixtures/javascript/sample.js");
     let parsed = parse_file("sample.js", Language::JavaScript, content);
 
     // Symbols: Calculator (Class), add (Method), computeTotal (Function), multiply (Function)
@@ -114,7 +114,7 @@ fn test_parse_javascript_sample_fixture() {
 
 #[test]
 fn test_parse_jsx_component_fixture() {
-    let content = include_str!("fixtures/phase_a/component.jsx");
+    let content = include_str!("fixtures/jsx/component.jsx");
     let parsed = parse_file("component.jsx", Language::Jsx, content);
 
     assert!(
@@ -151,7 +151,7 @@ fn test_parse_jsx_component_fixture() {
 
 #[test]
 fn test_parse_tsx_widget_fixture() {
-    let content = include_str!("fixtures/phase_a/widget.tsx");
+    let content = include_str!("fixtures/tsx/widget.tsx");
     let parsed = parse_file("widget.tsx", Language::Tsx, content);
 
     assert!(
@@ -188,7 +188,7 @@ fn test_parse_tsx_widget_fixture() {
 
 #[test]
 fn test_malformed_syntax_graceful_recovery() {
-    let content = include_str!("fixtures/phase_a/malformed.js");
+    let content = include_str!("fixtures/javascript/malformed.js");
     let parsed = parse_file("malformed.js", Language::JavaScript, content);
 
     // Tree-sitter is error-tolerant; it will still extract valid declarations after errors
@@ -205,9 +205,9 @@ fn test_phase_a_graph_build_and_resolution() {
     let temp_dir = TempDir::new().expect("temp dir");
     let root = temp_dir.path();
 
-    let sample_js = include_str!("fixtures/phase_a/sample.js");
-    let component_jsx = include_str!("fixtures/phase_a/component.jsx");
-    let widget_tsx = include_str!("fixtures/phase_a/widget.tsx");
+    let sample_js = include_str!("fixtures/javascript/sample.js");
+    let component_jsx = include_str!("fixtures/jsx/component.jsx");
+    let widget_tsx = include_str!("fixtures/tsx/widget.tsx");
 
     std::fs::write(root.join("sample.js"), sample_js).expect("write sample.js");
     std::fs::write(root.join("component.jsx"), component_jsx).expect("write component.jsx");

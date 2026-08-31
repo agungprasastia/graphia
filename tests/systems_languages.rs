@@ -91,7 +91,7 @@ fn test_cpp_analyzer_trait_implementation() {
 
 #[test]
 fn test_parse_go_sample_fixture() {
-    let content = include_str!("fixtures/phase_b/sample.go");
+    let content = include_str!("fixtures/go/sample.go");
     let parsed = parse_file("sample.go", Language::Go, content);
 
     // Package symbol
@@ -171,7 +171,7 @@ fn test_parse_go_sample_fixture() {
 
 #[test]
 fn test_parse_c_sample_fixture() {
-    let content = include_str!("fixtures/phase_b/sample.c");
+    let content = include_str!("fixtures/c/sample.c");
     let parsed = parse_file("sample.c", Language::C, content);
 
     // Struct / Typedef: Point / Point_t, custom_int
@@ -235,7 +235,7 @@ fn test_parse_c_sample_fixture() {
 
 #[test]
 fn test_parse_cpp_sample_fixture() {
-    let content = include_str!("fixtures/phase_b/sample.cpp");
+    let content = include_str!("fixtures/cpp/sample.cpp");
     let parsed = parse_file("sample.cpp", Language::Cpp, content);
 
     // Namespace: Engine
@@ -312,7 +312,7 @@ fn test_parse_cpp_sample_fixture() {
 
 #[test]
 fn test_malformed_syntax_error_recovery_phase_b() {
-    let go_content = include_str!("fixtures/phase_b/malformed.go");
+    let go_content = include_str!("fixtures/go/malformed.go");
     let go_parsed = parse_file("malformed.go", Language::Go, go_content);
     assert!(
         go_parsed
@@ -321,7 +321,7 @@ fn test_malformed_syntax_error_recovery_phase_b() {
             .any(|s| s.name == "ValidFuncAfter" && s.kind == NodeKind::Function)
     );
 
-    let cpp_content = include_str!("fixtures/phase_b/malformed.cpp");
+    let cpp_content = include_str!("fixtures/cpp/malformed.cpp");
     let cpp_parsed = parse_file("malformed.cpp", Language::Cpp, cpp_content);
     assert!(
         cpp_parsed
@@ -336,9 +336,9 @@ fn test_phase_b_graph_build_and_resolution() {
     let temp_dir = TempDir::new().expect("temp dir");
     let root = temp_dir.path();
 
-    let sample_c = include_str!("fixtures/phase_b/sample.c");
-    let helper_h = include_str!("fixtures/phase_b/helper.h");
-    let sample_go = include_str!("fixtures/phase_b/sample.go");
+    let sample_c = include_str!("fixtures/c/sample.c");
+    let helper_h = include_str!("fixtures/c/helper.h");
+    let sample_go = include_str!("fixtures/go/sample.go");
 
     std::fs::write(root.join("sample.c"), sample_c).expect("write sample.c");
     std::fs::write(root.join("helper.h"), helper_h).expect("write helper.h");

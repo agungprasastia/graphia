@@ -266,8 +266,8 @@ func globalBootstrap() {}
 
 #[test]
 fn test_phase_d_fixtures_graph_construction() {
-    let fixture_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/phase_d");
-    let graph = build_graph_from_repo(&fixture_dir).expect("build graph from phase_d fixtures");
+    let fixture_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
+    let graph = build_graph_from_repo(&fixture_dir).expect("build graph from fixtures");
 
     // Check Zig symbols
     assert!(
@@ -331,7 +331,7 @@ fn test_phase_d_fixtures_graph_construction() {
 
 #[test]
 fn test_parse_sample_fixtures_all_phase_d() {
-    let zig_code = include_str!("fixtures/phase_d/sample.zig");
+    let zig_code = include_str!("fixtures/zig/sample.zig");
     let zig_parsed = parse_file("sample.zig", Language::Zig, zig_code);
     assert!(
         zig_parsed
@@ -359,7 +359,7 @@ fn test_parse_sample_fixtures_all_phase_d() {
     );
     assert!(zig_parsed.imports.iter().any(|i| i.path == "helper.zig"));
 
-    let php_code = include_str!("fixtures/phase_d/sample.php");
+    let php_code = include_str!("fixtures/php/sample.php");
     let php_parsed = parse_file("sample.php", Language::Php, php_code);
     assert!(
         php_parsed
@@ -398,7 +398,7 @@ fn test_parse_sample_fixtures_all_phase_d() {
             .any(|s| s.name == "standaloneFunction" && s.kind == NodeKind::Function)
     );
 
-    let rb_code = include_str!("fixtures/phase_d/sample.rb");
+    let rb_code = include_str!("fixtures/ruby/sample.rb");
     let rb_parsed = parse_file("sample.rb", Language::Ruby, rb_code);
     assert!(
         rb_parsed
@@ -425,7 +425,7 @@ fn test_parse_sample_fixtures_all_phase_d() {
             .any(|s| s.name == "top_level_entry" && s.kind == NodeKind::Function)
     );
 
-    let swift_code = include_str!("fixtures/phase_d/sample.swift");
+    let swift_code = include_str!("fixtures/swift/sample.swift");
     let swift_parsed = parse_file("sample.swift", Language::Swift, swift_code);
     assert!(
         swift_parsed
