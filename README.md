@@ -1,6 +1,6 @@
 # Graphia
 
-[![Rust Version](https://img.shields.io/badge/rust-1.85%2B%20(2024%20edition)-orange.svg)](https://www.rust-lang.org/)
+[![Rust Version](https://img.shields.io/badge/rust-1.98%2B%20(2024%20edition)-orange.svg)](https://www.rust-lang.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Build Status](https://img.shields.io/badge/build-passing-brightgreen.svg)]()
 [![Warnings](https://img.shields.io/badge/warnings-0%20(strict)-brightgreen.svg)]()
