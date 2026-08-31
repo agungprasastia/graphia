@@ -1300,7 +1300,16 @@ pub fn run(cli: Cli) -> crate::error::Result<()> {
         } => {
             let target_repo = repo
                 .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
-            let summary = crate::analysis::advanced::analyze_git_history(&target_repo, max_commits);
+            let history = crate::analysis::advanced::analyze_git_history(&target_repo, max_commits);
+            let summary = match history {
+                crate::analysis::advanced::GitHistoryResult::Success(summary) => summary,
+                status => {
+                    return Err(crate::error::GraphiaError::Io {
+                        path: target_repo,
+                        message: format!("git history unavailable: {status:?}"),
+                    });
+                }
+            };
             match format {
                 CliFormat::Json => {
                     let json = serde_json::to_string_pretty(&summary).map_err(|e| {
@@ -1336,7 +1345,16 @@ pub fn run(cli: Cli) -> crate::error::Result<()> {
         } => {
             let target_repo = repo
                 .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
-            let history = crate::analysis::advanced::analyze_git_history(&target_repo, Some(500));
+            let history =
+                match crate::analysis::advanced::analyze_git_history(&target_repo, Some(500)) {
+                    crate::analysis::advanced::GitHistoryResult::Success(history) => history,
+                    status => {
+                        return Err(crate::error::GraphiaError::Io {
+                            path: target_repo,
+                            message: format!("git history unavailable: {status:?}"),
+                        });
+                    }
+                };
             let report =
                 crate::analysis::advanced::compute_change_coupling(&history.commits, min_support);
             match format {

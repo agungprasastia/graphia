@@ -488,6 +488,88 @@ fn test_advanced_dead_code_and_diffs() {
 }
 
 #[test]
+fn test_api_diff_reports_only_changed_overload() {
+    let overload = |signature: &str, line: u32| Node {
+        id: NodeId(line as u64),
+        kind: NodeKind::Function,
+        name: "foo".into(),
+        qualified_name: "src/api.rs::foo".into(),
+        file: "src/api.rs".into(),
+        location: loc("src/api.rs", line),
+        language: Some(Language::Rust),
+        visibility: graphia::model::Visibility::Public,
+        signature: Some(signature.into()),
+        container: None,
+    };
+    let old = Graph::new(vec![overload("(int)", 1), overload("(string)", 10)], vec![]);
+    let new = Graph::new(
+        vec![overload("(int)", 1), overload("(string, bool)", 10)],
+        vec![],
+    );
+
+    let diff = diff_public_api(&old, &new);
+    assert_eq!(diff.modified_signatures.len(), 1);
+    assert_eq!(diff.added_public_symbols.len(), 0);
+    assert_eq!(diff.removed_public_symbols.len(), 0);
+    assert_eq!(
+        diff.modified_signatures[0].symbol,
+        "src/api.rs::foo(string, bool)"
+    );
+    assert_eq!(
+        diff.modified_signatures[0].old_signature.as_deref(),
+        Some("(string)")
+    );
+}
+
+#[test]
+fn test_git_history_structured_status_and_binary_numstat() {
+    let non_repo = tempdir().expect("tempdir");
+    assert!(matches!(
+        graphia::analysis::advanced::analyze_git_history(non_repo.path(), Some(1)),
+        graphia::analysis::advanced::GitHistoryResult::NotGitRepository
+    ));
+
+    let empty_repo = tempdir().expect("tempdir");
+    std::process::Command::new("git")
+        .args(["init", "--quiet"])
+        .current_dir(empty_repo.path())
+        .status()
+        .expect("git init");
+    assert!(matches!(
+        graphia::analysis::advanced::analyze_git_history(empty_repo.path(), Some(1)),
+        graphia::analysis::advanced::GitHistoryResult::EmptyHistory
+    ));
+
+    std::fs::write(empty_repo.path().join("image.bin"), [0_u8, 1, 2, 255]).expect("binary file");
+    std::process::Command::new("git")
+        .args(["add", "image.bin"])
+        .current_dir(empty_repo.path())
+        .status()
+        .expect("git add");
+    std::process::Command::new("git")
+        .args([
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.com",
+            "commit",
+            "--quiet",
+            "-m",
+            "binary",
+        ])
+        .current_dir(empty_repo.path())
+        .status()
+        .expect("git commit");
+    let result = graphia::analysis::advanced::analyze_git_history(empty_repo.path(), Some(1));
+    let graphia::analysis::advanced::GitHistoryResult::Success(summary) = result else {
+        panic!("expected successful binary history");
+    };
+    assert_eq!(summary.files[0].binary_files, 1);
+    assert_eq!(summary.files[0].additions, 0);
+    assert_eq!(summary.files[0].deletions, 0);
+}
+
+#[test]
 fn test_cli_advanced_analysis_commands() {
     let repo = tempdir().expect("tempdir");
     let graph = Graph::new(vec![], vec![]);

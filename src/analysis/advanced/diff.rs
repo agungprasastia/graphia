@@ -5,6 +5,54 @@ use serde::{Deserialize, Serialize};
 use crate::graph::Graph;
 use crate::model::{Edge, EdgeKind, Node, NodeKind, SemanticNodeKey, Visibility};
 
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+struct ApiNodeKey {
+    file: String,
+    name: String,
+    kind: NodeKind,
+    signature: Option<String>,
+    disambiguator: usize,
+}
+
+fn api_node_base(node: &Node, disambiguator: usize) -> (String, String, NodeKind, usize) {
+    (
+        node.file.clone(),
+        node.name.clone(),
+        node.kind,
+        disambiguator,
+    )
+}
+
+fn api_node_map(nodes: &[Node]) -> HashMap<ApiNodeKey, &Node> {
+    let mut ordered: Vec<&Node> = nodes.iter().collect();
+    ordered.sort_by(|a, b| {
+        a.file
+            .cmp(&b.file)
+            .then_with(|| a.name.cmp(&b.name))
+            .then_with(|| a.kind.cmp(&b.kind))
+            .then_with(|| a.signature.cmp(&b.signature))
+            .then_with(|| a.qualified_name.cmp(&b.qualified_name))
+            .then_with(|| a.location.start_line.cmp(&b.location.start_line))
+    });
+    let mut next: HashMap<(String, String, NodeKind), usize> = HashMap::new();
+    ordered
+        .into_iter()
+        .map(|node| {
+            let base = (node.file.clone(), node.name.clone(), node.kind);
+            let index = next.entry(base.clone()).or_default();
+            let key = ApiNodeKey {
+                file: base.0,
+                name: base.1,
+                kind: base.2,
+                signature: node.signature.clone(),
+                disambiguator: *index,
+            };
+            *index += 1;
+            (key, node)
+        })
+        .collect()
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct GraphDiffSummary {
     pub added_nodes: Vec<Node>,
@@ -187,18 +235,27 @@ pub fn diff_public_api(old_graph: &Graph, new_graph: &Graph) -> ApiDiffSummary {
         }
     };
 
-    let old_pub: HashMap<SemanticNodeKey, &Node> = old_graph
+    let old_nodes: Vec<Node> = old_graph
         .nodes
         .iter()
         .filter(|n| is_public(n))
-        .map(|n| (SemanticNodeKey::from_node(n), n))
+        .cloned()
         .collect();
-
-    let new_pub: HashMap<SemanticNodeKey, &Node> = new_graph
+    let new_nodes: Vec<Node> = new_graph
         .nodes
         .iter()
         .filter(|n| is_public(n))
-        .map(|n| (SemanticNodeKey::from_node(n), n))
+        .cloned()
+        .collect();
+    let old_pub = api_node_map(&old_nodes);
+    let new_pub = api_node_map(&new_nodes);
+    let old_by_slot: HashMap<_, _> = old_pub
+        .iter()
+        .map(|(key, node)| (api_node_base(node, key.disambiguator), *node))
+        .collect();
+    let new_by_slot: HashMap<_, _> = new_pub
+        .iter()
+        .map(|(key, node)| (api_node_base(node, key.disambiguator), *node))
         .collect();
 
     let mut added_public_symbols = Vec::new();
@@ -212,12 +269,23 @@ pub fn diff_public_api(old_graph: &Graph, new_graph: &Graph) -> ApiDiffSummary {
                     || (o_node.visibility == Visibility::Public
                         && n_node.visibility != Visibility::Public);
                 modified_signatures.push(ModifiedSignatureRecord {
-                    symbol: key.qualified_name.clone(),
+                    symbol: format_symbol(n_node),
                     old_signature: o_node.signature.clone(),
                     new_signature: n_node.signature.clone(),
                     old_visibility: o_node.visibility,
                     new_visibility: n_node.visibility,
                     breaking_candidate: breaking,
+                });
+            }
+        } else if let Some(o_node) = old_by_slot.get(&api_node_base(n_node, key.disambiguator)) {
+            if o_node.signature != n_node.signature || o_node.visibility != n_node.visibility {
+                modified_signatures.push(ModifiedSignatureRecord {
+                    symbol: format_symbol(n_node),
+                    old_signature: o_node.signature.clone(),
+                    new_signature: n_node.signature.clone(),
+                    old_visibility: o_node.visibility,
+                    new_visibility: n_node.visibility,
+                    breaking_candidate: true,
                 });
             }
         } else {
@@ -226,7 +294,9 @@ pub fn diff_public_api(old_graph: &Graph, new_graph: &Graph) -> ApiDiffSummary {
     }
 
     for (key, o_node) in &old_pub {
-        if !new_pub.contains_key(key) {
+        if !new_pub.contains_key(key)
+            && !new_by_slot.contains_key(&api_node_base(o_node, key.disambiguator))
+        {
             removed_public_symbols.push((*o_node).clone());
         }
     }
@@ -240,4 +310,11 @@ pub fn diff_public_api(old_graph: &Graph, new_graph: &Graph) -> ApiDiffSummary {
         removed_public_symbols,
         modified_signatures,
     }
+}
+
+fn format_symbol(node: &Node) -> String {
+    node.signature.as_ref().map_or_else(
+        || node.qualified_name.clone(),
+        |signature| format!("{}{}", node.qualified_name, signature),
+    )
 }

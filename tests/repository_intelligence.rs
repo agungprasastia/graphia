@@ -1,3 +1,6 @@
+use graphia::analysis::advanced::{
+    ArchitectureRulesConfig, LayerDefinition, check_architecture_boundaries,
+};
 use graphia::cli::{Cli, CliFormat, CliNodeKind, Commands, run};
 use graphia::graph::Graph;
 use graphia::intelligence::{
@@ -452,6 +455,55 @@ fn test_architecture_overview_template() {
     assert_eq!(arch.entrypoints.len(), 1);
     assert_eq!(arch.cycle_count, 1);
     assert!(!arch.high_centrality_modules.is_empty());
+}
+
+#[test]
+fn test_architecture_matching_respects_segments_and_specificity() {
+    let domain = make_node(
+        "model",
+        "src/domain/model.rs",
+        NodeKind::Function,
+        Some(Language::Rust),
+    );
+    let domainish = make_node(
+        "helper",
+        "src/domainish.rs",
+        NodeKind::Function,
+        Some(Language::Rust),
+    );
+    let app = make_node(
+        "main",
+        "src/app/main.rs",
+        NodeKind::Function,
+        Some(Language::Rust),
+    );
+    let graph = Graph::new(
+        vec![domain.clone(), domainish.clone(), app.clone()],
+        vec![make_edge(app.id, domain.id, EdgeKind::Calls)],
+    );
+    let config = ArchitectureRulesConfig {
+        layers: vec![
+            LayerDefinition {
+                name: "broad".into(),
+                path_patterns: vec!["src/**".into()],
+                allowed_dependencies: vec![],
+            },
+            LayerDefinition {
+                name: "domain".into(),
+                path_patterns: vec!["src/domain/**".into()],
+                allowed_dependencies: vec![],
+            },
+            LayerDefinition {
+                name: "app".into(),
+                path_patterns: vec!["src/app/**".into()],
+                allowed_dependencies: vec!["domain".into()],
+            },
+        ],
+    };
+    let report = check_architecture_boundaries(&graph, &config);
+    assert!(report.passed);
+    assert_eq!(report.violations_count, 0);
+    assert_eq!(domainish.file, "src/domainish.rs");
 }
 
 #[test]

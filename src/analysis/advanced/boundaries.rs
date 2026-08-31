@@ -134,29 +134,58 @@ fn get_node_layer(file_path: &str, config: &ArchitectureRulesConfig) -> Option<S
     let mut matches = config
         .layers
         .iter()
-        .filter(|layer| {
-            layer.path_patterns.iter().any(|pattern| {
-                let pattern = pattern.trim_matches('/');
-                if pattern.is_empty() {
-                    return false;
-                }
-                if pattern.contains('/') {
-                    norm == pattern || norm.ends_with(&format!("/{pattern}"))
-                } else {
-                    segments.iter().any(|segment| {
-                        *segment == pattern || wildcard_segment_matches(segment, pattern)
+        .filter_map(|layer| {
+            let score = layer
+                .path_patterns
+                .iter()
+                .filter_map(|pattern| {
+                    let pattern = pattern.trim_matches('/');
+                    if pattern.is_empty() {
+                        return None;
+                    }
+                    let matched = if pattern.contains('/') {
+                        glob_path_matches(&norm, pattern)
+                    } else {
+                        segments.iter().any(|segment| {
+                            *segment == pattern || wildcard_segment_matches(segment, pattern)
+                        })
+                    };
+                    matched.then(|| {
+                        pattern
+                            .split('/')
+                            .filter(|s| !s.is_empty() && *s != "**")
+                            .count()
                     })
-                }
-            })
+                })
+                .max();
+            score.map(|score| (layer.name.clone(), score))
         })
-        .map(|layer| layer.name.clone())
         .collect::<Vec<_>>();
 
-    // A path matching more than one layer is intentionally unclassified. This
-    // prevents configuration order from becoming hidden semantic precedence.
-    matches.sort();
-    matches.dedup();
-    (matches.len() == 1).then(|| matches.remove(0))
+    matches.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    matches.first().map(|(name, _)| name.clone())
+}
+
+fn glob_path_matches(path: &str, pattern: &str) -> bool {
+    let path_segments: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
+    let pattern_segments: Vec<&str> = pattern.split('/').filter(|s| !s.is_empty()).collect();
+    if pattern_segments.last() == Some(&"**") {
+        path_segments.len() >= pattern_segments.len() - 1
+            && pattern_segments[..pattern_segments.len() - 1]
+                .iter()
+                .zip(path_segments.iter())
+                .all(|(pattern, segment)| {
+                    *segment == *pattern || wildcard_segment_matches(segment, pattern)
+                })
+    } else {
+        path_segments.len() == pattern_segments.len()
+            && pattern_segments
+                .iter()
+                .zip(path_segments.iter())
+                .all(|(pattern, segment)| {
+                    *segment == *pattern || wildcard_segment_matches(segment, pattern)
+                })
+    }
 }
 
 fn wildcard_segment_matches(segment: &str, pattern: &str) -> bool {

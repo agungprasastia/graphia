@@ -21,7 +21,9 @@ pub use dataflow::{
 };
 pub use dead_code::{DeadCodeCandidate, DeadCodeReport, detect_dead_code_candidates};
 pub use diff::{ApiDiffSummary, GraphDiffSummary, NodeModification, diff_graphs, diff_public_api};
-pub use history::{FileChurn, GitCommitRecord, GitHistorySummary, analyze_git_history};
+pub use history::{
+    FileChurn, GitCommitRecord, GitHistoryResult, GitHistorySummary, analyze_git_history,
+};
 pub use typeflow::{
     AssignmentEdge, AssignmentFlow, CallArgumentFlow, LocalBinding, LocalFlowGraph, ParameterFlow,
     ProceduralTypeFlow, ReturnFlow, extract_intraprocedural_typeflow, extract_local_flow_graph,
