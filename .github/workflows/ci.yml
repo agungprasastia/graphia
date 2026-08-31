@@ -36,6 +36,14 @@ jobs:
       - name: Format check
         run: cargo fmt --check
 
+      - name: Repository suppression audit
+        shell: bash
+        run: |
+          if rg -n -U '#!?\[allow\([\s\S]{0,180}?\)\]|#!\[allow\(' src tests benches Cargo.toml 2>/dev/null; then
+            echo "Forbidden warning suppression found"
+            exit 1
+          fi
+
       - name: Cargo check
         run: cargo check --all-targets --all-features
 
@@ -47,3 +55,8 @@ jobs:
 
       - name: Run benchmark harness (compile & test execution)
         run: cargo bench --no-run
+
+      - name: Isolated benchmark smoke
+        run: cargo bench --bench performance -- --stage clean_build --scale Small
+        env:
+          GRAPHIA_RUN_BENCH: "1"

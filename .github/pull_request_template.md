@@ -11,3 +11,7 @@
 - [ ] `cargo clippy --all-targets --all-features -- -D warnings` has 0 warnings
 - [ ] `cargo fmt --check` has no diffs
 - [ ] Tests added for new behavior / fixtures updated
+- [ ] Repository-wide warning suppression audit is clean
+- [ ] Incremental changes compare equal to authoritative clean build where applicable
+- [ ] Data-flow changes distinguish value flow from structural graph edges
+- [ ] MCP/benchmark changes preserve bounded concurrency and explicit unavailable metrics
