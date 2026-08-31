@@ -101,7 +101,9 @@ impl DaemonServer {
                 if status == QueueStatus::OverflowDirty {
                     // Reconcile immediately, but never clear dirty state after a
                     // failed recovery. The previous snapshot remains authoritative.
-                    match self.state_manager.reconcile() {
+                        match self.state_manager.reconcile_with_reason(
+                            queue.dirty_reason().unwrap_or("watcher queue overflow"),
+                        ) {
                         Ok(_) => queue.clear_dirty(),
                         Err(error) => {
                             eprintln!("[graphia-daemon] recovery failed: {error}");
@@ -154,6 +156,7 @@ impl DaemonServer {
 
     pub fn write_status_file(&self, pending_events: usize, dirty: bool) -> Result<()> {
         let snap = self.state_manager.read_snapshot();
+        let update = self.state_manager.last_update_summary();
         let status = DaemonStatusInfo {
             running: true,
             pid: std::process::id(),
@@ -166,6 +169,10 @@ impl DaemonServer {
             pending_events,
             health: self.state_manager.health(),
             fallback_reconcile_count: self.state_manager.fallback_reconcile_count(),
+            files_reparsed: update.as_ref().map_or(0, |summary| summary.files_reparsed),
+            affected_files: update.as_ref().map_or(0, |summary| summary.affected_files.len()),
+            fallback_used: update.as_ref().is_some_and(|summary| summary.fallback_used),
+            fallback_reason: update.and_then(|summary| summary.fallback_reason),
         };
 
         let json = to_vec_pretty(&status).map_err(|e| GraphiaError::Storage {

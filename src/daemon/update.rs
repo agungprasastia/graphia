@@ -12,6 +12,7 @@ pub struct UpdateQueue {
     capacity: usize,
     queue: VecDeque<SemanticAction>,
     dirty: bool,
+    dirty_reason: Option<String>,
 }
 
 impl UpdateQueue {
@@ -21,6 +22,7 @@ impl UpdateQueue {
             capacity,
             queue: VecDeque::with_capacity(capacity),
             dirty: false,
+            dirty_reason: None,
         }
     }
 
@@ -32,6 +34,7 @@ impl UpdateQueue {
 
         if self.queue.len() + actions.len() > self.capacity {
             self.dirty = true;
+            self.dirty_reason = Some("watcher queue overflow".to_string());
             self.queue.clear();
             return QueueStatus::OverflowDirty;
         }
@@ -80,7 +83,13 @@ impl UpdateQueue {
     /// Clear dirty flag after a full reconciliation scan.
     pub fn clear_dirty(&mut self) {
         self.dirty = false;
+        self.dirty_reason = None;
         self.queue.clear();
+    }
+
+    #[must_use]
+    pub fn dirty_reason(&self) -> Option<&str> {
+        self.dirty_reason.as_deref()
     }
 }
 

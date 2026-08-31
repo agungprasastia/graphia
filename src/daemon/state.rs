@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use crate::daemon::debounce::SemanticAction;
 use crate::error::Result;
 use crate::graph::Graph;
-use crate::incremental::IncrementalWorkspace;
+use crate::incremental::{IncrementalUpdateSummary, IncrementalWorkspace};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct GraphGeneration(pub u64);
@@ -51,6 +51,10 @@ pub struct DaemonStatusInfo {
     pub pending_events: usize,
     pub health: DaemonHealth,
     pub fallback_reconcile_count: usize,
+    pub files_reparsed: usize,
+    pub affected_files: usize,
+    pub fallback_used: bool,
+    pub fallback_reason: Option<String>,
 }
 
 pub struct LiveStateManager {
@@ -58,6 +62,7 @@ pub struct LiveStateManager {
     current_snapshot: Arc<RwLock<LiveSnapshot>>,
     workspace: Arc<RwLock<IncrementalWorkspace>>,
     health: Arc<RwLock<DaemonHealth>>,
+    last_update: Arc<RwLock<Option<IncrementalUpdateSummary>>>,
 }
 
 impl LiveStateManager {
@@ -87,6 +92,7 @@ impl LiveStateManager {
             current_snapshot: Arc::new(RwLock::new(initial_snapshot)),
             workspace: Arc::new(RwLock::new(ws)),
             health: Arc::new(RwLock::new(DaemonHealth::Healthy)),
+            last_update: Arc::new(RwLock::new(None)),
         })
     }
 
@@ -116,12 +122,14 @@ impl LiveStateManager {
         // Apply against a clone so a parse or filesystem error cannot corrupt the
         // last valid workspace while preserving its published generation.
         let mut candidate = ws.clone();
-        match candidate.apply_changes(actions) {
-            Ok(dirty) => {
+        match candidate.apply_changes_selective(actions) {
+            Ok(summary) => {
+                let dirty = !summary.affected_files.is_empty();
                 if dirty {
                     self.update_graph(candidate.graph.clone());
                     *ws = candidate;
                 }
+                *self.last_update.write().expect("last update lock") = Some(summary);
                 self.set_health(DaemonHealth::Healthy);
                 Ok(dirty)
             }
@@ -158,8 +166,13 @@ impl LiveStateManager {
 
     /// Run full or incremental reconciliation against filesystem.
     pub fn reconcile(&self) -> Result<GraphGeneration> {
+        self.reconcile_with_reason("manual or watcher recovery")
+    }
+
+    pub fn reconcile_with_reason(&self, reason: &str) -> Result<GraphGeneration> {
         self.set_health(DaemonHealth::Recovering);
         let mut ws = self.workspace.write().expect("workspace write lock");
+        ws.fallback_reason = Some(reason.to_string());
         ws.reconcile_full()?;
         let next_generation = self.update_graph(ws.graph.clone());
         self.set_health(DaemonHealth::Healthy);
@@ -172,6 +185,11 @@ impl LiveStateManager {
             .read()
             .expect("workspace read lock")
             .fallback_reconcile_count
+    }
+
+    #[must_use]
+    pub fn last_update_summary(&self) -> Option<IncrementalUpdateSummary> {
+        self.last_update.read().expect("last update lock").clone()
     }
 
     #[must_use]
