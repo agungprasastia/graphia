@@ -103,9 +103,8 @@ impl DaemonServer {
 
             // If we have items in queue, process them
             if !queue.is_empty() && !queue.is_dirty() {
-                let _actions = queue.drain_all();
-                // Perform incremental update
-                let _ = self.state_manager.reconcile();
+                let actions = queue.drain_all();
+                let _ = self.state_manager.apply_actions(&actions);
                 self.write_status_file(queue.len(), queue.is_dirty())?;
             }
 
@@ -139,6 +138,8 @@ impl DaemonServer {
             last_update_ms: snap.timestamp_ms,
             dirty,
             pending_events,
+            health: self.state_manager.health(),
+            fallback_reconcile_count: 0,
         };
 
         let json = to_vec_pretty(&status).map_err(|e| GraphiaError::Storage {

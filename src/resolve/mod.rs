@@ -127,6 +127,7 @@ impl ResolutionEngine {
 
             self.scope_tree
                 .define_symbol(scope_for_symbol, &node.name, node.id);
+            self.scope_tree.bind_node_scope(node.id, scope_for_symbol);
 
             if let Some(parent) = &parsed_parent {
                 self.type_members

@@ -1,35 +1,23 @@
 use tree_sitter::{Node as TsNode, Parser, Tree};
 
 use crate::error::{GraphiaError, Result};
-use crate::model::{Language as GraphiaLanguage, NodeKind, SourceLocation};
+use crate::model::{Language as GraphiaLanguage, NodeKind, SourceLocation, Visibility};
 use crate::parse::analyzer::LanguageAnalyzer;
-use crate::parser::{Call, Import, ParsedFile, Symbol};
+use crate::parser::{
+    Call, Definition, Export, Import, ParsedFile, Reference, Symbol, normalize_signature,
+};
 
-pub struct RubyAnalyzer {
-    language: GraphiaLanguage,
-}
-
-impl Default for RubyAnalyzer {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+pub struct RubyAnalyzer;
 
 impl RubyAnalyzer {
     #[must_use]
     pub fn new() -> Self {
-        Self {
-            language: GraphiaLanguage::Ruby,
-        }
-    }
-
-    fn ts_language(&self) -> tree_sitter::Language {
-        tree_sitter_ruby::LANGUAGE.into()
+        Self
     }
 
     fn parse_tree(&self, source: &[u8]) -> Option<Tree> {
         let mut parser = Parser::new();
-        let ts_lang = self.ts_language();
+        let ts_lang = tree_sitter_ruby::LANGUAGE.into();
         if let Err(error) = parser.set_language(&ts_lang) {
             eprintln!("set language failed: {error:?}");
             return None;
@@ -38,9 +26,15 @@ impl RubyAnalyzer {
     }
 }
 
+impl Default for RubyAnalyzer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl LanguageAnalyzer for RubyAnalyzer {
     fn language(&self) -> GraphiaLanguage {
-        self.language
+        GraphiaLanguage::Ruby
     }
 
     fn analyze(&self, path: &str, source: &[u8]) -> Result<ParsedFile> {
@@ -91,6 +85,10 @@ pub fn parse_ruby(file: &str, root: &TsNode<'_>, source: &[u8]) -> ParsedFile {
     let mut symbols = Vec::new();
     let mut imports = Vec::new();
     let mut calls = Vec::new();
+    let mut definitions = Vec::new();
+    let mut references = Vec::new();
+    let mut exports = Vec::new();
+    let type_references = Vec::new();
     let mut stack: Vec<(TsNode<'_>, Option<String>)> = vec![(*root, None)];
 
     while let Some((node, parent_scope)) = stack.pop() {
@@ -106,12 +104,26 @@ pub fn parse_ruby(file: &str, root: &TsNode<'_>, source: &[u8]) -> ParsedFile {
                     symbols.push(Symbol {
                         kind: NodeKind::Module,
                         name: name.clone(),
-                        qualified_name: qualified,
-                        location: loc,
+                        qualified_name: qualified.clone(),
+                        location: loc.clone(),
                         parent: parent_scope.clone(),
-                        visibility: crate::model::Visibility::Public,
+                        visibility: Visibility::Public,
                         signature: None,
                         container: parent_scope.clone(),
+                    });
+                    definitions.push(Definition {
+                        kind: NodeKind::Module,
+                        name: name.clone(),
+                        qualified_name: qualified.clone(),
+                        location: loc.clone(),
+                        container: parent_scope.clone(),
+                        visibility: Visibility::Public,
+                        signature: None,
+                    });
+                    exports.push(Export {
+                        name: name.clone(),
+                        location: loc,
+                        target: Some(qualified),
                     });
 
                     if let Some(body) = node.child_by_field_name("body") {
@@ -133,12 +145,26 @@ pub fn parse_ruby(file: &str, root: &TsNode<'_>, source: &[u8]) -> ParsedFile {
                     symbols.push(Symbol {
                         kind: NodeKind::Class,
                         name: name.clone(),
-                        qualified_name: qualified,
-                        location: loc,
+                        qualified_name: qualified.clone(),
+                        location: loc.clone(),
                         parent: parent_scope.clone(),
-                        visibility: crate::model::Visibility::Public,
+                        visibility: Visibility::Public,
                         signature: None,
                         container: parent_scope.clone(),
+                    });
+                    definitions.push(Definition {
+                        kind: NodeKind::Class,
+                        name: name.clone(),
+                        qualified_name: qualified.clone(),
+                        location: loc.clone(),
+                        container: parent_scope.clone(),
+                        visibility: Visibility::Public,
+                        signature: None,
+                    });
+                    exports.push(Export {
+                        name: name.clone(),
+                        location: loc,
+                        target: Some(qualified),
                     });
 
                     if let Some(body) = node.child_by_field_name("body") {
@@ -158,47 +184,74 @@ pub fn parse_ruby(file: &str, root: &TsNode<'_>, source: &[u8]) -> ParsedFile {
                     let is_method = parent_scope.is_some();
                     let qualified = format!("{file}::{name}");
                     let loc = location_for_node(file, &node);
+
+                    let params_text = node
+                        .child_by_field_name("parameters")
+                        .map(|p| node_text(&p, source))
+                        .unwrap_or("()");
+                    let raw_sig = format!("{name}{params_text}");
+                    let sig = Some(normalize_signature(&raw_sig));
+
+                    let kind = if is_method {
+                        NodeKind::Method
+                    } else {
+                        NodeKind::Function
+                    };
+
                     symbols.push(Symbol {
-                        kind: if is_method {
-                            NodeKind::Method
-                        } else {
-                            NodeKind::Function
-                        },
+                        kind,
                         name: name.clone(),
                         qualified_name: qualified.clone(),
-                        location: loc,
+                        location: loc.clone(),
                         parent: parent_scope.clone(),
-                        visibility: crate::model::Visibility::Public,
-                        signature: None,
+                        visibility: Visibility::Public,
+                        signature: sig.clone(),
                         container: parent_scope.clone(),
+                    });
+                    definitions.push(Definition {
+                        kind,
+                        name: name.clone(),
+                        qualified_name: qualified.clone(),
+                        location: loc.clone(),
+                        container: parent_scope.clone(),
+                        visibility: Visibility::Public,
+                        signature: sig,
+                    });
+                    exports.push(Export {
+                        name: name.clone(),
+                        location: loc,
+                        target: Some(qualified.clone()),
                     });
 
                     if let Some(body) = node.child_by_field_name("body") {
                         extract_calls_ruby(file, &body, source, &qualified, &mut calls);
                     }
                 }
-                continue;
             }
-            "call" | "command" => {
-                // Check if this is require or require_relative
-                let text = node_text(&node, source).trim();
-                if text.starts_with("require ")
-                    || text.starts_with("require_relative ")
-                    || text.starts_with("require(")
-                    || text.starts_with("require_relative(")
-                {
+            "call" => {
+                let text = node_text(&node, source);
+                if text.starts_with("require ") || text.starts_with("require_relative ") {
+                    let path = text
+                        .trim_start_matches("require_relative")
+                        .trim_start_matches("require")
+                        .trim()
+                        .trim_matches(['"', '\''])
+                        .to_string();
                     let loc = location_for_node(file, &node);
-                    // extract string from argument
-                    if let Some(first_quote) = text.find(['\'', '"']) {
-                        let rest = &text[first_quote + 1..];
-                        if let Some(second_quote) = rest.find(['\'', '"']) {
-                            let path = rest[..second_quote].to_string();
-                            imports.push(Import {
-                                path,
-                                location: loc,
-                            });
-                        }
-                    }
+                    imports.push(Import {
+                        path,
+                        location: loc,
+                    });
+                }
+            }
+            "identifier" => {
+                let name = node_text(&node, source).to_string();
+                if !name.is_empty() {
+                    references.push(Reference {
+                        name,
+                        location: location_for_node(file, &node),
+                        caller: None,
+                    });
                 }
             }
             _ => {}
@@ -213,10 +266,10 @@ pub fn parse_ruby(file: &str, root: &TsNode<'_>, source: &[u8]) -> ParsedFile {
         symbols,
         imports,
         calls,
-        definitions: Vec::new(),
-        references: Vec::new(),
-        exports: Vec::new(),
-        type_references: Vec::new(),
+        definitions,
+        references,
+        exports,
+        type_references,
     }
 }
 
@@ -229,35 +282,14 @@ pub fn extract_calls_ruby(
 ) {
     let mut stack = vec![*node];
     while let Some(n) = stack.pop() {
-        let kind = n.kind();
-        if kind == "call" || kind == "command" || kind == "method_call" {
-            let mut callee_opt = None;
+        if n.kind() == "call" {
             if let Some(method_node) = n.child_by_field_name("method") {
-                callee_opt = Some(node_text(&method_node, source).to_string());
-            } else if let Some(name_node) = n.child_by_field_name("name") {
-                callee_opt = Some(node_text(&name_node, source).to_string());
-            } else if let Some(first_child) = n.child(0) {
-                let t = node_text(&first_child, source).trim().to_string();
-                if !t.is_empty()
-                    && t.chars()
-                        .next()
-                        .is_some_and(|c| c.is_alphabetic() || c == '_')
-                {
-                    callee_opt = Some(t);
-                }
-            }
-
-            if let Some(callee_raw) = callee_opt {
+                let callee_raw = node_text(&method_node, source).trim().to_string();
                 let simple = callee_raw
                     .rsplit('.')
                     .next()
                     .unwrap_or(&callee_raw)
-                    .rsplit("::")
-                    .next()
-                    .unwrap_or(&callee_raw)
-                    .trim()
                     .to_string();
-
                 if !simple.is_empty()
                     && simple != "require"
                     && simple != "require_relative"

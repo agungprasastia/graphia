@@ -21,7 +21,7 @@ use graphia::scan::scan_repo;
 use graphia::storage::{load_graph_binary, save_graph_binary, save_graph_json};
 use tempfile::TempDir;
 
-const ITERATIONS: usize = 1_000;
+const ITERATIONS: usize = 100;
 
 #[derive(Clone, Copy)]
 struct Dataset {
@@ -32,15 +32,15 @@ struct Dataset {
 const DATASETS: [Dataset; 3] = [
     Dataset {
         name: "small",
-        files: 3,
+        files: 10,
     },
     Dataset {
         name: "medium",
-        files: 12,
+        files: 50,
     },
     Dataset {
         name: "large",
-        files: 48,
+        files: 150,
     },
 ];
 

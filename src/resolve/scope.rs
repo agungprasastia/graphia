@@ -165,6 +165,10 @@ impl ScopeTree {
         self.node_to_scope.get(&node_id).copied()
     }
 
+    pub fn bind_node_scope(&mut self, node_id: NodeId, scope_id: usize) {
+        self.node_to_scope.insert(node_id, scope_id);
+    }
+
     /// Resolve a symbol name starting from a scope and walking up parent scopes (lexical shadowing).
     /// Returns the first matching symbol list found in the closest scope.
     #[must_use]

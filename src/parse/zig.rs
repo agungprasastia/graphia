@@ -1,35 +1,23 @@
 use tree_sitter::{Node as TsNode, Parser, Tree};
 
 use crate::error::{GraphiaError, Result};
-use crate::model::{Language as GraphiaLanguage, NodeKind, SourceLocation};
+use crate::model::{Language as GraphiaLanguage, NodeKind, SourceLocation, Visibility};
 use crate::parse::analyzer::LanguageAnalyzer;
-use crate::parser::{Call, Import, ParsedFile, Symbol};
+use crate::parser::{
+    Call, Definition, Export, Import, ParsedFile, Reference, Symbol, normalize_signature,
+};
 
-pub struct ZigAnalyzer {
-    language: GraphiaLanguage,
-}
-
-impl Default for ZigAnalyzer {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+pub struct ZigAnalyzer;
 
 impl ZigAnalyzer {
     #[must_use]
     pub fn new() -> Self {
-        Self {
-            language: GraphiaLanguage::Zig,
-        }
-    }
-
-    fn ts_language(&self) -> tree_sitter::Language {
-        tree_sitter_zig::LANGUAGE.into()
+        Self
     }
 
     fn parse_tree(&self, source: &[u8]) -> Option<Tree> {
         let mut parser = Parser::new();
-        let ts_lang = self.ts_language();
+        let ts_lang = tree_sitter_zig::LANGUAGE.into();
         if let Err(error) = parser.set_language(&ts_lang) {
             eprintln!("set language failed: {error:?}");
             return None;
@@ -38,9 +26,15 @@ impl ZigAnalyzer {
     }
 }
 
+impl Default for ZigAnalyzer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl LanguageAnalyzer for ZigAnalyzer {
     fn language(&self) -> GraphiaLanguage {
-        self.language
+        GraphiaLanguage::Zig
     }
 
     fn analyze(&self, path: &str, source: &[u8]) -> Result<ParsedFile> {
@@ -91,12 +85,22 @@ pub fn parse_zig(file: &str, root: &TsNode<'_>, source: &[u8]) -> ParsedFile {
     let mut symbols = Vec::new();
     let mut imports = Vec::new();
     let mut calls = Vec::new();
+    let mut definitions = Vec::new();
+    let mut references = Vec::new();
+    let mut exports = Vec::new();
+    let type_references = Vec::new();
     let mut stack: Vec<(TsNode<'_>, Option<String>)> = vec![(*root, None)];
 
     while let Some((node, parent_scope)) = stack.pop() {
         let kind_str = node.kind();
+        let is_pub = node_text(&node, source).trim_start().starts_with("pub ");
+        let vis = if is_pub {
+            Visibility::Public
+        } else {
+            Visibility::Private
+        };
+
         match kind_str {
-            // Function declaration: `pub fn foo(...) ...` or `fn bar(...) ...`
             "FnProto" | "FnDecl" | "function_declaration" | "function_signature" => {
                 let mut name_opt = None;
                 for child in children_vec(&node) {
@@ -109,22 +113,42 @@ pub fn parse_zig(file: &str, root: &TsNode<'_>, source: &[u8]) -> ParsedFile {
                     let is_method = parent_scope.is_some();
                     let qualified = format!("{file}::{name}");
                     let loc = location_for_node(file, &node);
+                    let raw_sig = format!("{name}()");
+                    let sig = Some(normalize_signature(&raw_sig));
+
+                    let kind = if is_method {
+                        NodeKind::Method
+                    } else {
+                        NodeKind::Function
+                    };
+
                     symbols.push(Symbol {
-                        kind: if is_method {
-                            NodeKind::Method
-                        } else {
-                            NodeKind::Function
-                        },
+                        kind,
                         name: name.clone(),
                         qualified_name: qualified.clone(),
-                        location: loc,
+                        location: loc.clone(),
                         parent: parent_scope.clone(),
-                        visibility: crate::model::Visibility::Public,
-                        signature: None,
+                        visibility: vis,
+                        signature: sig.clone(),
                         container: parent_scope.clone(),
                     });
+                    definitions.push(Definition {
+                        kind,
+                        name: name.clone(),
+                        qualified_name: qualified.clone(),
+                        location: loc.clone(),
+                        container: parent_scope.clone(),
+                        visibility: vis,
+                        signature: sig,
+                    });
+                    if is_pub {
+                        exports.push(Export {
+                            name: name.clone(),
+                            location: loc,
+                            target: Some(qualified.clone()),
+                        });
+                    }
 
-                    // Search for function body or block
                     for child in children_vec(&node) {
                         if child.kind() == "Block" || child.kind() == "block" {
                             extract_calls_zig(file, &child, source, &qualified, &mut calls);
@@ -132,7 +156,6 @@ pub fn parse_zig(file: &str, root: &TsNode<'_>, source: &[u8]) -> ParsedFile {
                     }
                 }
             }
-            // Variable / Constant declaration: `pub const MyStruct = struct { ... };` or `const x = @import("x");`
             "VarDecl" | "variable_declaration" => {
                 let full_text = node_text(&node, source);
                 let mut name_opt = None;
@@ -143,10 +166,8 @@ pub fn parse_zig(file: &str, root: &TsNode<'_>, source: &[u8]) -> ParsedFile {
                     }
                 }
 
-                // Check for @import extraction
                 if full_text.contains("@import") {
                     let loc = location_for_node(file, &node);
-                    // extract import path between quotes
                     if let Some(start_quote) = full_text.find("@import(\"") {
                         let rest = &full_text[start_quote + 9..];
                         if let Some(end_quote) = rest.find('"') {
@@ -168,7 +189,6 @@ pub fn parse_zig(file: &str, root: &TsNode<'_>, source: &[u8]) -> ParsedFile {
                     }
                 }
 
-                // Check if struct, enum, union or interface declaration
                 let is_struct_or_enum = full_text.contains("struct")
                     || full_text.contains("enum")
                     || full_text.contains("union")
@@ -177,8 +197,8 @@ pub fn parse_zig(file: &str, root: &TsNode<'_>, source: &[u8]) -> ParsedFile {
                 if let Some(name) = name_opt {
                     if is_struct_or_enum
                         && (full_text.contains("struct")
-                            || full_text.contains("union")
-                            || full_text.contains("enum"))
+                            || full_text.contains("enum")
+                            || full_text.contains("union"))
                     {
                         let qualified = format!("{file}::{name}");
                         let loc = location_for_node(file, &node);
@@ -187,18 +207,34 @@ pub fn parse_zig(file: &str, root: &TsNode<'_>, source: &[u8]) -> ParsedFile {
                         } else {
                             NodeKind::Struct
                         };
+
                         symbols.push(Symbol {
                             kind,
                             name: name.clone(),
-                            qualified_name: qualified,
-                            location: loc,
+                            qualified_name: qualified.clone(),
+                            location: loc.clone(),
                             parent: parent_scope.clone(),
-                            visibility: crate::model::Visibility::Public,
+                            visibility: vis,
                             signature: None,
                             container: parent_scope.clone(),
                         });
+                        definitions.push(Definition {
+                            kind,
+                            name: name.clone(),
+                            qualified_name: qualified.clone(),
+                            location: loc.clone(),
+                            container: parent_scope.clone(),
+                            visibility: vis,
+                            signature: None,
+                        });
+                        if is_pub {
+                            exports.push(Export {
+                                name: name.clone(),
+                                location: loc,
+                                target: Some(qualified),
+                            });
+                        }
 
-                        // Push inner children with this struct name as parent
                         for child in children_vec(&node).into_iter().rev() {
                             stack.push((child, Some(name.clone())));
                         }
@@ -206,10 +242,19 @@ pub fn parse_zig(file: &str, root: &TsNode<'_>, source: &[u8]) -> ParsedFile {
                     }
                 }
             }
+            "IDENTIFIER" | "identifier" => {
+                let name = node_text(&node, source).to_string();
+                if !name.is_empty() {
+                    references.push(Reference {
+                        name,
+                        location: location_for_node(file, &node),
+                        caller: None,
+                    });
+                }
+            }
             _ => {}
         }
 
-        // Generic fallback for function definitions embedded in container declarations
         for child in children_vec(&node).into_iter().rev() {
             stack.push((child, parent_scope.clone()));
         }
@@ -219,10 +264,10 @@ pub fn parse_zig(file: &str, root: &TsNode<'_>, source: &[u8]) -> ParsedFile {
         symbols,
         imports,
         calls,
-        definitions: Vec::new(),
-        references: Vec::new(),
-        exports: Vec::new(),
-        type_references: Vec::new(),
+        definitions,
+        references,
+        exports,
+        type_references,
     }
 }
 
@@ -235,36 +280,29 @@ pub fn extract_calls_zig(
 ) {
     let mut stack = vec![*node];
     while let Some(n) = stack.pop() {
-        let kind = n.kind();
-        if kind == "CallExpr" || kind == "call_expression" || kind == "FnCallArguments" {
-            // callee is either the first child or previous sibling depending on grammar
-            let callee_text = if let Some(func) = n.child_by_field_name("function") {
-                node_text(&func, source).trim().to_string()
-            } else if let Some(first) = n.child(0) {
-                node_text(&first, source).trim().to_string()
-            } else {
-                String::new()
-            };
-
-            let simple = callee_text
-                .rsplit('.')
-                .next()
-                .unwrap_or(&callee_text)
-                .trim();
-
-            if !simple.is_empty()
-                && !simple.starts_with('@')
-                && simple
-                    .chars()
-                    .next()
-                    .is_some_and(|c| c.is_alphabetic() || c == '_')
-            {
-                let loc = location_for_node(file, &n);
-                calls.push(Call {
-                    caller: caller.to_string(),
-                    callee: simple.to_string(),
-                    location: loc,
-                });
+        if n.kind() == "CallExpr" || n.kind() == "call_expression" {
+            let mut callee_opt = None;
+            for child in children_vec(&n) {
+                if child.kind() == "IDENTIFIER" || child.kind() == "identifier" {
+                    callee_opt = Some(node_text(&child, source).to_string());
+                    break;
+                }
+            }
+            if let Some(simple) = callee_opt {
+                if !simple.is_empty()
+                    && simple != "@import"
+                    && simple
+                        .chars()
+                        .next()
+                        .is_some_and(|c| c.is_alphabetic() || c == '_')
+                {
+                    let loc = location_for_node(file, &n);
+                    calls.push(Call {
+                        caller: caller.to_string(),
+                        callee: simple,
+                        location: loc,
+                    });
+                }
             }
         }
         for child in children_vec(&n).into_iter().rev() {

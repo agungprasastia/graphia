@@ -1,35 +1,23 @@
 use tree_sitter::{Node as TsNode, Parser, Tree};
 
 use crate::error::{GraphiaError, Result};
-use crate::model::{Language as GraphiaLanguage, NodeKind, SourceLocation};
+use crate::model::{Language as GraphiaLanguage, NodeKind, SourceLocation, Visibility};
 use crate::parse::analyzer::LanguageAnalyzer;
-use crate::parser::{Call, Import, ParsedFile, Symbol};
+use crate::parser::{
+    Call, Definition, Export, Import, ParsedFile, Reference, Symbol, normalize_signature,
+};
 
-pub struct PhpAnalyzer {
-    language: GraphiaLanguage,
-}
-
-impl Default for PhpAnalyzer {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+pub struct PhpAnalyzer;
 
 impl PhpAnalyzer {
     #[must_use]
     pub fn new() -> Self {
-        Self {
-            language: GraphiaLanguage::Php,
-        }
-    }
-
-    fn ts_language(&self) -> tree_sitter::Language {
-        tree_sitter_php::LANGUAGE_PHP.into()
+        Self
     }
 
     fn parse_tree(&self, source: &[u8]) -> Option<Tree> {
         let mut parser = Parser::new();
-        let ts_lang = self.ts_language();
+        let ts_lang = tree_sitter_php::LANGUAGE_PHP.into();
         if let Err(error) = parser.set_language(&ts_lang) {
             eprintln!("set language failed: {error:?}");
             return None;
@@ -38,9 +26,15 @@ impl PhpAnalyzer {
     }
 }
 
+impl Default for PhpAnalyzer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl LanguageAnalyzer for PhpAnalyzer {
     fn language(&self) -> GraphiaLanguage {
-        self.language
+        GraphiaLanguage::Php
     }
 
     fn analyze(&self, path: &str, source: &[u8]) -> Result<ParsedFile> {
@@ -91,12 +85,22 @@ pub fn parse_php(file: &str, root: &TsNode<'_>, source: &[u8]) -> ParsedFile {
     let mut symbols = Vec::new();
     let mut imports = Vec::new();
     let mut calls = Vec::new();
+    let mut definitions = Vec::new();
+    let mut references = Vec::new();
+    let mut exports = Vec::new();
+    let type_references = Vec::new();
     let mut stack: Vec<(TsNode<'_>, Option<String>)> = vec![(*root, None)];
 
     while let Some((node, parent_scope)) = stack.pop() {
+        let is_private = node_text(&node, source).contains("private ");
+        let vis = if is_private {
+            Visibility::Private
+        } else {
+            Visibility::Public
+        };
+
         match node.kind() {
             "namespace_definition" => {
-                // namespace App\Services;
                 let mut ns_name = None;
                 if let Some(name_node) = node.child_by_field_name("name") {
                     ns_name = Some(node_text(&name_node, source).to_string());
@@ -114,17 +118,25 @@ pub fn parse_php(file: &str, root: &TsNode<'_>, source: &[u8]) -> ParsedFile {
                     symbols.push(Symbol {
                         kind: NodeKind::Namespace,
                         name: name.clone(),
-                        qualified_name: qualified,
-                        location: loc,
+                        qualified_name: qualified.clone(),
+                        location: loc.clone(),
                         parent: None,
-                        visibility: crate::model::Visibility::Public,
+                        visibility: Visibility::Public,
                         signature: None,
                         container: None,
+                    });
+                    definitions.push(Definition {
+                        kind: NodeKind::Namespace,
+                        name,
+                        qualified_name: qualified,
+                        location: loc,
+                        container: None,
+                        visibility: Visibility::Public,
+                        signature: None,
                     });
                 }
             }
             "namespace_use_declaration" => {
-                // use App\Services\Helper;
                 let text = node_text(&node, source)
                     .trim()
                     .trim_end_matches(';')
@@ -154,39 +166,26 @@ pub fn parse_php(file: &str, root: &TsNode<'_>, source: &[u8]) -> ParsedFile {
                     symbols.push(Symbol {
                         kind: NodeKind::Class,
                         name: name.clone(),
-                        qualified_name: qualified,
-                        location: loc,
+                        qualified_name: qualified.clone(),
+                        location: loc.clone(),
                         parent: parent_scope.clone(),
-                        visibility: crate::model::Visibility::Public,
+                        visibility: Visibility::Public,
                         signature: None,
                         container: parent_scope.clone(),
                     });
-
-                    if let Some(body) = node.child_by_field_name("body") {
-                        for child in children_vec(&body).into_iter().rev() {
-                            stack.push((child, Some(name.clone())));
-                        }
-                        continue;
-                    }
-                }
-            }
-            "interface_declaration" => {
-                let mut name_opt = None;
-                if let Some(name_node) = node.child_by_field_name("name") {
-                    name_opt = Some(node_text(&name_node, source).to_string());
-                }
-                if let Some(name) = name_opt {
-                    let qualified = format!("{file}::{name}");
-                    let loc = location_for_node(file, &node);
-                    symbols.push(Symbol {
-                        kind: NodeKind::Interface,
+                    definitions.push(Definition {
+                        kind: NodeKind::Class,
                         name: name.clone(),
-                        qualified_name: qualified,
-                        location: loc,
-                        parent: parent_scope.clone(),
-                        visibility: crate::model::Visibility::Public,
-                        signature: None,
+                        qualified_name: qualified.clone(),
+                        location: loc.clone(),
                         container: parent_scope.clone(),
+                        visibility: Visibility::Public,
+                        signature: None,
+                    });
+                    exports.push(Export {
+                        name: name.clone(),
+                        location: loc,
+                        target: Some(qualified),
                     });
 
                     if let Some(body) = node.child_by_field_name("body") {
@@ -208,14 +207,27 @@ pub fn parse_php(file: &str, root: &TsNode<'_>, source: &[u8]) -> ParsedFile {
                     symbols.push(Symbol {
                         kind: NodeKind::Trait,
                         name: name.clone(),
-                        qualified_name: qualified,
-                        location: loc,
+                        qualified_name: qualified.clone(),
+                        location: loc.clone(),
                         parent: parent_scope.clone(),
-                        visibility: crate::model::Visibility::Public,
+                        visibility: Visibility::Public,
                         signature: None,
                         container: parent_scope.clone(),
                     });
-
+                    definitions.push(Definition {
+                        kind: NodeKind::Trait,
+                        name: name.clone(),
+                        qualified_name: qualified.clone(),
+                        location: loc.clone(),
+                        container: parent_scope.clone(),
+                        visibility: Visibility::Public,
+                        signature: None,
+                    });
+                    exports.push(Export {
+                        name: name.clone(),
+                        location: loc,
+                        target: Some(qualified),
+                    });
                     if let Some(body) = node.child_by_field_name("body") {
                         for child in children_vec(&body).into_iter().rev() {
                             stack.push((child, Some(name.clone())));
@@ -235,20 +247,61 @@ pub fn parse_php(file: &str, root: &TsNode<'_>, source: &[u8]) -> ParsedFile {
                     symbols.push(Symbol {
                         kind: NodeKind::Enum,
                         name: name.clone(),
-                        qualified_name: qualified,
-                        location: loc,
+                        qualified_name: qualified.clone(),
+                        location: loc.clone(),
                         parent: parent_scope.clone(),
-                        visibility: crate::model::Visibility::Public,
+                        visibility: Visibility::Public,
                         signature: None,
                         container: parent_scope.clone(),
                     });
-
-                    if let Some(body) = node.child_by_field_name("body") {
-                        for child in children_vec(&body).into_iter().rev() {
-                            stack.push((child, Some(name.clone())));
-                        }
-                        continue;
-                    }
+                    definitions.push(Definition {
+                        kind: NodeKind::Enum,
+                        name: name.clone(),
+                        qualified_name: qualified.clone(),
+                        location: loc.clone(),
+                        container: parent_scope.clone(),
+                        visibility: Visibility::Public,
+                        signature: None,
+                    });
+                    exports.push(Export {
+                        name: name.clone(),
+                        location: loc,
+                        target: Some(qualified),
+                    });
+                }
+            }
+            "interface_declaration" => {
+                let mut name_opt = None;
+                if let Some(name_node) = node.child_by_field_name("name") {
+                    name_opt = Some(node_text(&name_node, source).to_string());
+                }
+                if let Some(name) = name_opt {
+                    let qualified = format!("{file}::{name}");
+                    let loc = location_for_node(file, &node);
+                    symbols.push(Symbol {
+                        kind: NodeKind::Interface,
+                        name: name.clone(),
+                        qualified_name: qualified.clone(),
+                        location: loc.clone(),
+                        parent: parent_scope.clone(),
+                        visibility: Visibility::Public,
+                        signature: None,
+                        container: parent_scope.clone(),
+                    });
+                    definitions.push(Definition {
+                        kind: NodeKind::Interface,
+                        name: name.clone(),
+                        qualified_name: qualified.clone(),
+                        location: loc.clone(),
+                        container: parent_scope.clone(),
+                        visibility: Visibility::Public,
+                        signature: None,
+                    });
+                    exports.push(Export {
+                        name: name.clone(),
+                        location: loc,
+                        target: Some(qualified),
+                    });
                 }
             }
             "method_declaration" => {
@@ -259,22 +312,45 @@ pub fn parse_php(file: &str, root: &TsNode<'_>, source: &[u8]) -> ParsedFile {
                 if let Some(name) = name_opt {
                     let qualified = format!("{file}::{name}");
                     let loc = location_for_node(file, &node);
+
+                    let params_text = node
+                        .child_by_field_name("parameters")
+                        .map(|p| node_text(&p, source))
+                        .unwrap_or("()");
+                    let raw_sig = format!("{name}{params_text}");
+                    let sig = Some(normalize_signature(&raw_sig));
+
                     symbols.push(Symbol {
                         kind: NodeKind::Method,
                         name: name.clone(),
                         qualified_name: qualified.clone(),
-                        location: loc,
+                        location: loc.clone(),
                         parent: parent_scope.clone(),
-                        visibility: crate::model::Visibility::Public,
-                        signature: None,
+                        visibility: vis,
+                        signature: sig.clone(),
                         container: parent_scope.clone(),
                     });
+                    definitions.push(Definition {
+                        kind: NodeKind::Method,
+                        name: name.clone(),
+                        qualified_name: qualified.clone(),
+                        location: loc.clone(),
+                        container: parent_scope.clone(),
+                        visibility: vis,
+                        signature: sig,
+                    });
+                    if vis == Visibility::Public {
+                        exports.push(Export {
+                            name: name.clone(),
+                            location: loc,
+                            target: Some(qualified.clone()),
+                        });
+                    }
 
                     if let Some(body) = node.child_by_field_name("body") {
                         extract_calls_php(file, &body, source, &qualified, &mut calls);
                     }
                 }
-                continue;
             }
             "function_definition" => {
                 let mut name_opt = None;
@@ -282,29 +358,55 @@ pub fn parse_php(file: &str, root: &TsNode<'_>, source: &[u8]) -> ParsedFile {
                     name_opt = Some(node_text(&name_node, source).to_string());
                 }
                 if let Some(name) = name_opt {
-                    let is_method = parent_scope.is_some();
                     let qualified = format!("{file}::{name}");
                     let loc = location_for_node(file, &node);
+
+                    let params_text = node
+                        .child_by_field_name("parameters")
+                        .map(|p| node_text(&p, source))
+                        .unwrap_or("()");
+                    let raw_sig = format!("{name}{params_text}");
+                    let sig = Some(normalize_signature(&raw_sig));
+
                     symbols.push(Symbol {
-                        kind: if is_method {
-                            NodeKind::Method
-                        } else {
-                            NodeKind::Function
-                        },
+                        kind: NodeKind::Function,
                         name: name.clone(),
                         qualified_name: qualified.clone(),
-                        location: loc,
+                        location: loc.clone(),
                         parent: parent_scope.clone(),
-                        visibility: crate::model::Visibility::Public,
-                        signature: None,
+                        visibility: Visibility::Public,
+                        signature: sig.clone(),
                         container: parent_scope.clone(),
+                    });
+                    definitions.push(Definition {
+                        kind: NodeKind::Function,
+                        name: name.clone(),
+                        qualified_name: qualified.clone(),
+                        location: loc.clone(),
+                        container: parent_scope.clone(),
+                        visibility: Visibility::Public,
+                        signature: sig,
+                    });
+                    exports.push(Export {
+                        name: name.clone(),
+                        location: loc,
+                        target: Some(qualified.clone()),
                     });
 
                     if let Some(body) = node.child_by_field_name("body") {
                         extract_calls_php(file, &body, source, &qualified, &mut calls);
                     }
                 }
-                continue;
+            }
+            "name" | "variable_name" => {
+                let name = node_text(&node, source).to_string();
+                if !name.is_empty() {
+                    references.push(Reference {
+                        name,
+                        location: location_for_node(file, &node),
+                        caller: None,
+                    });
+                }
             }
             _ => {}
         }
@@ -318,10 +420,10 @@ pub fn parse_php(file: &str, root: &TsNode<'_>, source: &[u8]) -> ParsedFile {
         symbols,
         imports,
         calls,
-        definitions: Vec::new(),
-        references: Vec::new(),
-        exports: Vec::new(),
-        type_references: Vec::new(),
+        definitions,
+        references,
+        exports,
+        type_references,
     }
 }
 
@@ -334,60 +436,35 @@ pub fn extract_calls_php(
 ) {
     let mut stack = vec![*node];
     while let Some(n) = stack.pop() {
-        match n.kind() {
-            "function_call_expression" => {
-                if let Some(func) = n.child_by_field_name("function") {
-                    let callee_raw = node_text(&func, source).trim().to_string();
-                    let simple = callee_raw
-                        .rsplit('\\')
+        if n.kind() == "function_call_expression" || n.kind() == "member_call_expression" {
+            if let Some(func) = n
+                .child_by_field_name("function")
+                .or_else(|| n.child_by_field_name("name"))
+            {
+                let callee_raw = node_text(&func, source).trim().to_string();
+                let simple = callee_raw
+                    .rsplit("->")
+                    .next()
+                    .unwrap_or(&callee_raw)
+                    .rsplit("::")
+                    .next()
+                    .unwrap_or(&callee_raw)
+                    .to_string();
+                if !simple.is_empty()
+                    && simple
+                        .chars()
                         .next()
-                        .unwrap_or(&callee_raw)
-                        .rsplit("::")
-                        .next()
-                        .unwrap_or(&callee_raw)
-                        .rsplit("->")
-                        .next()
-                        .unwrap_or(&callee_raw)
-                        .to_string();
-
-                    if !simple.is_empty()
-                        && simple
-                            .chars()
-                            .next()
-                            .is_some_and(|c| c.is_alphabetic() || c == '_')
-                    {
-                        let loc = location_for_node(file, &n);
-                        calls.push(Call {
-                            caller: caller.to_string(),
-                            callee: simple,
-                            location: loc,
-                        });
-                    }
+                        .is_some_and(|c| c.is_alphabetic() || c == '_')
+                {
+                    let loc = location_for_node(file, &n);
+                    calls.push(Call {
+                        caller: caller.to_string(),
+                        callee: simple,
+                        location: loc,
+                    });
                 }
             }
-            "scoped_call_expression"
-            | "member_call_expression"
-            | "nullsafe_member_call_expression" => {
-                if let Some(name_node) = n.child_by_field_name("name") {
-                    let callee_raw = node_text(&name_node, source).trim().to_string();
-                    if !callee_raw.is_empty()
-                        && callee_raw
-                            .chars()
-                            .next()
-                            .is_some_and(|c| c.is_alphabetic() || c == '_')
-                    {
-                        let loc = location_for_node(file, &n);
-                        calls.push(Call {
-                            caller: caller.to_string(),
-                            callee: callee_raw,
-                            location: loc,
-                        });
-                    }
-                }
-            }
-            _ => {}
         }
-
         for child in children_vec(&n).into_iter().rev() {
             stack.push(child);
         }

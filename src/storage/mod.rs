@@ -65,6 +65,7 @@ pub fn build_graph_from_repo(root: &Path) -> Result<Graph> {
     let files = scan_repo(root)?;
     let parsed_files = parse_scanned_files(&files)?;
     let mut graph = build_graph(parsed_files);
+    graph.resolve_cross_file()?;
     graph.canonicalize()?;
     Ok(graph)
 }

@@ -1,35 +1,24 @@
 use tree_sitter::{Node as TsNode, Parser, Tree};
 
 use crate::error::{GraphiaError, Result};
-use crate::model::{Language as GraphiaLanguage, NodeKind, SourceLocation};
+use crate::model::{Language as GraphiaLanguage, NodeKind, SourceLocation, Visibility};
 use crate::parse::analyzer::LanguageAnalyzer;
-use crate::parser::{Call, Import, ParsedFile, Symbol};
+use crate::parser::{
+    Call, Definition, Export, Import, ParsedFile, Reference, Symbol, TypeReference,
+    normalize_signature,
+};
 
-pub struct JavaAnalyzer {
-    language: GraphiaLanguage,
-}
-
-impl Default for JavaAnalyzer {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+pub struct JavaAnalyzer;
 
 impl JavaAnalyzer {
     #[must_use]
     pub fn new() -> Self {
-        Self {
-            language: GraphiaLanguage::Java,
-        }
-    }
-
-    fn ts_language(&self) -> tree_sitter::Language {
-        tree_sitter_java::LANGUAGE.into()
+        Self
     }
 
     fn parse_tree(&self, source: &[u8]) -> Option<Tree> {
         let mut parser = Parser::new();
-        let ts_lang = self.ts_language();
+        let ts_lang = tree_sitter_java::LANGUAGE.into();
         if let Err(error) = parser.set_language(&ts_lang) {
             eprintln!("set language failed: {error:?}");
             return None;
@@ -38,9 +27,15 @@ impl JavaAnalyzer {
     }
 }
 
+impl Default for JavaAnalyzer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl LanguageAnalyzer for JavaAnalyzer {
     fn language(&self) -> GraphiaLanguage {
-        self.language
+        GraphiaLanguage::Java
     }
 
     fn analyze(&self, path: &str, source: &[u8]) -> Result<ParsedFile> {
@@ -91,13 +86,26 @@ pub fn parse_java(file: &str, root: &TsNode<'_>, source: &[u8]) -> ParsedFile {
     let mut symbols = Vec::new();
     let mut imports = Vec::new();
     let mut calls = Vec::new();
+    let mut definitions = Vec::new();
+    let mut references = Vec::new();
+    let mut exports = Vec::new();
+    let mut type_references = Vec::new();
     let mut stack: Vec<(TsNode<'_>, Option<String>)> = vec![(*root, None)];
 
     while let Some((node, parent_class)) = stack.pop() {
+        let is_public = node_text(&node, source).contains("public ");
+        let vis = if is_public {
+            Visibility::Public
+        } else if node_text(&node, source).contains("private ") {
+            Visibility::Private
+        } else if node_text(&node, source).contains("protected ") {
+            Visibility::Protected
+        } else {
+            Visibility::Package
+        };
+
         match node.kind() {
             "package_declaration" => {
-                // package com.example.service;
-                // identifier or scoped_identifier
                 for child in children_vec(&node) {
                     if child.kind() == "scoped_identifier" || child.kind() == "identifier" {
                         let name = node_text(&child, source).trim().to_string();
@@ -105,13 +113,22 @@ pub fn parse_java(file: &str, root: &TsNode<'_>, source: &[u8]) -> ParsedFile {
                         let loc = location_for_node(file, &node);
                         symbols.push(Symbol {
                             kind: NodeKind::Package,
+                            name: name.clone(),
+                            qualified_name: qualified.clone(),
+                            location: loc.clone(),
+                            parent: None,
+                            visibility: Visibility::Public,
+                            signature: None,
+                            container: None,
+                        });
+                        definitions.push(Definition {
+                            kind: NodeKind::Package,
                             name,
                             qualified_name: qualified,
                             location: loc,
-                            parent: None,
-                            visibility: crate::model::Visibility::Public,
-                            signature: None,
                             container: None,
+                            visibility: Visibility::Public,
+                            signature: None,
                         });
                         break;
                     }
@@ -141,36 +158,29 @@ pub fn parse_java(file: &str, root: &TsNode<'_>, source: &[u8]) -> ParsedFile {
                     symbols.push(Symbol {
                         kind: NodeKind::Class,
                         name: name.clone(),
-                        qualified_name: qualified,
-                        location: loc,
+                        qualified_name: qualified.clone(),
+                        location: loc.clone(),
                         parent: parent_class.clone(),
-                        visibility: crate::model::Visibility::Public,
+                        visibility: vis,
                         signature: None,
                         container: parent_class.clone(),
                     });
-                    if let Some(body) = node.child_by_field_name("body") {
-                        for child in children_vec(&body).into_iter().rev() {
-                            stack.push((child, Some(name.clone())));
-                        }
-                    }
-                }
-                continue;
-            }
-            "interface_declaration" => {
-                if let Some(name_node) = node.child_by_field_name("name") {
-                    let name = node_text(&name_node, source).to_string();
-                    let qualified = format!("{file}::{name}");
-                    let loc = location_for_node(file, &node);
-                    symbols.push(Symbol {
-                        kind: NodeKind::Interface,
+                    definitions.push(Definition {
+                        kind: NodeKind::Class,
                         name: name.clone(),
-                        qualified_name: qualified,
-                        location: loc,
-                        parent: parent_class.clone(),
-                        visibility: crate::model::Visibility::Public,
-                        signature: None,
+                        qualified_name: qualified.clone(),
+                        location: loc.clone(),
                         container: parent_class.clone(),
+                        visibility: vis,
+                        signature: None,
                     });
+                    if is_public {
+                        exports.push(Export {
+                            name: name.clone(),
+                            location: loc,
+                            target: Some(qualified),
+                        });
+                    }
                     if let Some(body) = node.child_by_field_name("body") {
                         for child in children_vec(&body).into_iter().rev() {
                             stack.push((child, Some(name.clone())));
@@ -187,17 +197,28 @@ pub fn parse_java(file: &str, root: &TsNode<'_>, source: &[u8]) -> ParsedFile {
                     symbols.push(Symbol {
                         kind: NodeKind::Struct,
                         name: name.clone(),
-                        qualified_name: qualified,
-                        location: loc,
+                        qualified_name: qualified.clone(),
+                        location: loc.clone(),
                         parent: parent_class.clone(),
-                        visibility: crate::model::Visibility::Public,
+                        visibility: vis,
                         signature: None,
                         container: parent_class.clone(),
                     });
-                    if let Some(body) = node.child_by_field_name("body") {
-                        for child in children_vec(&body).into_iter().rev() {
-                            stack.push((child, Some(name.clone())));
-                        }
+                    definitions.push(Definition {
+                        kind: NodeKind::Struct,
+                        name: name.clone(),
+                        qualified_name: qualified.clone(),
+                        location: loc.clone(),
+                        container: parent_class.clone(),
+                        visibility: vis,
+                        signature: None,
+                    });
+                    if is_public {
+                        exports.push(Export {
+                            name: name.clone(),
+                            location: loc,
+                            target: Some(qualified),
+                        });
                     }
                 }
                 continue;
@@ -210,38 +231,67 @@ pub fn parse_java(file: &str, root: &TsNode<'_>, source: &[u8]) -> ParsedFile {
                     symbols.push(Symbol {
                         kind: NodeKind::Enum,
                         name: name.clone(),
-                        qualified_name: qualified,
-                        location: loc,
+                        qualified_name: qualified.clone(),
+                        location: loc.clone(),
                         parent: parent_class.clone(),
-                        visibility: crate::model::Visibility::Public,
+                        visibility: vis,
                         signature: None,
                         container: parent_class.clone(),
                     });
-                    if let Some(body) = node.child_by_field_name("body") {
-                        for child in children_vec(&body).into_iter().rev() {
-                            stack.push((child, Some(name.clone())));
-                        }
+                    definitions.push(Definition {
+                        kind: NodeKind::Enum,
+                        name: name.clone(),
+                        qualified_name: qualified.clone(),
+                        location: loc.clone(),
+                        container: parent_class.clone(),
+                        visibility: vis,
+                        signature: None,
+                    });
+                    if is_public {
+                        exports.push(Export {
+                            name: name.clone(),
+                            location: loc,
+                            target: Some(qualified),
+                        });
                     }
                 }
                 continue;
             }
-            "method_declaration" => {
+            "interface_declaration" => {
                 if let Some(name_node) = node.child_by_field_name("name") {
                     let name = node_text(&name_node, source).to_string();
                     let qualified = format!("{file}::{name}");
                     let loc = location_for_node(file, &node);
                     symbols.push(Symbol {
-                        kind: NodeKind::Method,
+                        kind: NodeKind::Interface,
                         name: name.clone(),
                         qualified_name: qualified.clone(),
-                        location: loc,
+                        location: loc.clone(),
                         parent: parent_class.clone(),
-                        visibility: crate::model::Visibility::Public,
+                        visibility: vis,
                         signature: None,
                         container: parent_class.clone(),
                     });
+                    definitions.push(Definition {
+                        kind: NodeKind::Interface,
+                        name: name.clone(),
+                        qualified_name: qualified.clone(),
+                        location: loc.clone(),
+                        container: parent_class.clone(),
+                        visibility: vis,
+                        signature: None,
+                    });
+                    if is_public {
+                        exports.push(Export {
+                            name: name.clone(),
+                            location: loc,
+                            target: Some(qualified),
+                        });
+                    }
                     if let Some(body) = node.child_by_field_name("body") {
-                        extract_calls_java(file, &body, source, &qualified, &mut calls);
+                        for child in children_vec(&body).into_iter().rev() {
+                            stack.push((child, Some(name.clone())));
+                        }
                     }
                 }
                 continue;
@@ -251,21 +301,117 @@ pub fn parse_java(file: &str, root: &TsNode<'_>, source: &[u8]) -> ParsedFile {
                     let name = node_text(&name_node, source).to_string();
                     let qualified = format!("{file}::{name}");
                     let loc = location_for_node(file, &node);
+                    let params_text = node
+                        .child_by_field_name("parameters")
+                        .map(|p| node_text(&p, source))
+                        .unwrap_or("()");
+                    let raw_sig = format!("{name}{params_text}");
+                    let sig = Some(normalize_signature(&raw_sig));
+
                     symbols.push(Symbol {
                         kind: NodeKind::Constructor,
                         name: name.clone(),
                         qualified_name: qualified.clone(),
-                        location: loc,
+                        location: loc.clone(),
                         parent: parent_class.clone(),
-                        visibility: crate::model::Visibility::Public,
-                        signature: None,
+                        visibility: vis,
+                        signature: sig.clone(),
                         container: parent_class.clone(),
                     });
+                    definitions.push(Definition {
+                        kind: NodeKind::Constructor,
+                        name: name.clone(),
+                        qualified_name: qualified.clone(),
+                        location: loc.clone(),
+                        container: parent_class.clone(),
+                        visibility: vis,
+                        signature: sig,
+                    });
+                    if is_public {
+                        exports.push(Export {
+                            name: name.clone(),
+                            location: loc,
+                            target: Some(qualified.clone()),
+                        });
+                    }
                     if let Some(body) = node.child_by_field_name("body") {
                         extract_calls_java(file, &body, source, &qualified, &mut calls);
                     }
                 }
                 continue;
+            }
+            "method_declaration" => {
+                if let Some(name_node) = node.child_by_field_name("name") {
+                    let name = node_text(&name_node, source).to_string();
+                    let qualified = format!("{file}::{name}");
+                    let loc = location_for_node(file, &node);
+
+                    let params_text = node
+                        .child_by_field_name("parameters")
+                        .map(|p| node_text(&p, source))
+                        .unwrap_or("()");
+                    let return_type = node
+                        .child_by_field_name("type")
+                        .map(|r| node_text(&r, source).trim())
+                        .unwrap_or("");
+                    let raw_sig = if return_type.is_empty() {
+                        format!("{name}{params_text}")
+                    } else {
+                        format!("{name}{params_text}->{return_type}")
+                    };
+                    let sig = Some(normalize_signature(&raw_sig));
+
+                    symbols.push(Symbol {
+                        kind: NodeKind::Method,
+                        name: name.clone(),
+                        qualified_name: qualified.clone(),
+                        location: loc.clone(),
+                        parent: parent_class.clone(),
+                        visibility: vis,
+                        signature: sig.clone(),
+                        container: parent_class.clone(),
+                    });
+                    definitions.push(Definition {
+                        kind: NodeKind::Method,
+                        name: name.clone(),
+                        qualified_name: qualified.clone(),
+                        location: loc.clone(),
+                        container: parent_class.clone(),
+                        visibility: vis,
+                        signature: sig,
+                    });
+                    if is_public {
+                        exports.push(Export {
+                            name: name.clone(),
+                            location: loc,
+                            target: Some(qualified.clone()),
+                        });
+                    }
+                    if let Some(body) = node.child_by_field_name("body") {
+                        extract_calls_java(file, &body, source, &qualified, &mut calls);
+                    }
+                }
+                continue;
+            }
+            "type_identifier" => {
+                let name = node_text(&node, source).to_string();
+                if !name.is_empty() {
+                    type_references.push(TypeReference {
+                        name,
+                        location: location_for_node(file, &node),
+                        container: parent_class.clone(),
+                    });
+                }
+            }
+            "identifier" => {
+                let name = node_text(&node, source).to_string();
+                if !name.is_empty() {
+                    references.push(Reference {
+                        name,
+                        location: location_for_node(file, &node),
+                        caller: None,
+                    });
+                }
             }
             _ => {}
         }
@@ -279,10 +425,10 @@ pub fn parse_java(file: &str, root: &TsNode<'_>, source: &[u8]) -> ParsedFile {
         symbols,
         imports,
         calls,
-        definitions: Vec::new(),
-        references: Vec::new(),
-        exports: Vec::new(),
-        type_references: Vec::new(),
+        definitions,
+        references,
+        exports,
+        type_references,
     }
 }
 
@@ -295,63 +441,40 @@ pub fn extract_calls_java(
 ) {
     let mut stack = vec![*node];
     while let Some(n) = stack.pop() {
-        match n.kind() {
-            "method_invocation" => {
-                if let Some(name_node) = n.child_by_field_name("name") {
-                    let callee = node_text(&name_node, source).trim().to_string();
-                    if !callee.is_empty()
-                        && callee
-                            .chars()
-                            .next()
-                            .is_some_and(|c| c.is_alphabetic() || c == '_')
-                    {
-                        let loc = location_for_node(file, &n);
-                        calls.push(Call {
-                            caller: caller.to_string(),
-                            callee,
-                            location: loc,
-                        });
-                    }
-                }
-            }
-            "object_creation_expression" => {
-                if let Some(type_node) = n.child_by_field_name("type") {
-                    let callee_raw = node_text(&type_node, source).trim().to_string();
-                    let simple = callee_raw
-                        .rsplit('.')
+        if n.kind() == "method_invocation" {
+            if let Some(name_node) = n.child_by_field_name("name") {
+                let simple = node_text(&name_node, source).trim().to_string();
+                if !simple.is_empty()
+                    && simple
+                        .chars()
                         .next()
-                        .unwrap_or(&callee_raw)
-                        .to_string();
-                    if !simple.is_empty()
-                        && simple
-                            .chars()
-                            .next()
-                            .is_some_and(|c| c.is_alphabetic() || c == '_')
-                    {
-                        let loc = location_for_node(file, &n);
-                        calls.push(Call {
-                            caller: caller.to_string(),
-                            callee: simple,
-                            location: loc,
-                        });
-                    }
+                        .is_some_and(|c| c.is_alphabetic() || c == '_')
+                {
+                    let loc = location_for_node(file, &n);
+                    calls.push(Call {
+                        caller: caller.to_string(),
+                        callee: simple,
+                        location: loc,
+                    });
                 }
             }
-            "explicit_constructor_invocation" => {
-                // this(...) or super(...)
-                if let Some(constructor) = n.child_by_field_name("constructor") {
-                    let callee = node_text(&constructor, source).trim().to_string();
-                    if !callee.is_empty() {
-                        let loc = location_for_node(file, &n);
-                        calls.push(Call {
-                            caller: caller.to_string(),
-                            callee,
-                            location: loc,
-                        });
-                    }
+        } else if n.kind() == "object_creation_expression" {
+            if let Some(type_node) = n.child_by_field_name("type") {
+                let simple = node_text(&type_node, source).trim().to_string();
+                if !simple.is_empty()
+                    && simple
+                        .chars()
+                        .next()
+                        .is_some_and(|c| c.is_alphabetic() || c == '_')
+                {
+                    let loc = location_for_node(file, &n);
+                    calls.push(Call {
+                        caller: caller.to_string(),
+                        callee: simple,
+                        location: loc,
+                    });
                 }
             }
-            _ => {}
         }
         for child in children_vec(&n).into_iter().rev() {
             stack.push(child);

@@ -260,18 +260,18 @@ graphia api diff old_index.bin new_index.bin
 
 Measurements taken on representative multi-language repository fixtures (AMD Ryzen 9 / Apple Silicon baseline):
 
-| Benchmark Stage | Small (3 files, 12 nodes) | Medium (12 files, 48 nodes) | Large (48 files, 192 nodes) |
+| Benchmark Stage | Small (10 files, 40 nodes) | Medium (50 files, 200 nodes) | Large (150 files, 600 nodes) |
 |---|---|---|---|
-| **Scan Latency** | 0.54 ms | 0.45 ms | 1.06 ms |
-| **Parse & Extract (16 Langs)** | 38.71 ms | 45.48 ms | 65.15 ms |
-| **Graph Resolution** | 1.46 ms | 0.89 ms | 1.19 ms |
-| **Exact Query** | 0.48 µs | 0.35 µs | 0.11 µs |
-| **BFS Path Traversal** | 1.46 µs | 0.78 µs | 0.59 µs |
-| **Structural Search** | 27.05 µs | 36.19 µs | 170.50 µs |
-| **Impact Traversal** | 26.00 µs | 34.27 µs | 128.23 µs |
-| **AI Context Generation** | 232.33 µs | 119.84 µs | 224.62 µs |
-| **MCP Tool Invocation** | 11.06 µs | 26.71 µs | 102.70 µs |
-| **Live Snapshot Publish** | 5.81 µs | 17.15 µs | 87.35 µs |
+| **Scan Latency** | 2.40 ms | 0.91 ms | 0.93 ms |
+| **Parse & Extract (16 Langs)** | 25.16 ms | 28.56 ms | 87.30 ms |
+| **Graph Resolution** | 6.19 ms | 17.21 ms | 31.73 ms |
+| **Exact Query** | 5.30 µs | 1.54 µs | 1.20 µs |
+| **BFS Path Traversal** | 12.64 µs | 10.34 µs | 7.80 µs |
+| **Structural Search** | 198.11 µs | 1.02 ms | 3.17 ms |
+| **Impact Traversal** | 288.25 µs | 1.20 ms | 3.84 ms |
+| **AI Context Generation** | 398.24 µs | 1.35 ms | 3.88 ms |
+| **MCP Tool Invocation** | 236.00 µs | 1.11 ms | 3.74 ms |
+| **Live Snapshot Publish** | 72.89 µs | 484.30 µs | 1.14 ms |
 
 ---
 
@@ -281,7 +281,7 @@ Graphia enforces a strict zero-warning policy:
 - `compiler warnings = 0`
 - `clippy warnings = 0` (`cargo clippy --all-targets --all-features -- -D warnings`)
 - Format compliance: `cargo fmt --check`
-- 100% test pass rate across all 15 integration and unit test suites (145+ total automated tests).
+- 100% test pass rate across all 21 integration and unit test suites (160+ total automated tests).
 
 ```bash
 # Run all tests

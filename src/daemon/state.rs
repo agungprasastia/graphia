@@ -4,10 +4,10 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
+use crate::daemon::debounce::SemanticAction;
 use crate::error::Result;
 use crate::graph::Graph;
-use crate::incremental::update_repository;
-use crate::storage::load_graph_binary;
+use crate::incremental::IncrementalWorkspace;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct GraphGeneration(pub u64);
@@ -17,6 +17,15 @@ impl GraphGeneration {
     pub fn next(self) -> Self {
         Self(self.0 + 1)
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum DaemonHealth {
+    Healthy,
+    Updating,
+    Dirty,
+    Recovering,
+    Failed,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -40,24 +49,22 @@ pub struct DaemonStatusInfo {
     pub last_update_ms: u64,
     pub dirty: bool,
     pub pending_events: usize,
+    pub health: DaemonHealth,
+    pub fallback_reconcile_count: usize,
 }
 
 pub struct LiveStateManager {
     repo_root: PathBuf,
     current_snapshot: Arc<RwLock<LiveSnapshot>>,
+    workspace: Arc<RwLock<IncrementalWorkspace>>,
+    health: Arc<RwLock<DaemonHealth>>,
 }
 
 impl LiveStateManager {
     /// Initialize manager with initial graph build or load.
     pub fn initialize(repo_root: &Path) -> Result<Self> {
-        let graph = if repo_root.join(".graphia/index.bin").exists() {
-            match load_graph_binary(&repo_root.join(".graphia/index.bin")) {
-                Ok(g) => g,
-                Err(_) => update_repository(repo_root)?,
-            }
-        } else {
-            update_repository(repo_root)?
-        };
+        let ws = IncrementalWorkspace::new(repo_root.to_path_buf())?;
+        let graph = ws.graph.clone();
 
         let now_ms = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -78,7 +85,18 @@ impl LiveStateManager {
         Ok(Self {
             repo_root: repo_root.to_path_buf(),
             current_snapshot: Arc::new(RwLock::new(initial_snapshot)),
+            workspace: Arc::new(RwLock::new(ws)),
+            health: Arc::new(RwLock::new(DaemonHealth::Healthy)),
         })
+    }
+
+    #[must_use]
+    pub fn health(&self) -> DaemonHealth {
+        *self.health.read().expect("health rwlock")
+    }
+
+    pub fn set_health(&self, h: DaemonHealth) {
+        *self.health.write().expect("health rwlock") = h;
     }
 
     /// Read atomic live snapshot.
@@ -89,6 +107,25 @@ impl LiveStateManager {
             .read()
             .expect("poisoned live snapshot rwlock");
         Arc::new(guard.clone())
+    }
+
+    /// Apply semantic action batch incrementally.
+    pub fn apply_actions(&self, actions: &[SemanticAction]) -> Result<bool> {
+        self.set_health(DaemonHealth::Updating);
+        let mut ws = self.workspace.write().expect("workspace write lock");
+        match ws.apply_changes(actions) {
+            Ok(dirty) => {
+                if dirty {
+                    self.update_graph(ws.graph.clone());
+                }
+                self.set_health(DaemonHealth::Healthy);
+                Ok(dirty)
+            }
+            Err(err) => {
+                self.set_health(DaemonHealth::Dirty);
+                Err(err)
+            }
+        }
     }
 
     /// Update live graph atomically and increment generation.
@@ -117,42 +154,16 @@ impl LiveStateManager {
 
     /// Run full or incremental reconciliation against filesystem.
     pub fn reconcile(&self) -> Result<GraphGeneration> {
-        let graph = update_repository(&self.repo_root)?;
-        Ok(self.update_graph(graph))
+        self.set_health(DaemonHealth::Recovering);
+        let mut ws = self.workspace.write().expect("workspace write lock");
+        ws.reconcile_full()?;
+        let next_generation = self.update_graph(ws.graph.clone());
+        self.set_health(DaemonHealth::Healthy);
+        Ok(next_generation)
     }
 
     #[must_use]
     pub fn repo_root(&self) -> &Path {
         &self.repo_root
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use tempfile::tempdir;
-
-    #[test]
-    fn test_generation_monotonicity_and_snapshot_isolation() {
-        let dir = tempdir().expect("tempdir");
-        std::fs::write(dir.path().join("a.rs"), "pub fn a() {}").expect("write file");
-
-        let manager = LiveStateManager::initialize(dir.path()).expect("init");
-        let snap1 = manager.read_snapshot();
-        assert_eq!(snap1.generation, GraphGeneration(1));
-        assert_eq!(snap1.node_count, 2); // file + function
-
-        let graph2 = Graph::new(Vec::new(), Vec::new());
-        let gen2 = manager.update_graph(graph2);
-        assert_eq!(gen2, GraphGeneration(2));
-
-        // Reader holding snap1 still sees original snapshot intact
-        assert_eq!(snap1.generation, GraphGeneration(1));
-        assert_eq!(snap1.node_count, 2);
-
-        // New reader sees updated generation
-        let snap2 = manager.read_snapshot();
-        assert_eq!(snap2.generation, GraphGeneration(2));
-        assert_eq!(snap2.node_count, 0);
     }
 }

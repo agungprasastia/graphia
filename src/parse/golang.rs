@@ -1,35 +1,24 @@
 use tree_sitter::{Node as TsNode, Parser, Tree};
 
 use crate::error::{GraphiaError, Result};
-use crate::model::{Language as GraphiaLanguage, NodeKind, SourceLocation};
+use crate::model::{Language as GraphiaLanguage, NodeKind, SourceLocation, Visibility};
 use crate::parse::analyzer::LanguageAnalyzer;
-use crate::parser::{Call, Import, ParsedFile, Symbol};
+use crate::parser::{
+    Call, Definition, Export, Import, ParsedFile, Reference, Symbol, TypeReference,
+    normalize_signature,
+};
 
-pub struct GoAnalyzer {
-    language: GraphiaLanguage,
-}
-
-impl Default for GoAnalyzer {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+pub struct GoAnalyzer;
 
 impl GoAnalyzer {
     #[must_use]
     pub fn new() -> Self {
-        Self {
-            language: GraphiaLanguage::Go,
-        }
-    }
-
-    fn ts_language(&self) -> tree_sitter::Language {
-        tree_sitter_go::LANGUAGE.into()
+        Self
     }
 
     fn parse_tree(&self, source: &[u8]) -> Option<Tree> {
         let mut parser = Parser::new();
-        let ts_lang = self.ts_language();
+        let ts_lang = tree_sitter_go::LANGUAGE.into();
         if let Err(error) = parser.set_language(&ts_lang) {
             eprintln!("set language failed: {error:?}");
             return None;
@@ -38,9 +27,15 @@ impl GoAnalyzer {
     }
 }
 
+impl Default for GoAnalyzer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl LanguageAnalyzer for GoAnalyzer {
     fn language(&self) -> GraphiaLanguage {
-        self.language
+        GraphiaLanguage::Go
     }
 
     fn analyze(&self, path: &str, source: &[u8]) -> Result<ParsedFile> {
@@ -91,46 +86,50 @@ pub fn parse_go(file: &str, root: &TsNode<'_>, source: &[u8]) -> ParsedFile {
     let mut symbols = Vec::new();
     let mut imports = Vec::new();
     let mut calls = Vec::new();
+    let mut definitions = Vec::new();
+    let mut references = Vec::new();
+    let mut exports = Vec::new();
+    let mut type_references = Vec::new();
     let mut stack: Vec<TsNode<'_>> = vec![*root];
 
     while let Some(node) = stack.pop() {
         match node.kind() {
             "package_clause" => {
-                // package <name>
-                if let Some(pkg_name_node) = node.child_by_field_name("package") {
-                    let name = node_text(&pkg_name_node, source).to_string();
-                    let qualified = format!("{file}::{name}");
-                    let loc = location_for_node(file, &node);
-                    symbols.push(Symbol {
-                        kind: NodeKind::Package,
-                        name: name.clone(),
-                        qualified_name: qualified,
-                        location: loc,
-                        parent: None,
-                        visibility: crate::model::Visibility::Public,
-                        signature: None,
-                        container: None,
-                    });
+                let pkg_name = if let Some(pkg_name_node) = node.child_by_field_name("package") {
+                    node_text(&pkg_name_node, source).to_string()
                 } else {
-                    // Fallback to searching children for identifier
+                    let mut found = String::new();
                     for child in children_vec(&node) {
                         if child.kind() == "package_identifier" {
-                            let name = node_text(&child, source).to_string();
-                            let qualified = format!("{file}::{name}");
-                            let loc = location_for_node(file, &node);
-                            symbols.push(Symbol {
-                                kind: NodeKind::Package,
-                                name: name.clone(),
-                                qualified_name: qualified,
-                                location: loc,
-                                parent: None,
-                                visibility: crate::model::Visibility::Public,
-                                signature: None,
-                                container: None,
-                            });
+                            found = node_text(&child, source).to_string();
                             break;
                         }
                     }
+                    found
+                };
+
+                if !pkg_name.is_empty() {
+                    let qualified = format!("{file}::{pkg_name}");
+                    let loc = location_for_node(file, &node);
+                    symbols.push(Symbol {
+                        kind: NodeKind::Package,
+                        name: pkg_name.clone(),
+                        qualified_name: qualified.clone(),
+                        location: loc.clone(),
+                        parent: None,
+                        visibility: Visibility::Public,
+                        signature: None,
+                        container: None,
+                    });
+                    definitions.push(Definition {
+                        kind: NodeKind::Package,
+                        name: pkg_name,
+                        qualified_name: qualified,
+                        location: loc,
+                        container: None,
+                        visibility: Visibility::Public,
+                        signature: None,
+                    });
                 }
             }
             "function_declaration" => {
@@ -140,27 +139,58 @@ pub fn parse_go(file: &str, root: &TsNode<'_>, source: &[u8]) -> ParsedFile {
                     let loc = location_for_node(file, &node);
                     let is_exported = name.chars().next().is_some_and(char::is_uppercase);
                     let visibility = if is_exported {
-                        crate::model::Visibility::Public
+                        Visibility::Public
                     } else {
-                        crate::model::Visibility::Package
+                        Visibility::Package
                     };
+
+                    let params_text = node
+                        .child_by_field_name("parameters")
+                        .map(|p| node_text(&p, source))
+                        .unwrap_or("()");
+                    let result_text = node
+                        .child_by_field_name("result")
+                        .map(|r| node_text(&r, source).trim())
+                        .unwrap_or("");
+                    let raw_sig = if result_text.is_empty() {
+                        format!("{name}{params_text}")
+                    } else {
+                        format!("{name}{params_text}->{result_text}")
+                    };
+                    let sig = Some(normalize_signature(&raw_sig));
+
                     symbols.push(Symbol {
                         kind: NodeKind::Function,
                         name: name.clone(),
                         qualified_name: qualified.clone(),
-                        location: loc,
+                        location: loc.clone(),
                         parent: None,
                         visibility,
-                        signature: None,
+                        signature: sig.clone(),
                         container: None,
                     });
+                    definitions.push(Definition {
+                        kind: NodeKind::Function,
+                        name: name.clone(),
+                        qualified_name: qualified.clone(),
+                        location: loc.clone(),
+                        container: None,
+                        visibility,
+                        signature: sig,
+                    });
+                    if is_exported {
+                        exports.push(Export {
+                            name: name.clone(),
+                            location: loc.clone(),
+                            target: Some(qualified.clone()),
+                        });
+                    }
                     if let Some(body) = node.child_by_field_name("body") {
                         extract_calls_go(file, &body, source, &qualified, &mut calls);
                     }
                 }
             }
             "method_declaration" => {
-                // Method has receiver, name, body
                 if let Some(name_node) = node.child_by_field_name("name") {
                     let name = node_text(&name_node, source).to_string();
                     let qualified = format!("{file}::{name}");
@@ -172,28 +202,58 @@ pub fn parse_go(file: &str, root: &TsNode<'_>, source: &[u8]) -> ParsedFile {
 
                     let is_exported = name.chars().next().is_some_and(char::is_uppercase);
                     let visibility = if is_exported {
-                        crate::model::Visibility::Public
+                        Visibility::Public
                     } else {
-                        crate::model::Visibility::Package
+                        Visibility::Package
                     };
+
+                    let params_text = node
+                        .child_by_field_name("parameters")
+                        .map(|p| node_text(&p, source))
+                        .unwrap_or("()");
+                    let result_text = node
+                        .child_by_field_name("result")
+                        .map(|r| node_text(&r, source).trim())
+                        .unwrap_or("");
+                    let raw_sig = if result_text.is_empty() {
+                        format!("{name}{params_text}")
+                    } else {
+                        format!("{name}{params_text}->{result_text}")
+                    };
+                    let sig = Some(normalize_signature(&raw_sig));
+
                     symbols.push(Symbol {
                         kind: NodeKind::Method,
                         name: name.clone(),
                         qualified_name: qualified.clone(),
-                        location: loc,
+                        location: loc.clone(),
                         parent: receiver_type.clone(),
                         visibility,
-                        signature: None,
-                        container: receiver_type,
+                        signature: sig.clone(),
+                        container: receiver_type.clone(),
                     });
-
+                    definitions.push(Definition {
+                        kind: NodeKind::Method,
+                        name: name.clone(),
+                        qualified_name: qualified.clone(),
+                        location: loc.clone(),
+                        container: receiver_type,
+                        visibility,
+                        signature: sig,
+                    });
+                    if is_exported {
+                        exports.push(Export {
+                            name: name.clone(),
+                            location: loc.clone(),
+                            target: Some(qualified.clone()),
+                        });
+                    }
                     if let Some(body) = node.child_by_field_name("body") {
                         extract_calls_go(file, &body, source, &qualified, &mut calls);
                     }
                 }
             }
             "type_declaration" => {
-                // type_declaration can contain type_spec or alias_spec
                 for child in children_vec(&node) {
                     if child.kind() == "type_spec" || child.kind() == "type_alias" {
                         if let Some(name_node) = child.child_by_field_name("name") {
@@ -205,7 +265,7 @@ pub fn parse_go(file: &str, root: &TsNode<'_>, source: &[u8]) -> ParsedFile {
                                 match type_node.kind() {
                                     "struct_type" => NodeKind::Struct,
                                     "interface_type" => NodeKind::Interface,
-                                    _ => NodeKind::Struct, // type alias or other types map to Struct
+                                    _ => NodeKind::Struct,
                                 }
                             } else {
                                 NodeKind::Struct
@@ -213,33 +273,47 @@ pub fn parse_go(file: &str, root: &TsNode<'_>, source: &[u8]) -> ParsedFile {
 
                             let is_exported = name.chars().next().is_some_and(char::is_uppercase);
                             let visibility = if is_exported {
-                                crate::model::Visibility::Public
+                                Visibility::Public
                             } else {
-                                crate::model::Visibility::Package
+                                Visibility::Package
                             };
                             symbols.push(Symbol {
                                 kind,
-                                name,
-                                qualified_name: qualified,
-                                location: loc,
+                                name: name.clone(),
+                                qualified_name: qualified.clone(),
+                                location: loc.clone(),
                                 parent: None,
                                 visibility,
                                 signature: None,
                                 container: None,
                             });
+                            definitions.push(Definition {
+                                kind,
+                                name: name.clone(),
+                                qualified_name: qualified.clone(),
+                                location: loc.clone(),
+                                container: None,
+                                visibility,
+                                signature: None,
+                            });
+                            if is_exported {
+                                exports.push(Export {
+                                    name: name.clone(),
+                                    location: loc.clone(),
+                                    target: Some(qualified),
+                                });
+                            }
                         }
                     }
                 }
             }
             "import_declaration" => {
-                // import "fmt" or import ( "fmt" \n "net/http" )
                 let loc = location_for_node(file, &node);
                 for child in children_vec(&node) {
                     if child.kind() == "import_spec" || child.kind() == "import_spec_list" {
                         extract_import_specs(file, &child, source, &mut imports);
                     }
                 }
-                // Also handle single import_spec direct child
                 if imports.is_empty() {
                     let text = node_text(&node, source).trim().to_string();
                     imports.push(Import {
@@ -248,10 +322,29 @@ pub fn parse_go(file: &str, root: &TsNode<'_>, source: &[u8]) -> ParsedFile {
                     });
                 }
             }
+            "type_identifier" => {
+                let name = node_text(&node, source).to_string();
+                if !name.is_empty() {
+                    type_references.push(TypeReference {
+                        name,
+                        location: location_for_node(file, &node),
+                        container: None,
+                    });
+                }
+            }
+            "identifier" => {
+                let name = node_text(&node, source).to_string();
+                if !name.is_empty() {
+                    references.push(Reference {
+                        name,
+                        location: location_for_node(file, &node),
+                        caller: None,
+                    });
+                }
+            }
             _ => {}
         }
 
-        // Don't recurse into function/method bodies since we handle them or type_declaration children
         if node.kind() == "function_declaration" || node.kind() == "method_declaration" {
             continue;
         }
@@ -265,19 +358,16 @@ pub fn parse_go(file: &str, root: &TsNode<'_>, source: &[u8]) -> ParsedFile {
         symbols,
         imports,
         calls,
-        definitions: Vec::new(),
-        references: Vec::new(),
-        exports: Vec::new(),
-        type_references: Vec::new(),
+        definitions,
+        references,
+        exports,
+        type_references,
     }
 }
 
 fn extract_receiver_type_name(rec_node: &TsNode<'_>, source: &[u8]) -> Option<String> {
-    // parameter_list -> parameter_declaration -> type (type_identifier or pointer_type -> type_identifier)
     let text = node_text(rec_node, source).trim();
-    // E.g. (s *Server) or (s Server) or (*Server) or (Server)
     let stripped = text.trim_matches(['(', ')']).trim();
-    // Split by whitespace: could be "s *Server" or "*Server"
     let type_part = stripped.split_whitespace().last().unwrap_or(stripped);
     let type_name = type_part.trim_start_matches('*').trim();
     if type_name.is_empty() {

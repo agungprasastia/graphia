@@ -1,35 +1,23 @@
 use tree_sitter::{Node as TsNode, Parser, Tree};
 
 use crate::error::{GraphiaError, Result};
-use crate::model::{Language as GraphiaLanguage, NodeKind, SourceLocation};
+use crate::model::{Language as GraphiaLanguage, NodeKind, SourceLocation, Visibility};
 use crate::parse::analyzer::LanguageAnalyzer;
-use crate::parser::{Call, Import, ParsedFile, Symbol};
+use crate::parser::{
+    Call, Definition, Export, Import, ParsedFile, Reference, Symbol, normalize_signature,
+};
 
-pub struct KotlinAnalyzer {
-    language: GraphiaLanguage,
-}
-
-impl Default for KotlinAnalyzer {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+pub struct KotlinAnalyzer;
 
 impl KotlinAnalyzer {
     #[must_use]
     pub fn new() -> Self {
-        Self {
-            language: GraphiaLanguage::Kotlin,
-        }
-    }
-
-    fn ts_language(&self) -> tree_sitter::Language {
-        tree_sitter_kotlin::LANGUAGE.into()
+        Self
     }
 
     fn parse_tree(&self, source: &[u8]) -> Option<Tree> {
         let mut parser = Parser::new();
-        let ts_lang = self.ts_language();
+        let ts_lang = tree_sitter_kotlin::LANGUAGE.into();
         if let Err(error) = parser.set_language(&ts_lang) {
             eprintln!("set language failed: {error:?}");
             return None;
@@ -38,9 +26,15 @@ impl KotlinAnalyzer {
     }
 }
 
+impl Default for KotlinAnalyzer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl LanguageAnalyzer for KotlinAnalyzer {
     fn language(&self) -> GraphiaLanguage {
-        self.language
+        GraphiaLanguage::Kotlin
     }
 
     fn analyze(&self, path: &str, source: &[u8]) -> Result<ParsedFile> {
@@ -91,52 +85,69 @@ pub fn parse_kotlin(file: &str, root: &TsNode<'_>, source: &[u8]) -> ParsedFile 
     let mut symbols = Vec::new();
     let mut imports = Vec::new();
     let mut calls = Vec::new();
+    let mut definitions = Vec::new();
+    let mut references = Vec::new();
+    let mut exports = Vec::new();
+    let type_references = Vec::new();
     let mut stack: Vec<(TsNode<'_>, Option<String>)> = vec![(*root, None)];
 
     while let Some((node, parent_scope)) = stack.pop() {
+        let is_private = node_text(&node, source).contains("private ");
+        let vis = if is_private {
+            Visibility::Private
+        } else {
+            Visibility::Public
+        };
+
         match node.kind() {
             "package_header" => {
-                // package com.example.service
+                let mut pkg_name = None;
                 for child in children_vec(&node) {
-                    if child.kind() == "identifier" || child.kind() == "package_identifier" {
-                        let name = node_text(&child, source).trim().to_string();
-                        let qualified = format!("{file}::{name}");
-                        let loc = location_for_node(file, &node);
-                        symbols.push(Symbol {
-                            kind: NodeKind::Package,
-                            name,
-                            qualified_name: qualified,
-                            location: loc,
-                            parent: None,
-                            visibility: crate::model::Visibility::Public,
-                            signature: None,
-                            container: None,
-                        });
+                    if child.kind() == "identifier"
+                        || child.kind() == "package_identifier"
+                        || child.kind() == "identifier"
+                    {
+                        pkg_name = Some(node_text(&child, source).trim().to_string());
                         break;
                     }
                 }
-                // Fallback: if no package_identifier node, look for identifier/user_type children or text
-                if symbols.is_empty() {
+                if pkg_name.is_none() {
                     let text = node_text(&node, source).trim();
-                    let pkg = text.trim_start_matches("package").trim().to_string();
-                    if !pkg.is_empty() {
-                        let qualified = format!("{file}::{pkg}");
-                        let loc = location_for_node(file, &node);
-                        symbols.push(Symbol {
-                            kind: NodeKind::Package,
-                            name: pkg,
-                            qualified_name: qualified,
-                            location: loc,
-                            parent: None,
-                            visibility: crate::model::Visibility::Public,
-                            signature: None,
-                            container: None,
-                        });
+                    let stripped = text
+                        .trim_start_matches("package")
+                        .trim()
+                        .trim_end_matches(';')
+                        .trim()
+                        .to_string();
+                    if !stripped.is_empty() {
+                        pkg_name = Some(stripped);
                     }
+                }
+                if let Some(name) = pkg_name {
+                    let qualified = format!("{file}::{name}");
+                    let loc = location_for_node(file, &node);
+                    symbols.push(Symbol {
+                        kind: NodeKind::Package,
+                        name: name.clone(),
+                        qualified_name: qualified.clone(),
+                        location: loc.clone(),
+                        parent: None,
+                        visibility: Visibility::Public,
+                        signature: None,
+                        container: None,
+                    });
+                    definitions.push(Definition {
+                        kind: NodeKind::Package,
+                        name,
+                        qualified_name: qualified,
+                        location: loc,
+                        container: None,
+                        visibility: Visibility::Public,
+                        signature: None,
+                    });
                 }
             }
             "import_header" | "import" => {
-                // import com.example.service.Helper
                 let text = node_text(&node, source)
                     .trim()
                     .trim_end_matches(';')
@@ -148,13 +159,15 @@ pub fn parse_kotlin(file: &str, root: &TsNode<'_>, source: &[u8]) -> ParsedFile 
                     location: loc,
                 });
             }
-            "class_declaration" => {
-                // class / interface / enum / data class
+            "class_declaration" | "object_declaration" => {
                 let mut kind = NodeKind::Class;
                 let mut class_name = None;
 
                 for child in children_vec(&node) {
-                    if child.kind() == "type_identifier" || child.kind() == "identifier" {
+                    if child.kind() == "type_identifier"
+                        || child.kind() == "identifier"
+                        || child.kind() == "simple_identifier"
+                    {
                         if class_name.is_none() {
                             class_name = Some(node_text(&child, source).to_string());
                         }
@@ -174,52 +187,39 @@ pub fn parse_kotlin(file: &str, root: &TsNode<'_>, source: &[u8]) -> ParsedFile 
                     symbols.push(Symbol {
                         kind,
                         name: name.clone(),
-                        qualified_name: qualified,
-                        location: loc,
+                        qualified_name: qualified.clone(),
+                        location: loc.clone(),
                         parent: parent_scope.clone(),
-                        visibility: crate::model::Visibility::Public,
+                        visibility: vis,
                         signature: None,
                         container: parent_scope.clone(),
                     });
-
-                    // Search for class_body
-                    for child in children_vec(&node) {
-                        if child.kind() == "class_body" || child.kind() == "enum_class_body" {
-                            for sub in children_vec(&child).into_iter().rev() {
-                                stack.push((sub, Some(name.clone())));
-                            }
-                        }
-                    }
-                }
-                continue;
-            }
-            "object_declaration" => {
-                // object Singleton
-                let mut object_name = None;
-                for child in children_vec(&node) {
-                    if (child.kind() == "type_identifier" || child.kind() == "identifier")
-                        && object_name.is_none()
-                    {
-                        object_name = Some(node_text(&child, source).to_string());
-                    }
-                }
-                if let Some(name) = object_name {
-                    let qualified = format!("{file}::{name}");
-                    let loc = location_for_node(file, &node);
-                    symbols.push(Symbol {
-                        kind: NodeKind::Class,
+                    definitions.push(Definition {
+                        kind,
                         name: name.clone(),
-                        qualified_name: qualified,
-                        location: loc,
-                        parent: parent_scope.clone(),
-                        visibility: crate::model::Visibility::Public,
-                        signature: None,
+                        qualified_name: qualified.clone(),
+                        location: loc.clone(),
                         container: parent_scope.clone(),
+                        visibility: vis,
+                        signature: None,
                     });
-                    for child in children_vec(&node) {
-                        if child.kind() == "class_body" {
-                            for sub in children_vec(&child).into_iter().rev() {
-                                stack.push((sub, Some(name.clone())));
+                    if vis == Visibility::Public {
+                        exports.push(Export {
+                            name: name.clone(),
+                            location: loc,
+                            target: Some(qualified),
+                        });
+                    }
+                    if let Some(body) = node.child_by_field_name("body") {
+                        for child in children_vec(&body).into_iter().rev() {
+                            stack.push((child, Some(name.clone())));
+                        }
+                    } else {
+                        for child in children_vec(&node) {
+                            if child.kind() == "class_body" {
+                                for sub in children_vec(&child).into_iter().rev() {
+                                    stack.push((sub, Some(name.clone())));
+                                }
                             }
                         }
                     }
@@ -227,56 +227,78 @@ pub fn parse_kotlin(file: &str, root: &TsNode<'_>, source: &[u8]) -> ParsedFile 
                 continue;
             }
             "function_declaration" => {
-                // fun doWork() or fun Class.doWork()
-                let mut func_name = None;
+                let mut fn_name = None;
                 for child in children_vec(&node) {
-                    if child.kind() == "simple_identifier" || child.kind() == "identifier" {
-                        func_name = Some(node_text(&child, source).to_string());
+                    if child.kind() == "identifier" || child.kind() == "simple_identifier" {
+                        fn_name = Some(node_text(&child, source).to_string());
                         break;
                     }
                 }
-                if let Some(name) = func_name {
+                if let Some(name) = fn_name {
                     let is_method = parent_scope.is_some();
                     let qualified = format!("{file}::{name}");
                     let loc = location_for_node(file, &node);
+
+                    let params_text = node
+                        .child_by_field_name("parameters")
+                        .map(|p| node_text(&p, source))
+                        .unwrap_or("()");
+                    let raw_sig = format!("{name}{params_text}");
+                    let sig = Some(normalize_signature(&raw_sig));
+
+                    let kind = if is_method {
+                        NodeKind::Method
+                    } else {
+                        NodeKind::Function
+                    };
+
                     symbols.push(Symbol {
-                        kind: if is_method {
-                            NodeKind::Method
-                        } else {
-                            NodeKind::Function
-                        },
+                        kind,
                         name: name.clone(),
                         qualified_name: qualified.clone(),
-                        location: loc,
+                        location: loc.clone(),
                         parent: parent_scope.clone(),
-                        visibility: crate::model::Visibility::Public,
-                        signature: None,
+                        visibility: vis,
+                        signature: sig.clone(),
                         container: parent_scope.clone(),
                     });
-                    for child in children_vec(&node) {
-                        if child.kind() == "function_body" || child.kind() == "block" {
-                            extract_calls_kotlin(file, &child, source, &qualified, &mut calls);
+                    definitions.push(Definition {
+                        kind,
+                        name: name.clone(),
+                        qualified_name: qualified.clone(),
+                        location: loc.clone(),
+                        container: parent_scope.clone(),
+                        visibility: vis,
+                        signature: sig,
+                    });
+                    if vis == Visibility::Public {
+                        exports.push(Export {
+                            name: name.clone(),
+                            location: loc,
+                            target: Some(qualified.clone()),
+                        });
+                    }
+                    if let Some(body) = node.child_by_field_name("body") {
+                        extract_calls_kotlin(file, &body, source, &qualified, &mut calls);
+                    } else {
+                        for child in children_vec(&node) {
+                            if child.kind() == "function_body" || child.kind() == "block" {
+                                extract_calls_kotlin(file, &child, source, &qualified, &mut calls);
+                            }
                         }
                     }
                 }
                 continue;
             }
-            "secondary_constructor" | "primary_constructor" => {
-                let name = parent_scope.clone().unwrap_or_else(|| "constructor".into());
-                let qualified = format!("{file}::{name}");
-                let loc = location_for_node(file, &node);
-                symbols.push(Symbol {
-                    kind: NodeKind::Constructor,
-                    name,
-                    qualified_name: qualified.clone(),
-                    location: loc,
-                    parent: parent_scope.clone(),
-                    visibility: crate::model::Visibility::Public,
-                    signature: None,
-                    container: parent_scope.clone(),
-                });
-                extract_calls_kotlin(file, &node, source, &qualified, &mut calls);
-                continue;
+            "identifier" | "simple_identifier" => {
+                let name = node_text(&node, source).to_string();
+                if !name.is_empty() {
+                    references.push(Reference {
+                        name,
+                        location: location_for_node(file, &node),
+                        caller: None,
+                    });
+                }
             }
             _ => {}
         }
@@ -290,10 +312,10 @@ pub fn parse_kotlin(file: &str, root: &TsNode<'_>, source: &[u8]) -> ParsedFile 
         symbols,
         imports,
         calls,
-        definitions: Vec::new(),
-        references: Vec::new(),
-        exports: Vec::new(),
-        type_references: Vec::new(),
+        definitions,
+        references,
+        exports,
+        type_references,
     }
 }
 
@@ -307,17 +329,19 @@ pub fn extract_calls_kotlin(
     let mut stack = vec![*node];
     while let Some(n) = stack.pop() {
         if n.kind() == "call_expression" {
-            // call_expression in kotlin tree-sitter: child 0 is callee or navigation_expression
-            if let Some(first_child) = n.child(0) {
-                let callee_raw = node_text(&first_child, source).trim().to_string();
-                let simple = callee_raw
-                    .rsplit('.')
-                    .next()
-                    .unwrap_or(&callee_raw)
-                    .rsplit("::")
-                    .next()
-                    .unwrap_or(&callee_raw)
-                    .to_string();
+            let mut callee_simple = None;
+            for child in children_vec(&n) {
+                if child.kind() == "identifier" || child.kind() == "simple_identifier" {
+                    callee_simple = Some(node_text(&child, source).trim().to_string());
+                    break;
+                } else if child.kind() == "navigation_expression" {
+                    let text = node_text(&child, source).trim().to_string();
+                    let simple = text.rsplit('.').next().unwrap_or(&text).to_string();
+                    callee_simple = Some(simple);
+                    break;
+                }
+            }
+            if let Some(simple) = callee_simple {
                 if !simple.is_empty()
                     && simple
                         .chars()

@@ -78,6 +78,38 @@ pub struct ParsedFile {
     pub type_references: Vec<TypeReference>,
 }
 
+pub fn normalize_signature(sig: &str) -> String {
+    let mut normalized = String::with_capacity(sig.len());
+    let mut in_whitespace = false;
+    for ch in sig.chars() {
+        if ch.is_whitespace() {
+            if !in_whitespace {
+                in_whitespace = true;
+            }
+        } else {
+            if in_whitespace
+                && !matches!(
+                    ch,
+                    '(' | ')' | '{' | '}' | '[' | ']' | ',' | ':' | ';' | '-' | '>' | '<'
+                )
+                && !normalized.ends_with(|c: char| {
+                    matches!(
+                        c,
+                        '(' | ')' | '{' | '}' | '[' | ']' | ',' | ':' | ';' | '-' | '>' | '<'
+                    )
+                })
+            {
+                normalized.push(' ');
+            }
+            in_whitespace = false;
+            normalized.push(ch);
+        }
+    }
+    normalized
+        .replace(" -> ", "->")
+        .replace(": ", ":")
+        .replace(", ", ",")
+}
 fn ts_language(lang: GraphiaLanguage) -> Language {
     match lang {
         GraphiaLanguage::Rust => tree_sitter_rust::LANGUAGE.into(),
@@ -184,6 +216,10 @@ fn parse_rust(file: &str, root: &tree_sitter::Node<'_>, source: &[u8]) -> Parsed
     let mut symbols = Vec::new();
     let mut imports = Vec::new();
     let mut calls = Vec::new();
+    let mut definitions = Vec::new();
+    let mut references = Vec::new();
+    let mut exports = Vec::new();
+    let mut type_references = Vec::new();
     let mut stack: Vec<tree_sitter::Node<'_>> = vec![*root];
 
     while let Some(node) = stack.pop() {
@@ -193,16 +229,74 @@ fn parse_rust(file: &str, root: &tree_sitter::Node<'_>, source: &[u8]) -> Parsed
                     let name = node_text(&name_node, source).to_string();
                     let qualified = format!("{file}::{name}");
                     let loc = location_for_node(file, &node);
+                    let is_pub = node_text(&node, source).trim_start().starts_with("pub");
+                    let vis = if is_pub {
+                        Visibility::Public
+                    } else {
+                        Visibility::Private
+                    };
+
+                    let params_text = node
+                        .child_by_field_name("parameters")
+                        .map(|p| node_text(&p, source))
+                        .unwrap_or("()");
+                    let return_type = node
+                        .child_by_field_name("return_type")
+                        .map(|r| node_text(&r, source).trim_start_matches("->").trim())
+                        .unwrap_or("");
+
+                    let raw_sig = if return_type.is_empty() {
+                        format!("{name}{params_text}")
+                    } else {
+                        format!("{name}{params_text}->{return_type}")
+                    };
+                    let sig = Some(normalize_signature(&raw_sig));
+
                     symbols.push(Symbol {
                         kind: NodeKind::Function,
                         name: name.clone(),
                         qualified_name: qualified.clone(),
                         location: loc.clone(),
                         parent: None,
-                        visibility: crate::model::Visibility::Public,
-                        signature: None,
+                        visibility: vis,
+                        signature: sig.clone(),
                         container: None,
                     });
+                    definitions.push(Definition {
+                        kind: NodeKind::Function,
+                        name: name.clone(),
+                        qualified_name: qualified.clone(),
+                        location: loc.clone(),
+                        container: None,
+                        visibility: vis,
+                        signature: sig,
+                    });
+
+                    if is_pub {
+                        exports.push(Export {
+                            name: name.clone(),
+                            location: loc.clone(),
+                            target: Some(qualified.clone()),
+                        });
+                    }
+
+                    if let Some(params_node) = node.child_by_field_name("parameters") {
+                        for p in children_vec(&params_node) {
+                            if p.kind() == "parameter" {
+                                if let Some(type_node) = p.child_by_field_name("type") {
+                                    let tname = node_text(&type_node, source).trim().to_string();
+                                    if !tname.is_empty() {
+                                        type_references.push(TypeReference {
+                                            name: tname,
+                                            location: location_for_node(file, &type_node),
+                                            container: Some(qualified.clone()),
+                                        });
+                                    }
+                                }
+                            }
+                        }
+                    }
+
                     if let Some(body) = node.child_by_field_name("body") {
                         extract_calls_rust(file, &body, source, &qualified, &mut calls);
                     }
@@ -213,16 +307,38 @@ fn parse_rust(file: &str, root: &tree_sitter::Node<'_>, source: &[u8]) -> Parsed
                     let name = node_text(&name_node, source).to_string();
                     let qualified = format!("{file}::{name}");
                     let loc = location_for_node(file, &node);
+                    let is_pub = node_text(&node, source).trim_start().starts_with("pub");
+                    let vis = if is_pub {
+                        Visibility::Public
+                    } else {
+                        Visibility::Private
+                    };
                     symbols.push(Symbol {
                         kind: NodeKind::Struct,
-                        name,
-                        qualified_name: qualified,
-                        location: loc,
+                        name: name.clone(),
+                        qualified_name: qualified.clone(),
+                        location: loc.clone(),
                         parent: None,
-                        visibility: crate::model::Visibility::Public,
+                        visibility: vis,
                         signature: None,
                         container: None,
                     });
+                    definitions.push(Definition {
+                        kind: NodeKind::Struct,
+                        name: name.clone(),
+                        qualified_name: qualified.clone(),
+                        location: loc.clone(),
+                        container: None,
+                        visibility: vis,
+                        signature: None,
+                    });
+                    if is_pub {
+                        exports.push(Export {
+                            name: name.clone(),
+                            location: loc.clone(),
+                            target: Some(qualified.clone()),
+                        });
+                    }
                 }
             }
             "enum_item" => {
@@ -230,16 +346,38 @@ fn parse_rust(file: &str, root: &tree_sitter::Node<'_>, source: &[u8]) -> Parsed
                     let name = node_text(&name_node, source).to_string();
                     let qualified = format!("{file}::{name}");
                     let loc = location_for_node(file, &node);
+                    let is_pub = node_text(&node, source).trim_start().starts_with("pub");
+                    let vis = if is_pub {
+                        Visibility::Public
+                    } else {
+                        Visibility::Private
+                    };
                     symbols.push(Symbol {
                         kind: NodeKind::Enum,
-                        name,
-                        qualified_name: qualified,
-                        location: loc,
+                        name: name.clone(),
+                        qualified_name: qualified.clone(),
+                        location: loc.clone(),
                         parent: None,
-                        visibility: crate::model::Visibility::Public,
+                        visibility: vis,
                         signature: None,
                         container: None,
                     });
+                    definitions.push(Definition {
+                        kind: NodeKind::Enum,
+                        name: name.clone(),
+                        qualified_name: qualified.clone(),
+                        location: loc.clone(),
+                        container: None,
+                        visibility: vis,
+                        signature: None,
+                    });
+                    if is_pub {
+                        exports.push(Export {
+                            name: name.clone(),
+                            location: loc.clone(),
+                            target: Some(qualified.clone()),
+                        });
+                    }
                 }
             }
             "trait_item" => {
@@ -247,16 +385,38 @@ fn parse_rust(file: &str, root: &tree_sitter::Node<'_>, source: &[u8]) -> Parsed
                     let name = node_text(&name_node, source).to_string();
                     let qualified = format!("{file}::{name}");
                     let loc = location_for_node(file, &node);
+                    let is_pub = node_text(&node, source).trim_start().starts_with("pub");
+                    let vis = if is_pub {
+                        Visibility::Public
+                    } else {
+                        Visibility::Private
+                    };
                     symbols.push(Symbol {
                         kind: NodeKind::Trait,
-                        name,
-                        qualified_name: qualified,
-                        location: loc,
+                        name: name.clone(),
+                        qualified_name: qualified.clone(),
+                        location: loc.clone(),
                         parent: None,
-                        visibility: crate::model::Visibility::Public,
+                        visibility: vis,
                         signature: None,
                         container: None,
                     });
+                    definitions.push(Definition {
+                        kind: NodeKind::Trait,
+                        name: name.clone(),
+                        qualified_name: qualified.clone(),
+                        location: loc.clone(),
+                        container: None,
+                        visibility: vis,
+                        signature: None,
+                    });
+                    if is_pub {
+                        exports.push(Export {
+                            name: name.clone(),
+                            location: loc.clone(),
+                            target: Some(qualified.clone()),
+                        });
+                    }
                 }
             }
             "mod_item" => {
@@ -264,16 +424,38 @@ fn parse_rust(file: &str, root: &tree_sitter::Node<'_>, source: &[u8]) -> Parsed
                     let name = node_text(&name_node, source).to_string();
                     let qualified = format!("{file}::{name}");
                     let loc = location_for_node(file, &node);
+                    let is_pub = node_text(&node, source).trim_start().starts_with("pub");
+                    let vis = if is_pub {
+                        Visibility::Public
+                    } else {
+                        Visibility::Private
+                    };
                     symbols.push(Symbol {
                         kind: NodeKind::Module,
-                        name,
-                        qualified_name: qualified,
-                        location: loc,
+                        name: name.clone(),
+                        qualified_name: qualified.clone(),
+                        location: loc.clone(),
                         parent: None,
-                        visibility: crate::model::Visibility::Public,
+                        visibility: vis,
                         signature: None,
                         container: None,
                     });
+                    definitions.push(Definition {
+                        kind: NodeKind::Module,
+                        name: name.clone(),
+                        qualified_name: qualified.clone(),
+                        location: loc.clone(),
+                        container: None,
+                        visibility: vis,
+                        signature: None,
+                    });
+                    if is_pub {
+                        exports.push(Export {
+                            name: name.clone(),
+                            location: loc.clone(),
+                            target: Some(qualified.clone()),
+                        });
+                    }
                 }
             }
             "use_declaration" => {
@@ -281,18 +463,32 @@ fn parse_rust(file: &str, root: &tree_sitter::Node<'_>, source: &[u8]) -> Parsed
                     .trim()
                     .trim_end_matches(';')
                     .to_string();
-                let path = text
-                    .trim_start_matches("use")
-                    .trim()
-                    .trim_end_matches(';')
-                    .trim()
-                    .to_string();
+                let is_pub = text.starts_with("pub use");
+                let path = if let Some(stripped) = text.strip_prefix("pub use") {
+                    stripped.trim().trim_end_matches(';').trim().to_string()
+                } else if let Some(stripped) = text.strip_prefix("use ") {
+                    stripped.trim().trim_end_matches(';').trim().to_string()
+                } else {
+                    text.trim_start_matches("use")
+                        .trim()
+                        .trim_end_matches(';')
+                        .trim()
+                        .to_string()
+                };
                 let loc = location_for_node(file, &node);
                 if !path.is_empty() {
                     imports.push(Import {
-                        path,
-                        location: loc,
+                        path: path.clone(),
+                        location: loc.clone(),
                     });
+                    if is_pub {
+                        let exported_symbol = path.rsplit("::").next().unwrap_or(&path).to_string();
+                        exports.push(Export {
+                            name: exported_symbol,
+                            location: loc.clone(),
+                            target: Some(path),
+                        });
+                    }
                 }
             }
             "impl_item" => {
@@ -308,16 +504,59 @@ fn parse_rust(file: &str, root: &tree_sitter::Node<'_>, source: &[u8]) -> Parsed
                                         let name = node_text(&name_node, source).to_string();
                                         let qualified = format!("{file}::{name}");
                                         let loc = location_for_node(file, &sub);
+                                        let is_pub =
+                                            node_text(&sub, source).trim_start().starts_with("pub");
+                                        let vis = if is_pub {
+                                            Visibility::Public
+                                        } else {
+                                            Visibility::Private
+                                        };
+
+                                        let params_text = sub
+                                            .child_by_field_name("parameters")
+                                            .map(|p| node_text(&p, source))
+                                            .unwrap_or("()");
+                                        let return_type = sub
+                                            .child_by_field_name("return_type")
+                                            .map(|r| {
+                                                node_text(&r, source)
+                                                    .trim_start_matches("->")
+                                                    .trim()
+                                            })
+                                            .unwrap_or("");
+                                        let raw_sig = if return_type.is_empty() {
+                                            format!("{name}{params_text}")
+                                        } else {
+                                            format!("{name}{params_text}->{return_type}")
+                                        };
+                                        let sig = Some(normalize_signature(&raw_sig));
+
                                         symbols.push(Symbol {
                                             kind: NodeKind::Method,
                                             name: name.clone(),
                                             qualified_name: qualified.clone(),
                                             location: loc.clone(),
                                             parent: Some(tname.clone()),
-                                            visibility: crate::model::Visibility::Public,
-                                            signature: None,
+                                            visibility: vis,
+                                            signature: sig.clone(),
                                             container: Some(tname.clone()),
                                         });
+                                        definitions.push(Definition {
+                                            kind: NodeKind::Method,
+                                            name: name.clone(),
+                                            qualified_name: qualified.clone(),
+                                            location: loc.clone(),
+                                            container: Some(tname.clone()),
+                                            visibility: vis,
+                                            signature: sig,
+                                        });
+                                        if is_pub {
+                                            exports.push(Export {
+                                                name: name.clone(),
+                                                location: loc.clone(),
+                                                target: Some(qualified.clone()),
+                                            });
+                                        }
                                         if let Some(body) = sub.child_by_field_name("body") {
                                             extract_calls_rust(
                                                 file, &body, source, &qualified, &mut calls,
@@ -329,6 +568,16 @@ fn parse_rust(file: &str, root: &tree_sitter::Node<'_>, source: &[u8]) -> Parsed
                         }
                     }
                     continue;
+                }
+            }
+            "identifier" => {
+                let name = node_text(&node, source).to_string();
+                if !name.is_empty() {
+                    references.push(Reference {
+                        name,
+                        location: location_for_node(file, &node),
+                        caller: None,
+                    });
                 }
             }
             _ => {}
@@ -344,10 +593,10 @@ fn parse_rust(file: &str, root: &tree_sitter::Node<'_>, source: &[u8]) -> Parsed
         symbols,
         imports,
         calls,
-        definitions: Vec::new(),
-        references: Vec::new(),
-        exports: Vec::new(),
-        type_references: Vec::new(),
+        definitions,
+        references,
+        exports,
+        type_references,
     }
 }
 
@@ -396,6 +645,10 @@ fn parse_python(file: &str, root: &tree_sitter::Node<'_>, source: &[u8]) -> Pars
     let mut symbols = Vec::new();
     let mut imports = Vec::new();
     let mut calls = Vec::new();
+    let mut definitions = Vec::new();
+    let mut references = Vec::new();
+    let mut exports = Vec::new();
+    let mut type_references = Vec::new();
     let mut stack: Vec<(tree_sitter::Node<'_>, Option<String>)> = vec![(*root, None)];
 
     while let Some((node, parent_class)) = stack.pop() {
@@ -406,24 +659,58 @@ fn parse_python(file: &str, root: &tree_sitter::Node<'_>, source: &[u8]) -> Pars
                     let is_method = parent_class.is_some();
                     let qualified = format!("{file}::{name}");
                     let loc = location_for_node(file, &node);
+                    let vis = if name.starts_with('_') && !name.starts_with("__") {
+                        Visibility::Private
+                    } else {
+                        Visibility::Public
+                    };
+                    let params_text = node
+                        .child_by_field_name("parameters")
+                        .map(|p| node_text(&p, source))
+                        .unwrap_or("()");
+                    let return_type = node
+                        .child_by_field_name("return_type")
+                        .map(|r| node_text(&r, source).trim_start_matches("->").trim())
+                        .unwrap_or("");
+                    let raw_sig = if return_type.is_empty() {
+                        format!("{name}{params_text}")
+                    } else {
+                        format!("{name}{params_text}->{return_type}")
+                    };
+                    let sig = Some(normalize_signature(&raw_sig));
+
+                    let kind = if is_method {
+                        NodeKind::Method
+                    } else {
+                        NodeKind::Function
+                    };
+
                     symbols.push(Symbol {
-                        kind: if is_method {
-                            NodeKind::Method
-                        } else {
-                            NodeKind::Function
-                        },
+                        kind,
                         name: name.clone(),
                         qualified_name: qualified.clone(),
-                        location: loc,
+                        location: loc.clone(),
                         parent: parent_class.clone(),
-                        visibility: if name.starts_with('_') {
-                            crate::model::Visibility::Private
-                        } else {
-                            crate::model::Visibility::Public
-                        },
-                        signature: None,
+                        visibility: vis,
+                        signature: sig.clone(),
                         container: parent_class.clone(),
                     });
+                    definitions.push(Definition {
+                        kind,
+                        name: name.clone(),
+                        qualified_name: qualified.clone(),
+                        location: loc.clone(),
+                        container: parent_class.clone(),
+                        visibility: vis,
+                        signature: sig,
+                    });
+                    if !is_method && vis == Visibility::Public {
+                        exports.push(Export {
+                            name: name.clone(),
+                            location: loc.clone(),
+                            target: Some(qualified.clone()),
+                        });
+                    }
                     if let Some(body) = node.child_by_field_name("body") {
                         extract_calls_python(file, &body, source, &qualified, &mut calls);
                     }
@@ -434,26 +721,53 @@ fn parse_python(file: &str, root: &tree_sitter::Node<'_>, source: &[u8]) -> Pars
                     let name = node_text(&name_node, source).to_string();
                     let qualified = format!("{file}::{name}");
                     let loc = location_for_node(file, &node);
+                    let vis = if name.starts_with('_') {
+                        Visibility::Private
+                    } else {
+                        Visibility::Public
+                    };
                     symbols.push(Symbol {
                         kind: NodeKind::Class,
                         name: name.clone(),
-                        qualified_name: qualified,
-                        location: loc,
+                        qualified_name: qualified.clone(),
+                        location: loc.clone(),
                         parent: None,
-                        visibility: if name.starts_with('_') {
-                            crate::model::Visibility::Private
-                        } else {
-                            crate::model::Visibility::Public
-                        },
+                        visibility: vis,
                         signature: None,
                         container: None,
                     });
+                    definitions.push(Definition {
+                        kind: NodeKind::Class,
+                        name: name.clone(),
+                        qualified_name: qualified.clone(),
+                        location: loc.clone(),
+                        container: None,
+                        visibility: vis,
+                        signature: None,
+                    });
+                    if vis == Visibility::Public {
+                        exports.push(Export {
+                            name: name.clone(),
+                            location: loc.clone(),
+                            target: Some(qualified),
+                        });
+                    }
                     if let Some(body) = node.child_by_field_name("body") {
                         for child in children_vec(&body).into_iter().rev() {
                             stack.push((child, Some(name.clone())));
                         }
                         continue;
                     }
+                }
+            }
+            "type" => {
+                let name = node_text(&node, source).to_string();
+                if !name.is_empty() {
+                    type_references.push(TypeReference {
+                        name,
+                        location: location_for_node(file, &node),
+                        container: parent_class.clone(),
+                    });
                 }
             }
             "import_statement" | "import_from_statement" => {
@@ -463,6 +777,16 @@ fn parse_python(file: &str, root: &tree_sitter::Node<'_>, source: &[u8]) -> Pars
                     path: text,
                     location: loc,
                 });
+            }
+            "identifier" => {
+                let name = node_text(&node, source).to_string();
+                if !name.is_empty() {
+                    references.push(Reference {
+                        name,
+                        location: location_for_node(file, &node),
+                        caller: None,
+                    });
+                }
             }
             _ => {}
         }
@@ -483,10 +807,10 @@ fn parse_python(file: &str, root: &tree_sitter::Node<'_>, source: &[u8]) -> Pars
         symbols,
         imports,
         calls,
-        definitions: Vec::new(),
-        references: Vec::new(),
-        exports: Vec::new(),
-        type_references: Vec::new(),
+        definitions,
+        references,
+        exports,
+        type_references,
     }
 }
 

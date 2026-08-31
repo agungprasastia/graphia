@@ -156,6 +156,7 @@ impl Graph {
         });
         self.edges.retain(|edge| {
             !(edge.kind == EdgeKind::Calls && edge.confidence == Confidence::Inferred)
+                && !(edge.kind == EdgeKind::Calls && edge.confidence == Confidence::Extracted)
         });
 
         let imports: Vec<(NodeId, NodeId)> = self
@@ -172,6 +173,8 @@ impl Graph {
             engine.resolve_calls(&self.resolution_calls, &self.nodes, &imports);
 
         self.edges.extend(resolved_edges);
+        let mut edge_ids = HashSet::new();
+        self.edges.retain(|e| edge_ids.insert(e.id));
         self.resolution = ResolutionReport {
             resolved_calls: summary.resolved_calls,
             unresolved_calls: summary.unresolved_calls,
@@ -475,7 +478,8 @@ pub fn build_graph(files: Vec<(String, Option<Language>, ParsedFile)>) -> Graph 
                 .collect();
             let same_file: Vec<_> = candidates
                 .iter()
-                .filter(|(_, _, file)| file == &entry.path)
+                .filter(|(qname, _, file)| file == &entry.path && qname != &call.caller)
+                .cloned()
                 .collect();
             let imported_files: Vec<_> = entry
                 .parsed
@@ -489,9 +493,9 @@ pub fn build_graph(files: Vec<(String, Option<Language>, ParsedFile)>) -> Graph 
                 .copied()
                 .collect();
             let candidate = if same_file.len() == 1 {
-                Some(same_file[0])
+                Some(same_file[0].clone())
             } else if imported_candidates.len() == 1 {
-                Some(imported_candidates[0])
+                Some(imported_candidates[0].clone())
             } else {
                 if same_file.is_empty() && imported_candidates.len() > 1 {
                     resolution.ambiguous_calls += 1;
@@ -505,10 +509,76 @@ pub fn build_graph(files: Vec<(String, Option<Language>, ParsedFile)>) -> Graph 
                 add_edge(
                     EdgeKind::Calls,
                     caller_id,
-                    *callee_id,
+                    callee_id,
                     Confidence::Inferred,
                     None,
                 );
+            }
+        }
+
+        if let Some(&file_id) = file_node_ids.get(&entry.path) {
+            for exp in &entry.parsed.exports {
+                if let Some(target_qname) = &exp.target {
+                    if let Some(target_ids) = symbol_node_ids.get(target_qname) {
+                        if let Some(&target_id) = target_ids.first() {
+                            add_edge(
+                                EdgeKind::Exports,
+                                file_id,
+                                target_id,
+                                Confidence::Extracted,
+                                Some(exp.name.clone()),
+                            );
+                        }
+                    }
+                }
+            }
+
+            for tref in &entry.parsed.type_references {
+                let from_id = if let Some(container) = &tref.container {
+                    symbol_node_ids
+                        .get(container)
+                        .and_then(|ids| ids.first())
+                        .copied()
+                        .unwrap_or(file_id)
+                } else {
+                    file_id
+                };
+
+                if let Some(candidates) = name_to_symbols.get(&tref.name) {
+                    if let Some((_, target_id, _)) = candidates.first() {
+                        add_edge(
+                            EdgeKind::TypeReferences,
+                            from_id,
+                            *target_id,
+                            Confidence::Inferred,
+                            Some(tref.name.clone()),
+                        );
+                    }
+                }
+            }
+
+            for rref in &entry.parsed.references {
+                let from_id = if let Some(caller) = &rref.caller {
+                    symbol_node_ids
+                        .get(caller)
+                        .and_then(|ids| ids.first())
+                        .copied()
+                        .unwrap_or(file_id)
+                } else {
+                    file_id
+                };
+
+                if let Some(candidates) = name_to_symbols.get(&rref.name) {
+                    if let Some((_, target_id, _)) = candidates.first() {
+                        add_edge(
+                            EdgeKind::References,
+                            from_id,
+                            *target_id,
+                            Confidence::Inferred,
+                            Some(rref.name.clone()),
+                        );
+                    }
+                }
             }
         }
     }
