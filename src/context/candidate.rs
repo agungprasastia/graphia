@@ -63,6 +63,15 @@ pub fn expand_candidates(
     seeds: &[Node],
     options: &ExpansionOptions,
 ) -> Vec<ContextCandidate> {
+    expand_candidates_with_cancel(graph, seeds, options, None)
+}
+
+pub fn expand_candidates_with_cancel(
+    graph: &Graph,
+    seeds: &[Node],
+    options: &ExpansionOptions,
+    cancelled: Option<&dyn Fn() -> bool>,
+) -> Vec<ContextCandidate> {
     if seeds.is_empty() {
         return Vec::new();
     }
@@ -72,6 +81,9 @@ pub fn expand_candidates(
 
     // 1. Add seeds
     for seed in seeds {
+        if cancelled.is_some_and(|check| check()) {
+            return candidates;
+        }
         if visited.insert(seed.id) {
             candidates.push(ContextCandidate {
                 node: seed.clone(),
@@ -87,6 +99,9 @@ pub fn expand_candidates(
     let mut seed_test_ids = HashSet::new();
 
     for seed in seeds {
+        if cancelled.is_some_and(|check| check()) {
+            return candidates;
+        }
         for mapping in &test_discovery.mappings {
             if mapping.source_file == seed.file
                 || mapping.source_symbol.as_ref() == Some(&seed.qualified_name)
@@ -138,6 +153,9 @@ pub fn expand_candidates(
     let max_depth = options.max_depth.min(5);
 
     while let Some((curr_id, depth, path_prefix)) = queue.pop_front() {
+        if cancelled.is_some_and(|check| check()) {
+            return candidates;
+        }
         if depth >= max_depth || candidates.len() >= options.max_candidates {
             continue;
         }

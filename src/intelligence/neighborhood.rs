@@ -44,6 +44,14 @@ pub fn get_neighborhood(
     graph: &Graph,
     options: &NeighborhoodOptions,
 ) -> Option<BoundedNeighborhood> {
+    get_neighborhood_with_cancel(graph, options, None)
+}
+
+pub fn get_neighborhood_with_cancel(
+    graph: &Graph,
+    options: &NeighborhoodOptions,
+    cancelled: Option<&dyn Fn() -> bool>,
+) -> Option<BoundedNeighborhood> {
     let index = QueryIndex::new(graph);
     let matches = index.find(graph, &options.target);
     if matches.is_empty() {
@@ -57,6 +65,9 @@ pub fn get_neighborhood(
     let mut parent_module = None;
 
     for edge in &graph.edges {
+        if cancelled.is_some_and(|check| check()) {
+            return None;
+        }
         if edge.kind == EdgeKind::Contains && edge.to == target_id {
             if let Some(n) = graph.nodes.iter().find(|n| n.id == edge.from) {
                 if n.kind == NodeKind::Module || n.kind == NodeKind::File {
@@ -144,6 +155,9 @@ pub fn get_neighborhood(
 
     // Check if target is mapped to tests
     for mapping in &test_discovery.mappings {
+        if cancelled.is_some_and(|check| check()) {
+            return None;
+        }
         if mapping.source_file == target_node.file
             || mapping.source_symbol.as_ref() == Some(&target_node.qualified_name)
             || mapping.source_symbol.as_ref() == Some(&target_node.name)

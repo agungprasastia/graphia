@@ -59,6 +59,15 @@ pub fn analyze_impact(
     target_symbol_or_file: &str,
     max_depth: usize,
 ) -> Option<ImpactAnalysis> {
+    analyze_impact_with_cancel(graph, target_symbol_or_file, max_depth, None)
+}
+
+pub fn analyze_impact_with_cancel(
+    graph: &Graph,
+    target_symbol_or_file: &str,
+    max_depth: usize,
+    cancelled: Option<&dyn Fn() -> bool>,
+) -> Option<ImpactAnalysis> {
     let index = QueryIndex::new(graph);
     let matches = index.find(graph, target_symbol_or_file);
     if matches.is_empty() {
@@ -87,6 +96,9 @@ pub fn analyze_impact(
     }
 
     while let Some((curr_id, depth, path, _)) = queue.pop_front() {
+        if cancelled.is_some_and(|check| check()) {
+            return None;
+        }
         if depth >= max_depth {
             continue;
         }

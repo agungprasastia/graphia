@@ -1,12 +1,15 @@
+use std::collections::BTreeMap;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 
 use super::error::{McpError, Result};
 use super::protocol::{
-    CallToolParams, Implementation, InitializeParams, InitializeResult, JsonRpcRequest,
-    JsonRpcResponse, ListToolsResult, RequestId, ServerCapabilities, ToolsCapability,
+    CallToolParams, CancellationToken, Implementation, InitializeParams, InitializeResult,
+    JsonRpcRequest, JsonRpcResponse, ListToolsResult, RequestId, ServerCapabilities,
+    ToolsCapability,
 };
-use super::tools::{call_tool, get_tool_definitions};
+use super::tools::{call_tool_with_cancellation, get_tool_definitions};
 use super::transport::{StdioReader, StdioWriter};
 use crate::graph::Graph;
 use crate::scan::scan_repo;
@@ -16,12 +19,28 @@ pub const MCP_PROTOCOL_VERSION: &str = "2024-11-05";
 pub const SERVER_NAME: &str = "graphia-mcp";
 pub const SERVER_VERSION: &str = env!("CARGO_PKG_VERSION");
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum IndexState {
+    Current,
+    Stale {
+        index_mtime: u64,
+        repo_mtime: u64,
+    },
+    Missing,
+    Corrupt(String),
+    VersionMismatch {
+        index_version: u32,
+        expected_version: u32,
+    },
+}
+
 /// MCP Server handling JSON-RPC requests, session state, and tool execution.
 pub struct McpServer {
     repo_root: PathBuf,
     graph: Option<Graph>,
     initialized: bool,
     auto_index: bool,
+    cancellations: Arc<Mutex<BTreeMap<RequestId, CancellationToken>>>,
 }
 
 impl McpServer {
@@ -40,6 +59,7 @@ impl McpServer {
             graph: None,
             initialized: false,
             auto_index,
+            cancellations: Arc::new(Mutex::new(BTreeMap::new())),
         }
     }
 
@@ -55,50 +75,59 @@ impl McpServer {
             }
 
             let binary_index = root.join(".graphia/index.bin");
+            let state = self.index_state()?;
             let graph = if !binary_index.exists() {
                 if self.auto_index {
                     crate::storage::build_or_update(root, false)
                         .map_err(|e| McpError::Internal(format!("Failed to build graph: {e}")))?
                         .0
                 } else {
-                    return Err(McpError::GraphNotBuilt(
+                    return Err(McpError::RepositoryNotIndexed(
                         "Repository index is missing. Run 'graphia build <repo>' or start MCP with '--auto-index'.".to_string(),
                     ));
                 }
             } else {
-                let stale = match load_metadata(root) {
-                    Ok(Some(previous)) => {
-                        let scanned = scan_repo(root).map_err(|e| {
-                            McpError::Internal(format!("Failed to inspect repository: {e}"))
-                        })?;
-                        let current = metadata_for_files(&scanned).map_err(|e| {
-                            McpError::Internal(format!("Failed to inspect repository: {e}"))
-                        })?;
-                        !compare_metadata(Some(&previous), &current)
-                            .iter()
-                            .all(|change| change.change == crate::storage::FileChange::Unchanged)
+                match state {
+                    IndexState::VersionMismatch {
+                        index_version,
+                        expected_version,
+                    } => {
+                        if self.auto_index {
+                            crate::storage::build_or_update(root, true)
+                                .map_err(|e| McpError::Internal(e.to_string()))?
+                                .0
+                        } else {
+                            return Err(McpError::VersionMismatch(format!(
+                                "found {index_version}, expected {expected_version}"
+                            )));
+                        }
                     }
-                    Ok(None) => true,
-                    Err(_) => true,
-                };
-                if stale {
-                    if self.auto_index {
-                        crate::storage::build_or_update(root, false)
-                            .map_err(|e| {
-                                McpError::Internal(format!("Failed to refresh stale graph: {e}"))
-                            })?
-                            .0
-                    } else {
-                        return Err(McpError::GraphNotBuilt(
-                            "Repository index is stale. Refresh it with 'graphia update <repo>' or start MCP with '--auto-index'.".to_string(),
-                        ));
+                    IndexState::Corrupt(message) => {
+                        if self.auto_index {
+                            crate::storage::build_or_update(root, true)
+                                .map_err(|e| McpError::Internal(e.to_string()))?
+                                .0
+                        } else {
+                            return Err(McpError::CorruptIndex(message));
+                        }
                     }
-                } else {
-                    crate::storage::load_graph_binary(&binary_index).map_err(|e| {
-                        McpError::GraphNotBuilt(format!(
-                            "Graph index is corrupt or incompatible: {e}"
-                        ))
-                    })?
+                    IndexState::Stale {
+                        index_mtime,
+                        repo_mtime,
+                    } => {
+                        if self.auto_index {
+                            crate::storage::build_or_update(root, false)
+                                .map_err(|e| McpError::Internal(e.to_string()))?
+                                .0
+                        } else {
+                            return Err(McpError::StaleIndex(format!(
+                                "index mtime {index_mtime}, repository mtime {repo_mtime}"
+                            )));
+                        }
+                    }
+                    IndexState::Missing => unreachable!(),
+                    IndexState::Current => crate::storage::load_graph_binary(&binary_index)
+                        .map_err(|e| McpError::CorruptIndex(e.to_string()))?,
                 }
             };
 
@@ -128,7 +157,19 @@ impl McpServer {
         let mut reader = StdioReader::new(input);
         let mut writer = StdioWriter::new(output);
 
-        while let Some(request) = reader.read_message()? {
+        loop {
+            let request = match reader.read_message() {
+                Ok(Some(request)) => request,
+                Ok(None) => break,
+                Err(McpError::Parse(message)) => {
+                    writer.write_response(&JsonRpcResponse::error(
+                        RequestId::Null,
+                        McpError::Parse(message).to_jsonrpc_error(),
+                    ))?;
+                    continue;
+                }
+                Err(error) => return Err(error),
+            };
             if request.is_notification() {
                 self.handle_notification(&request)?;
             } else {
@@ -166,14 +207,29 @@ impl McpServer {
                 self.initialized = true;
                 eprintln!("[graphia-mcp] Client initialized notification received");
             }
-            "notifications/cancelled" => {
-                eprintln!("[graphia-mcp] Client cancelled request");
+            "$/cancelRequest" | "notifications/cancelled" => {
+                let Some(params) = request.params.clone() else {
+                    return Ok(());
+                };
+                if let Ok(params) =
+                    serde_json::from_value::<super::protocol::CancelRequestParams>(params)
+                {
+                    self.cancel_request(&params.id);
+                }
             }
             _ => {
                 eprintln!("[graphia-mcp] Received notification: {}", request.method);
             }
         }
         Ok(())
+    }
+
+    pub fn cancel_request(&self, id: &RequestId) {
+        if let Ok(registry) = self.cancellations.lock()
+            && let Some(token) = registry.get(id)
+        {
+            token.cancel();
+        }
     }
 
     fn handle_initialize(
@@ -278,14 +334,28 @@ impl McpServer {
             return JsonRpcResponse::error(id, e.to_jsonrpc_error());
         }
 
-        let graph = self.graph.as_ref().expect("graph loaded");
+        let Some(graph) = self.graph.as_ref() else {
+            return JsonRpcResponse::error(
+                id,
+                McpError::Internal("Graph not initialized".to_string()).to_jsonrpc_error(),
+            );
+        };
         let root_ref = Some(self.repo_root.as_path());
-        match call_tool(
+        let token = CancellationToken::new();
+        if let Ok(mut registry) = self.cancellations.lock() {
+            registry.insert(id.clone(), token.clone());
+        }
+        let result = call_tool_with_cancellation(
             graph,
             root_ref,
             &call_params.name,
             call_params.arguments.as_ref(),
-        ) {
+            &token,
+        );
+        if let Ok(mut registry) = self.cancellations.lock() {
+            registry.remove(&id);
+        }
+        match result {
             Ok(tool_result) => match serde_json::to_value(tool_result) {
                 Ok(val) => JsonRpcResponse::success(id, val),
                 Err(e) => JsonRpcResponse::error(
@@ -295,6 +365,56 @@ impl McpServer {
             },
             Err(e) => JsonRpcResponse::error(id, e.to_jsonrpc_error()),
         }
+    }
+
+    fn index_state(&self) -> Result<IndexState> {
+        let path = self.repo_root.join(".graphia/index.bin");
+        if !path.exists() {
+            return Ok(IndexState::Missing);
+        }
+        let data = std::fs::read(&path).map_err(McpError::from)?;
+        if data.len() < 8 || &data[..4] != b"GRPH" {
+            return Ok(IndexState::Corrupt("invalid graph index header".into()));
+        }
+        let version = u32::from_le_bytes([data[4], data[5], data[6], data[7]]);
+        if version != 3 {
+            return Ok(IndexState::VersionMismatch {
+                index_version: version,
+                expected_version: 3,
+            });
+        }
+        if let Err(error) = crate::storage::load_graph_binary(&path) {
+            return Ok(IndexState::Corrupt(error.to_string()));
+        }
+        let index_mtime = std::fs::metadata(&path)
+            .ok()
+            .and_then(|m| m.modified().ok())
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map_or(0, |d| d.as_secs());
+        let scanned = scan_repo(&self.repo_root).map_err(McpError::from)?;
+        let current = metadata_for_files(&scanned).map_err(McpError::from)?;
+        let previous = load_metadata(&self.repo_root).map_err(McpError::from)?;
+        let changed = !compare_metadata(previous.as_ref(), &current)
+            .iter()
+            .all(|c| c.change == crate::storage::FileChange::Unchanged);
+        let repo_mtime = current
+            .files
+            .iter()
+            .filter_map(|f| f.modified_ns)
+            .max()
+            .map_or(0, |n| (n / 1_000_000_000) as u64);
+        Ok(if changed || repo_mtime > index_mtime {
+            IndexState::Stale {
+                index_mtime,
+                repo_mtime,
+            }
+        } else {
+            IndexState::Current
+        })
+    }
+
+    pub fn classify_index_state(&self) -> Result<IndexState> {
+        self.index_state()
     }
 
     /// Check whether a path traverses outside of the repository boundary.

@@ -23,6 +23,15 @@ pub fn generate_context(
     request: &ContextRequest,
     repo_root: Option<&Path>,
 ) -> ContextBundle {
+    generate_context_with_cancel(graph, request, repo_root, None)
+}
+
+pub fn generate_context_with_cancel(
+    graph: &Graph,
+    request: &ContextRequest,
+    repo_root: Option<&Path>,
+    cancelled: Option<&dyn Fn() -> bool>,
+) -> ContextBundle {
     // 1. Resolve seeds
     let seeds = resolve_seeds(graph, request, repo_root);
 
@@ -39,7 +48,8 @@ pub fn generate_context(
             request.max_candidates
         },
     };
-    let candidates = expand_candidates(graph, &seeds, &expansion_options);
+    let candidates =
+        candidate::expand_candidates_with_cancel(graph, &seeds, &expansion_options, cancelled);
 
     // 3. Rank & score candidates
     let ranked = rank_candidates(candidates);

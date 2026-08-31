@@ -8,6 +8,7 @@ use graphia::mcp::protocol::{
     CallToolResult, Content, InitializeResult, JsonRpcRequest, JsonRpcResponse, ListToolsResult,
     RequestId,
 };
+use graphia::mcp::{CancellationToken, call_tool_with_cancellation};
 use graphia::mcp::{McpServer, get_tool_definitions};
 use graphia::model::{Confidence, Edge, EdgeId, EdgeKind, Node, NodeId, NodeKind, SourceLocation};
 use tempfile::tempdir;
@@ -223,6 +224,36 @@ fn test_mcp_tools_list() {
     let list_res: ListToolsResult =
         serde_json::from_value(resp.result.unwrap()).expect("parse list tools result");
     assert_eq!(list_res.tools.len(), 11);
+}
+
+#[test]
+fn test_mcp_cancelled_tool_returns_cancelled_error() {
+    let token = CancellationToken::new();
+    token.cancel();
+    let graph = build_mock_graph();
+    let args = serde_json::json!({"from":"checkout","to":"apply_discount"});
+    let args = args.as_object();
+    let result = call_tool_with_cancellation(&graph, None, "graphia_dependency_path", args, &token);
+    assert!(matches!(result, Err(graphia::mcp::McpError::Cancelled)));
+}
+
+#[test]
+fn test_mcp_malformed_json_is_reported_and_server_continues() {
+    let input = "{ malformed\n{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"ping\"}\n";
+    let mut output = Vec::new();
+    McpServer::new(None)
+        .run_stream(Cursor::new(input.as_bytes()), &mut output)
+        .expect("server resilience");
+    let output = String::from_utf8(output).expect("utf8");
+    let lines: Vec<&str> = output.lines().collect();
+    assert_eq!(lines.len(), 2);
+    let parse: JsonRpcResponse = serde_json::from_str(lines[0]).expect("parse response");
+    assert_eq!(
+        parse.error.expect("parse error").code,
+        error_codes::PARSE_ERROR
+    );
+    let ping: JsonRpcResponse = serde_json::from_str(lines[1]).expect("ping response");
+    assert!(ping.error.is_none());
 }
 
 #[test]

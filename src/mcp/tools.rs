@@ -3,12 +3,13 @@ use std::path::Path;
 use serde_json::json;
 
 use super::error::{McpError, Result};
-use super::protocol::{CallToolResult, Tool};
-use crate::context::{BudgetValueType, ContextRequest, generate_context};
+use super::protocol::{CallToolResult, CancellationToken, Tool};
+use crate::context::{BudgetValueType, ContextRequest};
 use crate::graph::Graph;
 use crate::intelligence::{
-    NeighborhoodOptions, SearchOptions, analyze_impact, discover_tests, get_architecture_overview,
-    get_neighborhood, map_source_to_tests, search_graph,
+    NeighborhoodOptions, SearchOptions, analyze_impact_with_cancel, discover_tests,
+    get_architecture_overview, get_neighborhood, get_neighborhood_with_cancel, map_source_to_tests,
+    search_graph,
 };
 use crate::model::{Node, NodeKind};
 use crate::query::{QueryIndex, TraversalLimits};
@@ -302,6 +303,19 @@ pub fn call_tool(
     name: &str,
     arguments: Option<&serde_json::Map<String, serde_json::Value>>,
 ) -> Result<CallToolResult> {
+    call_tool_with_cancellation(graph, repo_root, name, arguments, &CancellationToken::new())
+}
+
+pub fn call_tool_with_cancellation(
+    graph: &Graph,
+    repo_root: Option<&Path>,
+    name: &str,
+    arguments: Option<&serde_json::Map<String, serde_json::Value>>,
+    token: &CancellationToken,
+) -> Result<CallToolResult> {
+    if token.is_cancelled() {
+        return Err(McpError::Cancelled);
+    }
     let empty_args = serde_json::Map::new();
     let args = arguments.unwrap_or(&empty_args);
 
@@ -311,14 +325,21 @@ pub fn call_tool(
         "graphia_find_callers" => tool_find_callers(graph, args),
         "graphia_find_callees" => tool_find_callees(graph, args),
         "graphia_find_references" => tool_find_references(graph, args),
-        "graphia_dependency_path" => tool_dependency_path(graph, args),
-        "graphia_neighborhood" => tool_neighborhood(graph, args),
-        "graphia_impact" => tool_impact(graph, args),
+        "graphia_dependency_path" => tool_dependency_path(graph, args, token),
+        "graphia_neighborhood" => tool_neighborhood(graph, args, token),
+        "graphia_impact" => tool_impact(graph, args, token),
         "graphia_find_tests" => tool_find_tests(graph, args),
         "graphia_architecture" => tool_architecture(graph),
-        "graphia_context" => tool_context(graph, repo_root, args),
+        "graphia_context" => tool_context(graph, repo_root, args, token),
         _ => Err(McpError::MethodNotFound(format!("Tool '{name}' not found"))),
     }
+    .and_then(|result| {
+        if token.is_cancelled() {
+            Err(McpError::Cancelled)
+        } else {
+            Ok(result)
+        }
+    })
 }
 
 fn parse_node_kind(s: &str) -> Option<NodeKind> {
@@ -539,6 +560,7 @@ fn tool_find_references(
 fn tool_dependency_path(
     graph: &Graph,
     args: &serde_json::Map<String, serde_json::Value>,
+    token: &CancellationToken,
 ) -> Result<CallToolResult> {
     let from = args
         .get("from")
@@ -570,10 +592,11 @@ fn tool_dependency_path(
     let start_node = from_matches[0];
     let end_node = to_matches[0];
 
-    match index.shortest_path(
+    match index.shortest_path_with_cancel(
         start_node.id,
         end_node.id,
         TraversalLimits::new(max_depth, 10_000),
+        Some(&|| token.is_cancelled()),
     ) {
         Ok(Some(path_edges)) => {
             let mut steps: Vec<&Node> = vec![start_node];
@@ -592,6 +615,7 @@ fn tool_dependency_path(
             .map_err(|e| McpError::Internal(format!("Serialization error: {e}")))?;
             Ok(CallToolResult::text(output))
         }
+        Ok(None) if token.is_cancelled() => Err(McpError::Cancelled),
         Ok(None) => {
             let output = serde_json::to_string_pretty(&json!({
                 "found": false,
@@ -612,6 +636,7 @@ fn tool_dependency_path(
 fn tool_neighborhood(
     graph: &Graph,
     args: &serde_json::Map<String, serde_json::Value>,
+    token: &CancellationToken,
 ) -> Result<CallToolResult> {
     let symbol = args
         .get("symbol")
@@ -627,7 +652,12 @@ fn tool_neighborhood(
         limit,
     };
 
-    let Some(neighborhood) = get_neighborhood(graph, &options) else {
+    let Some(neighborhood) =
+        get_neighborhood_with_cancel(graph, &options, Some(&|| token.is_cancelled()))
+    else {
+        if token.is_cancelled() {
+            return Err(McpError::Cancelled);
+        }
         return Ok(CallToolResult::error(format!(
             "Symbol '{symbol}' not found"
         )));
@@ -642,6 +672,7 @@ fn tool_neighborhood(
 fn tool_impact(
     graph: &Graph,
     args: &serde_json::Map<String, serde_json::Value>,
+    token: &CancellationToken,
 ) -> Result<CallToolResult> {
     let symbol = args
         .get("symbol")
@@ -650,7 +681,12 @@ fn tool_impact(
 
     let depth = parse_checked_depth(args, 3)?;
 
-    let Some(impact) = analyze_impact(graph, symbol, depth) else {
+    let Some(impact) =
+        analyze_impact_with_cancel(graph, symbol, depth, Some(&|| token.is_cancelled()))
+    else {
+        if token.is_cancelled() {
+            return Err(McpError::Cancelled);
+        }
         return Ok(CallToolResult::error(format!(
             "Symbol '{symbol}' not found"
         )));
@@ -693,6 +729,7 @@ fn tool_context(
     graph: &Graph,
     repo_root: Option<&Path>,
     args: &serde_json::Map<String, serde_json::Value>,
+    token: &CancellationToken,
 ) -> Result<CallToolResult> {
     let symbol = args
         .get("symbol")
@@ -750,7 +787,12 @@ fn tool_context(
         max_candidates,
     };
 
-    let bundle = generate_context(graph, &req, repo_root);
+    let bundle = crate::context::generate_context_with_cancel(
+        graph,
+        &req,
+        repo_root,
+        Some(&|| token.is_cancelled()),
+    );
     let output = serde_json::to_string_pretty(&bundle)
         .map_err(|e| McpError::Internal(format!("Serialization error: {e}")))?;
 

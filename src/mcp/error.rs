@@ -16,6 +16,11 @@ pub mod error_codes {
     pub const PATH_TRAVERSAL_DETECTED: i32 = -32002;
     pub const TOOL_EXECUTION_ERROR: i32 = -32003;
     pub const UNINITIALIZED: i32 = -32004;
+    pub const REPOSITORY_NOT_INDEXED: i32 = -32005;
+    pub const STALE_INDEX: i32 = -32006;
+    pub const CORRUPT_INDEX: i32 = -32007;
+    pub const VERSION_MISMATCH: i32 = -32008;
+    pub const CANCELLED: i32 = -32800;
 }
 
 #[derive(Debug)]
@@ -31,6 +36,11 @@ pub enum McpError {
     ToolExecution(String),
     Uninitialized(String),
     Io(std::io::Error),
+    RepositoryNotIndexed(String),
+    StaleIndex(String),
+    CorruptIndex(String),
+    VersionMismatch(String),
+    Cancelled,
 }
 
 impl fmt::Display for McpError {
@@ -47,6 +57,11 @@ impl fmt::Display for McpError {
             Self::ToolExecution(msg) => write!(f, "Tool execution failed: {msg}"),
             Self::Uninitialized(msg) => write!(f, "Server not initialized: {msg}"),
             Self::Io(err) => write!(f, "I/O error: {err}"),
+            Self::RepositoryNotIndexed(msg) => write!(f, "Repository not indexed: {msg}"),
+            Self::StaleIndex(msg) => write!(f, "Stale index: {msg}"),
+            Self::CorruptIndex(msg) => write!(f, "Corrupt index: {msg}"),
+            Self::VersionMismatch(msg) => write!(f, "Index version mismatch: {msg}"),
+            Self::Cancelled => write!(f, "Request cancelled"),
         }
     }
 }
@@ -99,6 +114,15 @@ impl McpError {
             }
             Self::Uninitialized(msg) => JsonRpcErrorObject::new(error_codes::UNINITIALIZED, msg),
             Self::Io(err) => JsonRpcErrorObject::new(error_codes::INTERNAL_ERROR, err.to_string()),
+            Self::RepositoryNotIndexed(msg) => {
+                JsonRpcErrorObject::new(error_codes::REPOSITORY_NOT_INDEXED, msg)
+            }
+            Self::StaleIndex(msg) => JsonRpcErrorObject::new(error_codes::STALE_INDEX, msg),
+            Self::CorruptIndex(msg) => JsonRpcErrorObject::new(error_codes::CORRUPT_INDEX, msg),
+            Self::VersionMismatch(msg) => {
+                JsonRpcErrorObject::new(error_codes::VERSION_MISMATCH, msg)
+            }
+            Self::Cancelled => JsonRpcErrorObject::new(error_codes::CANCELLED, "Request cancelled"),
         }
     }
 }

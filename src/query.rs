@@ -196,6 +196,16 @@ impl QueryIndex {
         to: NodeId,
         limits: TraversalLimits,
     ) -> std::result::Result<Option<Vec<EdgeId>>, TraversalError> {
+        self.shortest_path_with_cancel(from, to, limits, None)
+    }
+
+    pub fn shortest_path_with_cancel(
+        &self,
+        from: NodeId,
+        to: NodeId,
+        limits: TraversalLimits,
+        cancelled: Option<&dyn Fn() -> bool>,
+    ) -> std::result::Result<Option<Vec<EdgeId>>, TraversalError> {
         let Some(&from_slot) = self.slots.get(&from) else {
             return Ok(None);
         };
@@ -208,6 +218,9 @@ impl QueryIndex {
         seen[from_slot] = true;
         let mut visited = 0;
         while let Some((current, depth)) = queue.pop_front() {
+            if cancelled.is_some_and(|check| check()) {
+                return Ok(None);
+            }
             visited += 1;
             if visited > limits.max_visited {
                 return Err(TraversalError {
