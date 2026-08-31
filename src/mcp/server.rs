@@ -9,6 +9,8 @@ use super::protocol::{
 use super::tools::{call_tool, get_tool_definitions};
 use super::transport::{StdioReader, StdioWriter};
 use crate::graph::Graph;
+use crate::scan::scan_repo;
+use crate::storage::{compare_metadata, load_metadata, metadata_for_files};
 
 pub const MCP_PROTOCOL_VERSION: &str = "2024-11-05";
 pub const SERVER_NAME: &str = "graphia-mcp";
@@ -53,16 +55,51 @@ impl McpServer {
             }
 
             let binary_index = root.join(".graphia/index.bin");
-            let graph = if binary_index.exists() {
-                crate::storage::load_graph_binary(&binary_index)
-                    .map_err(|e| McpError::Internal(format!("Failed to load binary index: {e}")))?
-            } else if self.auto_index {
-                crate::storage::build_graph_from_repo(root)
-                    .map_err(|e| McpError::Internal(format!("Failed to build graph: {e}")))?
+            let graph = if !binary_index.exists() {
+                if self.auto_index {
+                    crate::storage::build_or_update(root, false)
+                        .map_err(|e| McpError::Internal(format!("Failed to build graph: {e}")))?
+                        .0
+                } else {
+                    return Err(McpError::GraphNotBuilt(
+                        "Repository index is missing. Run 'graphia build <repo>' or start MCP with '--auto-index'.".to_string(),
+                    ));
+                }
             } else {
-                return Err(McpError::Internal(
-                    "Repository not indexed. Run 'graphia build <repo>' or start MCP with '--auto-index'.".to_string(),
-                ));
+                let stale = match load_metadata(root) {
+                    Ok(Some(previous)) => {
+                        let scanned = scan_repo(root).map_err(|e| {
+                            McpError::Internal(format!("Failed to inspect repository: {e}"))
+                        })?;
+                        let current = metadata_for_files(&scanned).map_err(|e| {
+                            McpError::Internal(format!("Failed to inspect repository: {e}"))
+                        })?;
+                        !compare_metadata(Some(&previous), &current)
+                            .iter()
+                            .all(|change| change.change == crate::storage::FileChange::Unchanged)
+                    }
+                    Ok(None) => true,
+                    Err(_) => true,
+                };
+                if stale {
+                    if self.auto_index {
+                        crate::storage::build_or_update(root, false)
+                            .map_err(|e| {
+                                McpError::Internal(format!("Failed to refresh stale graph: {e}"))
+                            })?
+                            .0
+                    } else {
+                        return Err(McpError::GraphNotBuilt(
+                            "Repository index is stale. Refresh it with 'graphia update <repo>' or start MCP with '--auto-index'.".to_string(),
+                        ));
+                    }
+                } else {
+                    crate::storage::load_graph_binary(&binary_index).map_err(|e| {
+                        McpError::GraphNotBuilt(format!(
+                            "Graph index is corrupt or incompatible: {e}"
+                        ))
+                    })?
+                }
             };
 
             self.graph = Some(graph);

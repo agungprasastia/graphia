@@ -187,32 +187,32 @@ pub fn diff_public_api(old_graph: &Graph, new_graph: &Graph) -> ApiDiffSummary {
         }
     };
 
-    let old_pub: HashMap<String, &Node> = old_graph
+    let old_pub: HashMap<SemanticNodeKey, &Node> = old_graph
         .nodes
         .iter()
         .filter(|n| is_public(n))
-        .map(|n| (n.qualified_name.clone(), n))
+        .map(|n| (SemanticNodeKey::from_node(n), n))
         .collect();
 
-    let new_pub: HashMap<String, &Node> = new_graph
+    let new_pub: HashMap<SemanticNodeKey, &Node> = new_graph
         .nodes
         .iter()
         .filter(|n| is_public(n))
-        .map(|n| (n.qualified_name.clone(), n))
+        .map(|n| (SemanticNodeKey::from_node(n), n))
         .collect();
 
     let mut added_public_symbols = Vec::new();
     let mut removed_public_symbols = Vec::new();
     let mut modified_signatures = Vec::new();
 
-    for (qname, n_node) in &new_pub {
-        if let Some(o_node) = old_pub.get(qname) {
+    for (key, n_node) in &new_pub {
+        if let Some(o_node) = old_pub.get(key) {
             if o_node.signature != n_node.signature || o_node.visibility != n_node.visibility {
                 let breaking = o_node.signature != n_node.signature
                     || (o_node.visibility == Visibility::Public
                         && n_node.visibility != Visibility::Public);
                 modified_signatures.push(ModifiedSignatureRecord {
-                    symbol: qname.clone(),
+                    symbol: key.qualified_name.clone(),
                     old_signature: o_node.signature.clone(),
                     new_signature: n_node.signature.clone(),
                     old_visibility: o_node.visibility,
@@ -225,8 +225,8 @@ pub fn diff_public_api(old_graph: &Graph, new_graph: &Graph) -> ApiDiffSummary {
         }
     }
 
-    for (qname, o_node) in &old_pub {
-        if !new_pub.contains_key(qname) {
+    for (key, o_node) in &old_pub {
+        if !new_pub.contains_key(key) {
             removed_public_symbols.push((*o_node).clone());
         }
     }

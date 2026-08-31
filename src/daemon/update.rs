@@ -72,6 +72,11 @@ impl UpdateQueue {
         self.dirty
     }
 
+    /// Preserve the dirty state when an update or recovery fails.
+    pub fn mark_dirty(&mut self) {
+        self.dirty = true;
+    }
+
     /// Clear dirty flag after a full reconciliation scan.
     pub fn clear_dirty(&mut self) {
         self.dirty = false;

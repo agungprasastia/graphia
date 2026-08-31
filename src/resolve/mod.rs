@@ -4,9 +4,7 @@ pub mod scope;
 
 use std::collections::{BTreeMap, BTreeSet};
 
-pub use candidate::{
-    Candidate, CandidateSelector, Resolution, ResolutionReason, ResolutionState,
-};
+pub use candidate::{Candidate, CandidateSelector, Resolution, ResolutionReason, ResolutionState};
 pub use import::{ImportDirective, ImportTable, parse_import_directive};
 pub use scope::{Scope, ScopeKind, ScopeTree};
 
@@ -109,7 +107,8 @@ impl ResolutionEngine {
             // Register export directives / re-exports
             for exp in &parsed.exports {
                 if let Some(target) = &exp.target {
-                    self.export_table.insert((path.clone(), exp.name.clone()), target.clone());
+                    self.export_table
+                        .insert((path.clone(), exp.name.clone()), target.clone());
                 }
             }
         }
@@ -219,14 +218,22 @@ impl ResolutionEngine {
                 .iter()
                 .find(|n| n.qualified_name == call.caller && n.file == *file)
                 .or_else(|| nodes.iter().find(|n| n.qualified_name == call.caller))
-                .or_else(|| nodes.iter().find(|n| n.name == call.caller && n.file == *file))
+                .or_else(|| {
+                    nodes
+                        .iter()
+                        .find(|n| n.name == call.caller && n.file == *file)
+                })
                 .or_else(|| {
                     let simple_caller = call.caller.rsplit("::").next().unwrap_or(&call.caller);
-                    nodes.iter().find(|n| n.name == simple_caller && n.file == *file)
+                    nodes
+                        .iter()
+                        .find(|n| n.name == simple_caller && n.file == *file)
                 })
                 .or_else(|| {
                     let simple_caller = call.caller.rsplit('.').next().unwrap_or(&call.caller);
-                    nodes.iter().find(|n| n.name == simple_caller && n.file == *file)
+                    nodes
+                        .iter()
+                        .find(|n| n.name == simple_caller && n.file == *file)
                 });
             let Some(caller) = caller_node else {
                 summary.unresolved_calls += 1;
@@ -377,9 +384,11 @@ impl ResolutionEngine {
         // 1. Lexical Scope Lookup (if caller node is provided)
         if let Some(c) = caller {
             if let Some(caller_scope) = self.scope_tree.node_scope(c.id) {
-                if let Some((scope_id, ids)) = self.scope_tree.lookup_lexical(caller_scope, target_name) {
-                    let is_local = scope_id != 0
-                        && scope_id != self.scope_tree.file_scope(file).unwrap_or(0);
+                if let Some((scope_id, ids)) =
+                    self.scope_tree.lookup_lexical(caller_scope, target_name)
+                {
+                    let is_local =
+                        scope_id != 0 && scope_id != self.scope_tree.file_scope(file).unwrap_or(0);
                     let priority = if is_local { 1 } else { 2 };
                     let reason = if is_local {
                         ResolutionReason::LexicalScope
@@ -387,7 +396,12 @@ impl ResolutionEngine {
                         ResolutionReason::SameFile
                     };
                     for &id in ids {
-                        if self.candidate_matches_filter(id, edge_kind, param_count, container_context) {
+                        if self.candidate_matches_filter(
+                            id,
+                            edge_kind,
+                            param_count,
+                            container_context,
+                        ) {
                             selector.add(id, priority, reason.clone());
                         }
                     }
@@ -399,10 +413,17 @@ impl ResolutionEngine {
         if let Some(candidates) = self.name_index.get(target_name) {
             for c in candidates {
                 if c.file == file
-                    && self.candidate_matches_filter(c.node_id, edge_kind, param_count, container_context)
+                    && self.candidate_matches_filter(
+                        c.node_id,
+                        edge_kind,
+                        param_count,
+                        container_context,
+                    )
                 {
                     let priority = if let Some(ctx) = container_context {
-                        if c.container.as_deref() == Some(ctx) || c.parent_type.as_deref() == Some(ctx) {
+                        if c.container.as_deref() == Some(ctx)
+                            || c.parent_type.as_deref() == Some(ctx)
+                        {
                             1
                         } else {
                             2
@@ -427,8 +448,17 @@ impl ResolutionEngine {
                         let is_imported = imported_files.contains(&c.file);
                         let m1 = matches_import_target(&c.file, &final_target_file);
                         let m2 = matches_import_target(&c.file, target_path);
-                        let is_same_lang = caller.is_none_or(|cl| cl.language == c.language || cl.language.is_none() || c.language.is_none());
-                        let filter_pass = self.candidate_matches_filter(c.node_id, edge_kind, param_count, container_context);
+                        let is_same_lang = caller.is_none_or(|cl| {
+                            cl.language == c.language
+                                || cl.language.is_none()
+                                || c.language.is_none()
+                        });
+                        let filter_pass = self.candidate_matches_filter(
+                            c.node_id,
+                            edge_kind,
+                            param_count,
+                            container_context,
+                        );
                         if (m1 || m2 || is_imported) && is_same_lang && filter_pass {
                             let is_explicit_alias =
                                 remote_sym.is_some() && remote_sym.as_deref() != Some(target_name);
@@ -483,15 +513,25 @@ impl ResolutionEngine {
                     });
 
                     if in_caller_type {
-                        if self.candidate_matches_filter(c.node_id, edge_kind, param_count, container_context) {
+                        if self.candidate_matches_filter(
+                            c.node_id,
+                            edge_kind,
+                            param_count,
+                            container_context,
+                        ) {
                             selector.add(c.node_id, 2, ResolutionReason::ReceiverMethod);
                         }
                     } else {
                         // Check if parent type is imported or parent type's file is imported
-                        let parent_imported = self.is_type_imported(file, parent)
-                            || imported_files.contains(&c.file);
+                        let parent_imported =
+                            self.is_type_imported(file, parent) || imported_files.contains(&c.file);
                         if parent_imported
-                            && self.candidate_matches_filter(c.node_id, edge_kind, param_count, container_context)
+                            && self.candidate_matches_filter(
+                                c.node_id,
+                                edge_kind,
+                                param_count,
+                                container_context,
+                            )
                         {
                             selector.add(c.node_id, 5, ResolutionReason::ReceiverMethod);
                         }
@@ -505,7 +545,12 @@ impl ResolutionEngine {
             for c in candidates {
                 if c.file != file
                     && imported_files.contains(&c.file)
-                    && self.candidate_matches_filter(c.node_id, edge_kind, param_count, container_context)
+                    && self.candidate_matches_filter(
+                        c.node_id,
+                        edge_kind,
+                        param_count,
+                        container_context,
+                    )
                 {
                     selector.add(c.node_id, 6, ResolutionReason::WildcardImport);
                 }
@@ -521,7 +566,9 @@ impl ResolutionEngine {
         }
         if let Some(dirs) = self.import_table.directives(file) {
             for d in dirs {
-                if d.imported_symbol.as_deref() == Some(type_name) || d.alias.as_deref() == Some(type_name) {
+                if d.imported_symbol.as_deref() == Some(type_name)
+                    || d.alias.as_deref() == Some(type_name)
+                {
                     return true;
                 }
             }
@@ -551,7 +598,10 @@ impl ResolutionEngine {
 
         while visited.insert((curr_file.clone(), curr_sym.clone())) {
             // Check if current file has an export for curr_sym
-            if let Some(target) = self.export_table.get(&(curr_file.clone(), curr_sym.clone())) {
+            if let Some(target) = self
+                .export_table
+                .get(&(curr_file.clone(), curr_sym.clone()))
+            {
                 if let Some((target_f, target_s)) = target.rsplit_once("::") {
                     curr_file = target_f.to_string();
                     curr_sym = target_s.to_string();
@@ -612,7 +662,12 @@ impl ResolutionEngine {
             let direct_files: Vec<String> = self
                 .file_nodes
                 .keys()
-                .filter(|f| f.ends_with(&format!("{target_path}.ts")) || f.ends_with(&format!("{target_path}.rs")) || f.ends_with(&format!("{target_path}.py")) || f.ends_with(&format!("{target_path}.js")))
+                .filter(|f| {
+                    f.ends_with(&format!("{target_path}.ts"))
+                        || f.ends_with(&format!("{target_path}.rs"))
+                        || f.ends_with(&format!("{target_path}.py"))
+                        || f.ends_with(&format!("{target_path}.js"))
+                })
                 .cloned()
                 .collect();
             if !direct_files.is_empty() {
@@ -636,9 +691,11 @@ impl ResolutionEngine {
                         }
                     }
                     if f != resolved_target_file {
-                        if let Some((deep_s, deep_f)) =
-                            self.trace_reexport_path_internal(&resolved_target_file, target_s, visited)
-                        {
+                        if let Some((deep_s, deep_f)) = self.trace_reexport_path_internal(
+                            &resolved_target_file,
+                            target_s,
+                            visited,
+                        ) {
                             return Some((deep_s, deep_f));
                         }
                         return Some((target_s.to_string(), resolved_target_file));
@@ -649,9 +706,11 @@ impl ResolutionEngine {
                 for d in dirs {
                     let imported_s = d.imported_symbol.as_deref().unwrap_or(sym_name);
                     if imported_s == sym_name || imported_s == "*" {
-                        if let Some((deep_s, deep_f)) =
-                            self.trace_reexport_path_internal(&d.target_module_or_path, sym_name, visited)
-                        {
+                        if let Some((deep_s, deep_f)) = self.trace_reexport_path_internal(
+                            &d.target_module_or_path,
+                            sym_name,
+                            visited,
+                        ) {
                             return Some((deep_s, deep_f));
                         }
                     }
@@ -712,10 +771,7 @@ impl ResolutionEngine {
             EdgeKind::Instantiates => {
                 if !matches!(
                     node.kind,
-                    NodeKind::Class
-                        | NodeKind::Struct
-                        | NodeKind::Constructor
-                        | NodeKind::Enum
+                    NodeKind::Class | NodeKind::Struct | NodeKind::Constructor | NodeKind::Enum
                 ) {
                     return false;
                 }
@@ -723,10 +779,7 @@ impl ResolutionEngine {
             EdgeKind::Inherits => {
                 if !matches!(
                     node.kind,
-                    NodeKind::Class
-                        | NodeKind::Struct
-                        | NodeKind::Interface
-                        | NodeKind::Trait
+                    NodeKind::Class | NodeKind::Struct | NodeKind::Interface | NodeKind::Trait
                 ) {
                     return false;
                 }
@@ -739,7 +792,11 @@ impl ResolutionEngine {
                     return false;
                 }
             }
-            EdgeKind::Calls | EdgeKind::References | EdgeKind::Contains | EdgeKind::Imports | EdgeKind::Exports => {}
+            EdgeKind::Calls
+            | EdgeKind::References
+            | EdgeKind::Contains
+            | EdgeKind::Imports
+            | EdgeKind::Exports => {}
         }
 
         if let Some(expected_params) = param_count {
@@ -826,11 +883,14 @@ impl ResolutionEngine {
                 let symbol_to_find = remote_sym.as_deref().unwrap_or(callee);
                 if let Some(candidates) = self.name_index.get(symbol_to_find) {
                     for c in candidates {
-                        let target_f_id = self.file_nodes.get(&c.file).copied().unwrap_or(NodeId(0));
+                        let target_f_id =
+                            self.file_nodes.get(&c.file).copied().unwrap_or(NodeId(0));
                         let is_imported = imported_file_ids.contains(&target_f_id);
                         let m1 = matches_import_target(&c.file, target_path);
                         let m2 = matches_import_target(target_path, &c.file);
-                        let is_same_lang = caller.language == c.language || c.language.is_none() || caller.language.is_none();
+                        let is_same_lang = caller.language == c.language
+                            || c.language.is_none()
+                            || caller.language.is_none();
                         if is_same_lang && (m1 || m2 || is_imported) {
                             let is_explicit_alias =
                                 remote_sym.is_some() && remote_sym.as_deref() != Some(callee);
@@ -854,8 +914,12 @@ impl ResolutionEngine {
                     if sym == callee || sym == "*" {
                         if let Some(candidates) = self.name_index.get(callee) {
                             for c in candidates {
-                                let is_same_lang = caller.language == c.language || c.language.is_none() || caller.language.is_none();
-                                if is_same_lang && matches_import_target(&c.file, &d.target_module_or_path) {
+                                let is_same_lang = caller.language == c.language
+                                    || c.language.is_none()
+                                    || caller.language.is_none();
+                                if is_same_lang
+                                    && matches_import_target(&c.file, &d.target_module_or_path)
+                                {
                                     selector.add(c.node_id, 4, ResolutionReason::ExplicitImport);
                                 }
                             }
@@ -868,12 +932,15 @@ impl ResolutionEngine {
                 {
                     if let Some(candidates) = self.name_index.get(callee) {
                         for c in candidates {
-                            let is_same_lang = caller.language == c.language || c.language.is_none() || caller.language.is_none();
-                            if is_same_lang && (matches_import_target(&c.file, &d.target_module_or_path)
-                                || matches_import_target(&d.target_module_or_path, &c.file)
-                                || c.file.ends_with(&format!("{}.rs", d.target_module_or_path))
-                                || c.file.ends_with(&format!("{}.py", d.target_module_or_path))
-                                || c.file.ends_with(&format!("{}.ts", d.target_module_or_path)))
+                            let is_same_lang = caller.language == c.language
+                                || c.language.is_none()
+                                || caller.language.is_none();
+                            if is_same_lang
+                                && (matches_import_target(&c.file, &d.target_module_or_path)
+                                    || matches_import_target(&d.target_module_or_path, &c.file)
+                                    || c.file.ends_with(&format!("{}.rs", d.target_module_or_path))
+                                    || c.file.ends_with(&format!("{}.py", d.target_module_or_path))
+                                    || c.file.ends_with(&format!("{}.ts", d.target_module_or_path)))
                             {
                                 selector.add(c.node_id, 4, ResolutionReason::ExplicitImport);
                             }
@@ -897,7 +964,11 @@ impl ResolutionEngine {
                                 selector.add(c.node_id, 5, ResolutionReason::ReceiverMethod);
                             }
                         } else if imported_file_ids.iter().any(|id| {
-                            self.file_nodes.iter().any(|(path, fid)| fid == id && (matches_import_target(path, &c.file) || matches_import_target(&c.file, path)))
+                            self.file_nodes.iter().any(|(path, fid)| {
+                                fid == id
+                                    && (matches_import_target(path, &c.file)
+                                        || matches_import_target(&c.file, path))
+                            })
                         }) {
                             selector.add(c.node_id, 5, ResolutionReason::ReceiverMethod);
                         } else if let Some(dirs) = self.import_table.directives(caller_file) {
@@ -951,95 +1022,33 @@ fn find_symbol_parent(
 }
 
 fn matches_import_target(file_path: &str, target_path: &str) -> bool {
-    let norm_target = target_path
-        .replace('\\', "/");
-    let norm_target = norm_target.replace("::", "/");
-    let norm_file = file_path
-        .replace('\\', "/");
-
-    let clean_target = norm_target
-        .trim_start_matches("./")
-        .trim_start_matches('/');
-    let clean_file = norm_file
-        .trim_start_matches("./")
-        .trim_start_matches('/');
-
-    if clean_target.is_empty() {
+    let normalize = |path: &str| {
+        path.replace('\\', "/")
+            .replace("::", "/")
+            .trim_start_matches("./")
+            .trim_start_matches('/')
+            .trim_end_matches("/mod")
+            .trim_end_matches("/index")
+            .to_string()
+    };
+    let file = normalize(file_path);
+    let target = normalize(target_path);
+    if target.is_empty() {
         return false;
     }
 
-    clean_file == clean_target
-        || clean_file.starts_with(clean_target)
-        || clean_file.ends_with(clean_target)
-        || clean_file.contains(clean_target)
-        || clean_file
-            .strip_suffix(".rs")
-            .unwrap_or(clean_file)
-            .ends_with(clean_target)
-        || clean_file
-            .strip_suffix(".py")
-            .unwrap_or(clean_file)
-            .ends_with(clean_target)
-        || clean_file
-            .strip_suffix(".ts")
-            .unwrap_or(clean_file)
-            .ends_with(clean_target)
-        || clean_file
-            .strip_suffix(".js")
-            .unwrap_or(clean_file)
-            .ends_with(clean_target)
-        || clean_file
-            .strip_suffix(".go")
-            .unwrap_or(clean_file)
-            .ends_with(clean_target)
-        || clean_file
-            .strip_suffix(".java")
-            .unwrap_or(clean_file)
-            .ends_with(clean_target)
-        || clean_file
-            .strip_suffix(".cs")
-            .unwrap_or(clean_file)
-            .ends_with(clean_target)
-        || clean_file
-            .strip_suffix(".kt")
-            .unwrap_or(clean_file)
-            .ends_with(clean_target)
-        || clean_file
-            .strip_suffix(".php")
-            .unwrap_or(clean_file)
-            .ends_with(clean_target)
-        || clean_file
-            .strip_suffix(".rb")
-            .unwrap_or(clean_file)
-            .ends_with(clean_target)
-        || clean_file
-            .strip_suffix(".swift")
-            .unwrap_or(clean_file)
-            .ends_with(clean_target)
-        || clean_file
-            .strip_suffix(".zig")
-            .unwrap_or(clean_file)
-            .ends_with(clean_target)
-        || clean_target
-            .strip_suffix(".rs")
-            .unwrap_or(clean_target)
-            .ends_with(clean_file.strip_suffix(".rs").unwrap_or(clean_file))
-        || clean_target
-            .strip_suffix(".ts")
-            .unwrap_or(clean_target)
-            .ends_with(clean_file.strip_suffix(".ts").unwrap_or(clean_file))
-        || clean_target
-            .strip_suffix(".py")
-            .unwrap_or(clean_target)
-            .ends_with(clean_file.strip_suffix(".py").unwrap_or(clean_file))
-        || clean_target
-            .strip_suffix(".js")
-            .unwrap_or(clean_target)
-            .ends_with(clean_file.strip_suffix(".js").unwrap_or(clean_file))
-        || clean_target
-            .strip_suffix(".go")
-            .unwrap_or(clean_target)
-            .ends_with(clean_file.strip_suffix(".go").unwrap_or(clean_file))
+    fn without_extension(path: &str) -> &str {
+        [
+            ".rs", ".py", ".ts", ".tsx", ".js", ".jsx", ".go", ".c", ".h", ".cpp", ".java", ".cs",
+            ".kt", ".kts", ".zig", ".php", ".rb", ".swift",
+        ]
+        .iter()
+        .find_map(|extension| path.strip_suffix(extension))
+        .unwrap_or(path)
+    }
+    let file = without_extension(&file);
+    let target = without_extension(&target);
+    file == target || file.ends_with(&format!("/{target}"))
 }
 
 fn extract_param_count_from_signature(signature: &str) -> Option<usize> {

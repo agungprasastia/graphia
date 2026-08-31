@@ -64,6 +64,27 @@ pub struct Call {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Instantiation {
+    pub type_name: String,
+    pub location: SourceLocation,
+    pub caller: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Inheritance {
+    pub derived_type: String,
+    pub base_type: String,
+    pub location: SourceLocation,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Implementation {
+    pub implementing_type: String,
+    pub trait_or_interface: String,
+    pub location: SourceLocation,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct ParsedFile {
     pub symbols: Vec<Symbol>,
     pub imports: Vec<Import>,
@@ -76,6 +97,12 @@ pub struct ParsedFile {
     pub exports: Vec<Export>,
     #[serde(default)]
     pub type_references: Vec<TypeReference>,
+    #[serde(default)]
+    pub instantiations: Vec<Instantiation>,
+    #[serde(default)]
+    pub inheritances: Vec<Inheritance>,
+    #[serde(default)]
+    pub implementations: Vec<Implementation>,
 }
 
 pub fn normalize_signature(sig: &str) -> String {
@@ -110,7 +137,7 @@ pub fn normalize_signature(sig: &str) -> String {
         .replace(": ", ":")
         .replace(", ", ",")
 }
-fn ts_language(lang: GraphiaLanguage) -> Language {
+pub(crate) fn ts_language(lang: GraphiaLanguage) -> Language {
     match lang {
         GraphiaLanguage::Rust => tree_sitter_rust::LANGUAGE.into(),
         GraphiaLanguage::Python => tree_sitter_python::LANGUAGE.into(),
@@ -183,10 +210,13 @@ pub fn parse_bytes(
             references: Vec::new(),
             exports: Vec::new(),
             type_references: Vec::new(),
+            instantiations: Vec::new(),
+            inheritances: Vec::new(),
+            implementations: Vec::new(),
         });
     };
     let root = tree.root_node();
-    Ok(match lang {
+    let mut parsed = match lang {
         GraphiaLanguage::Rust => parse_rust(path, &root, source),
         GraphiaLanguage::Python => parse_python(path, &root, source),
         GraphiaLanguage::TypeScript
@@ -204,7 +234,180 @@ pub fn parse_bytes(
         GraphiaLanguage::Php => crate::parse::php::parse_php(path, &root, source),
         GraphiaLanguage::Ruby => crate::parse::ruby::parse_ruby(path, &root, source),
         GraphiaLanguage::Swift => crate::parse::swift::parse_swift(path, &root, source),
-    })
+    };
+    extract_relationships(path, lang, &root, source, &mut parsed);
+    Ok(parsed)
+}
+
+fn extract_relationships(
+    file: &str,
+    _lang: GraphiaLanguage,
+    root: &tree_sitter::Node<'_>,
+    source: &[u8],
+    parsed: &mut ParsedFile,
+) {
+    let mut stack = vec![(*root, None::<String>)];
+    while let Some((node, caller)) = stack.pop() {
+        let text = node_text(&node, source).trim();
+        let kind = node.kind();
+
+        if matches!(
+            kind,
+            "new_expression" | "object_creation_expression" | "constructor_expression"
+        ) {
+            if let Some(type_node) = node
+                .child_by_field_name("type")
+                .or_else(|| node.child_by_field_name("constructor"))
+            {
+                let type_name = node_text(&type_node, source).trim().to_string();
+                if !type_name.is_empty() {
+                    parsed.instantiations.push(Instantiation {
+                        type_name,
+                        location: location_for_node(file, &node),
+                        caller: caller.clone(),
+                    });
+                }
+            }
+        } else if matches!(kind, "struct_expression" | "composite_literal") {
+            if let Some(type_node) = node.child_by_field_name("type") {
+                let type_name = node_text(&type_node, source).trim().to_string();
+                if !type_name.is_empty() {
+                    parsed.instantiations.push(Instantiation {
+                        type_name,
+                        location: location_for_node(file, &node),
+                        caller: caller.clone(),
+                    });
+                }
+            }
+        }
+        if matches!(kind, "call_expression" | "call") && text.contains("::new(") {
+            if let Some(type_name) = text
+                .split("::new(")
+                .next()
+                .map(str::trim)
+                .filter(|name| !name.is_empty())
+            {
+                parsed.instantiations.push(Instantiation {
+                    type_name: type_name.to_string(),
+                    location: location_for_node(file, &node),
+                    caller: caller.clone(),
+                });
+            }
+        }
+        if matches!(kind, "call" | "call_expression" | "expression_statement") {
+            let candidate = text.split(['(', '{']).next().unwrap_or(text).trim();
+            if !candidate.is_empty()
+                && candidate
+                    .chars()
+                    .next()
+                    .is_some_and(|c| c.is_ascii_uppercase())
+                && !text.starts_with("class ")
+            {
+                parsed.instantiations.push(Instantiation {
+                    type_name: candidate
+                        .rsplit(['.', ':'])
+                        .next()
+                        .unwrap_or(candidate)
+                        .to_string(),
+                    location: location_for_node(file, &node),
+                    caller: caller.clone(),
+                });
+            }
+        }
+
+        if matches!(
+            kind,
+            "class_declaration"
+                | "class_definition"
+                | "class_specifier"
+                | "interface_declaration"
+                | "object_declaration"
+        ) {
+            let derived = node
+                .child_by_field_name("name")
+                .map(|n| node_text(&n, source).to_string());
+            if let Some(derived_type) = derived {
+                let header = text
+                    .split('{')
+                    .next()
+                    .unwrap_or(text)
+                    .split(':')
+                    .next()
+                    .unwrap_or(text);
+                let relation = if header.contains(" implements ") {
+                    " implements "
+                } else if header.contains(" extends ") {
+                    " extends "
+                } else if header.contains(" : ") {
+                    " : "
+                } else {
+                    ""
+                };
+                if !relation.is_empty() {
+                    let bases = header
+                        .split_once(relation)
+                        .map(|(_, rest)| rest)
+                        .unwrap_or("");
+                    for base in bases
+                        .split(',')
+                        .map(str::trim)
+                        .filter(|name| !name.is_empty())
+                    {
+                        let base = base
+                            .split_whitespace()
+                            .next()
+                            .unwrap_or(base)
+                            .trim_matches(['<', '>']);
+                        if base.is_empty() {
+                            continue;
+                        }
+                        let item = location_for_node(file, &node);
+                        if relation.contains("implements") {
+                            parsed.implementations.push(Implementation {
+                                implementing_type: derived_type.clone(),
+                                trait_or_interface: base.to_string(),
+                                location: item,
+                            });
+                        } else {
+                            parsed.inheritances.push(Inheritance {
+                                derived_type: derived_type.clone(),
+                                base_type: base.to_string(),
+                                location: item,
+                            });
+                        }
+                    }
+                }
+            }
+        }
+        if kind == "impl_item" {
+            let header = text.split('{').next().unwrap_or(text);
+            if let Some((trait_name, type_name)) = header
+                .strip_prefix("impl ")
+                .and_then(|s| s.split_once(" for "))
+            {
+                parsed.implementations.push(Implementation {
+                    implementing_type: type_name.trim().to_string(),
+                    trait_or_interface: trait_name.trim().to_string(),
+                    location: location_for_node(file, &node),
+                });
+            }
+        }
+        for child in children_vec(&node).into_iter().rev() {
+            let next_caller = if matches!(
+                kind,
+                "function_item"
+                    | "function_definition"
+                    | "method_definition"
+                    | "function_declaration"
+            ) {
+                node.child_by_field_name("name")
+                    .map(|n| node_text(&n, source).to_string())
+            } else {
+                caller.clone()
+            };
+            stack.push((child, next_caller));
+        }
+    }
 }
 
 fn children_vec<'a>(node: &tree_sitter::Node<'a>) -> Vec<tree_sitter::Node<'a>> {
@@ -597,6 +800,9 @@ fn parse_rust(file: &str, root: &tree_sitter::Node<'_>, source: &[u8]) -> Parsed
         references,
         exports,
         type_references,
+        instantiations: Vec::new(),
+        inheritances: Vec::new(),
+        implementations: Vec::new(),
     }
 }
 
@@ -811,6 +1017,9 @@ fn parse_python(file: &str, root: &tree_sitter::Node<'_>, source: &[u8]) -> Pars
         references,
         exports,
         type_references,
+        instantiations: Vec::new(),
+        inheritances: Vec::new(),
+        implementations: Vec::new(),
     }
 }
 

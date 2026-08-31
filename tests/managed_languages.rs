@@ -500,9 +500,7 @@ fn test_phase_c_graph_build_and_resolution() {
 
     assert!(
         graph.edges.iter().any(|e| {
-            e.kind == EdgeKind::Calls
-                && e.from == process_node.id
-                && e.to == do_work_node.id
+            e.kind == EdgeKind::Calls && e.from == process_node.id && e.to == do_work_node.id
         }),
         "processRequest should call doWork on Helper"
     );

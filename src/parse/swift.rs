@@ -54,6 +54,9 @@ impl LanguageAnalyzer for SwiftAnalyzer {
                 references: Vec::new(),
                 exports: Vec::new(),
                 type_references: Vec::new(),
+                instantiations: Vec::new(),
+                inheritances: Vec::new(),
+                implementations: Vec::new(),
             });
         };
         let root = tree.root_node();
@@ -320,6 +323,9 @@ pub fn parse_swift(file: &str, root: &TsNode<'_>, source: &[u8]) -> ParsedFile {
         references,
         exports,
         type_references,
+        instantiations: Vec::new(),
+        inheritances: Vec::new(),
+        implementations: Vec::new(),
     }
 }
 

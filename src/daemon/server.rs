@@ -72,6 +72,11 @@ impl DaemonServer {
 
     /// Run the daemon loop blocking until shutdown signal or error.
     pub fn run(&mut self) -> Result<()> {
+        let shutdown = self.shutdown_signal.clone();
+        ctrlc::set_handler(move || shutdown.trigger()).map_err(|error| {
+            GraphiaError::InvalidArgument(format!("unable to install shutdown handler: {error}"))
+        })?;
+
         let (tx, rx) = channel();
         let _watcher = create_watcher(&self.config.repo_root, tx)?;
 
@@ -94,9 +99,17 @@ impl DaemonServer {
             if !ready_actions.is_empty() {
                 let status = queue.push_batch(ready_actions);
                 if status == QueueStatus::OverflowDirty {
-                    // Reconcile immediately
-                    let _ = self.state_manager.reconcile();
-                    queue.clear_dirty();
+                    // Reconcile immediately, but never clear dirty state after a
+                    // failed recovery. The previous snapshot remains authoritative.
+                    match self.state_manager.reconcile() {
+                        Ok(_) => queue.clear_dirty(),
+                        Err(error) => {
+                            eprintln!("[graphia-daemon] recovery failed: {error}");
+                            self.state_manager
+                                .set_health(crate::daemon::state::DaemonHealth::Failed);
+                            queue.mark_dirty();
+                        }
+                    }
                     self.write_status_file(queue.len(), queue.is_dirty())?;
                 }
             }
@@ -104,7 +117,20 @@ impl DaemonServer {
             // If we have items in queue, process them
             if !queue.is_empty() && !queue.is_dirty() {
                 let actions = queue.drain_all();
-                let _ = self.state_manager.apply_actions(&actions);
+                if let Err(error) = self.state_manager.apply_actions(&actions) {
+                    eprintln!("[graphia-daemon] update failed: {error}");
+                    queue.mark_dirty();
+                    match self.state_manager.reconcile() {
+                        Ok(_) => queue.clear_dirty(),
+                        Err(recovery_error) => {
+                            eprintln!(
+                                "[graphia-daemon] fallback recovery failed: {recovery_error}"
+                            );
+                            self.state_manager
+                                .set_health(crate::daemon::state::DaemonHealth::Failed);
+                        }
+                    }
+                }
                 self.write_status_file(queue.len(), queue.is_dirty())?;
             }
 
@@ -139,7 +165,7 @@ impl DaemonServer {
             dirty,
             pending_events,
             health: self.state_manager.health(),
-            fallback_reconcile_count: 0,
+            fallback_reconcile_count: self.state_manager.fallback_reconcile_count(),
         };
 
         let json = to_vec_pretty(&status).map_err(|e| GraphiaError::Storage {

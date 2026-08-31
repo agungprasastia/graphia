@@ -9,6 +9,22 @@ pub struct Service {
     pub name: String,
 }
 
+#[test]
+fn test_build_graph_links_relationship_ir() {
+    let base = parse_file("base.rs", GraphiaLanguage::Rust, "trait Render {} struct Parent;");
+    let child = parse_file(
+        "child.rs",
+        GraphiaLanguage::Rust,
+        "struct Child; impl Render for Child {} fn make() { Child; }",
+    );
+    let graph = build_graph(vec![
+        ("base.rs".to_string(), Some(GraphiaLanguage::Rust), base),
+        ("child.rs".to_string(), Some(GraphiaLanguage::Rust), child),
+    ]);
+    assert!(graph.edges.iter().any(|e| e.kind == EdgeKind::Instantiates));
+    assert!(graph.edges.iter().any(|e| e.kind == EdgeKind::Implements));
+}
+
 pub fn create_service() -> Service {
     Service { name: String::from("test") }
 }

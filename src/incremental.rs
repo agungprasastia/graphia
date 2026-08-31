@@ -58,6 +58,8 @@ impl IncrementalWorkspace {
             fallback_reconcile_count: 0,
         };
         ws.reconcile_full()?;
+        // The initial repository build is not a fallback reconcile.
+        ws.fallback_reconcile_count = 0;
         Ok(ws)
     }
 

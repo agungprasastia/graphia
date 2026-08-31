@@ -7,7 +7,7 @@ use crate::model::{
     NodeKind, SourceLocation,
 };
 use crate::parser::{Call, ParsedFile, Symbol};
-use crate::resolve::ResolutionEngine;
+use crate::resolve::{Resolution, ResolutionEngine};
 
 #[derive(Debug, Clone)]
 pub struct Graph {
@@ -370,13 +370,30 @@ pub fn build_graph(files: Vec<(String, Option<Language>, ParsedFile)>) -> Graph 
             edge_specs.push((kind, from, to, confidence, label));
         }
     };
+    let mut engine = ResolutionEngine::new();
+    let file_data: Vec<(String, Option<Language>, ParsedFile)> = entries
+        .iter()
+        .map(|e| (e.path.clone(), e.language, e.parsed.clone()))
+        .collect();
+    engine.index_files(&nodes, &file_data);
 
     for (file, symbol) in &all_symbols {
         if let (Some(&file_id), Some(symbol_ids)) = (
             file_node_ids.get(file),
             symbol_node_ids.get(&symbol.qualified_name),
         ) {
-            if let Some(&symbol_id) = symbol_ids.first() {
+            let symbol_id = stable_node_id(&NodeIdentity::new(
+                entries
+                    .iter()
+                    .find(|entry| entry.path == *file)
+                    .and_then(|entry| entry.language),
+                file,
+                symbol.kind,
+                &symbol.qualified_name,
+                symbol.container.as_deref().or(symbol.parent.as_deref()),
+                symbol.signature.as_deref(),
+            ));
+            if symbol_ids.contains(&symbol_id) {
                 add_edge(
                     EdgeKind::Contains,
                     file_id,
@@ -421,8 +438,7 @@ pub fn build_graph(files: Vec<(String, Option<Language>, ParsedFile)>) -> Graph 
         for call in calls {
             let Some(caller_id) = symbol_node_ids
                 .get(&call.caller)
-                .and_then(|ids| ids.first())
-                .copied()
+                .and_then(|ids| (ids.len() == 1).then_some(ids[0]))
             else {
                 continue;
             };
@@ -518,17 +534,21 @@ pub fn build_graph(files: Vec<(String, Option<Language>, ParsedFile)>) -> Graph 
 
         if let Some(&file_id) = file_node_ids.get(&entry.path) {
             for exp in &entry.parsed.exports {
-                if let Some(target_qname) = &exp.target {
-                    if let Some(target_ids) = symbol_node_ids.get(target_qname) {
-                        if let Some(&target_id) = target_ids.first() {
-                            add_edge(
-                                EdgeKind::Exports,
-                                file_id,
-                                target_id,
-                                Confidence::Extracted,
-                                Some(exp.name.clone()),
-                            );
-                        }
+                if exp.target.is_some() {
+                    if let Resolution::Resolved(target_id) = engine.resolve_reference(
+                        &entry.path,
+                        None,
+                        &exp.name,
+                        EdgeKind::Exports,
+                        None,
+                    ) {
+                        add_edge(
+                            EdgeKind::Exports,
+                            file_id,
+                            target_id,
+                            Confidence::Resolved,
+                            Some(exp.name.clone()),
+                        );
                     }
                 }
             }
@@ -537,23 +557,23 @@ pub fn build_graph(files: Vec<(String, Option<Language>, ParsedFile)>) -> Graph 
                 let from_id = if let Some(container) = &tref.container {
                     symbol_node_ids
                         .get(container)
-                        .and_then(|ids| ids.first())
+                        .and_then(|ids| (ids.len() == 1).then_some(&ids[0]))
                         .copied()
                         .unwrap_or(file_id)
                 } else {
                     file_id
                 };
 
-                if let Some(candidates) = name_to_symbols.get(&tref.name) {
-                    if let Some((_, target_id, _)) = candidates.first() {
-                        add_edge(
-                            EdgeKind::TypeReferences,
-                            from_id,
-                            *target_id,
-                            Confidence::Inferred,
-                            Some(tref.name.clone()),
-                        );
-                    }
+                if let Resolution::Resolved(target_id) =
+                    engine.resolve_type_reference(&entry.path, &tref.name)
+                {
+                    add_edge(
+                        EdgeKind::TypeReferences,
+                        from_id,
+                        target_id,
+                        Confidence::Resolved,
+                        Some(tref.name.clone()),
+                    );
                 }
             }
 
@@ -561,23 +581,98 @@ pub fn build_graph(files: Vec<(String, Option<Language>, ParsedFile)>) -> Graph 
                 let from_id = if let Some(caller) = &rref.caller {
                     symbol_node_ids
                         .get(caller)
-                        .and_then(|ids| ids.first())
+                        .and_then(|ids| (ids.len() == 1).then_some(&ids[0]))
                         .copied()
                         .unwrap_or(file_id)
                 } else {
                     file_id
                 };
 
-                if let Some(candidates) = name_to_symbols.get(&rref.name) {
-                    if let Some((_, target_id, _)) = candidates.first() {
-                        add_edge(
-                            EdgeKind::References,
-                            from_id,
-                            *target_id,
-                            Confidence::Inferred,
-                            Some(rref.name.clone()),
-                        );
-                    }
+                let caller_id = rref.caller.as_deref().and_then(|caller| {
+                    symbol_node_ids
+                        .get(caller)
+                        .and_then(|ids| (ids.len() == 1).then_some(ids[0]))
+                });
+                if let Resolution::Resolved(target_id) = engine.resolve_reference(
+                    &entry.path,
+                    caller_id,
+                    &rref.name,
+                    EdgeKind::References,
+                    None,
+                ) {
+                    add_edge(
+                        EdgeKind::References,
+                        from_id,
+                        target_id,
+                        Confidence::Resolved,
+                        Some(rref.name.clone()),
+                    );
+                }
+            }
+
+            for instantiation in &entry.parsed.instantiations {
+                let from_id = instantiation
+                    .caller
+                    .as_deref()
+                    .and_then(|caller| {
+                        symbol_node_ids
+                            .get(&format!("{}::{}", entry.path, caller))
+                            .and_then(|ids| (ids.len() == 1).then_some(ids[0]))
+                    })
+                    .unwrap_or(file_id);
+                if let Resolution::Resolved(target_id) = engine.resolve_instantiation(
+                    &entry.path,
+                    (from_id != file_id).then_some(from_id),
+                    &instantiation.type_name,
+                ) {
+                    add_edge(
+                        EdgeKind::Instantiates,
+                        from_id,
+                        target_id,
+                        Confidence::Resolved,
+                        Some(instantiation.type_name.clone()),
+                    );
+                }
+            }
+            for inheritance in &entry.parsed.inheritances {
+                if let Resolution::Resolved(target_id) = engine.resolve_inheritance(
+                    &entry.path,
+                    &inheritance.derived_type,
+                    &inheritance.base_type,
+                ) {
+                    let from_id = symbol_node_ids
+                        .get(&format!("{}::{}", entry.path, inheritance.derived_type))
+                        .and_then(|ids| (ids.len() == 1).then_some(ids[0]))
+                        .unwrap_or(file_id);
+                    add_edge(
+                        EdgeKind::Inherits,
+                        from_id,
+                        target_id,
+                        Confidence::Resolved,
+                        Some(inheritance.base_type.clone()),
+                    );
+                }
+            }
+            for implementation in &entry.parsed.implementations {
+                if let Resolution::Resolved(target_id) = engine.resolve_implementation(
+                    &entry.path,
+                    &implementation.implementing_type,
+                    &implementation.trait_or_interface,
+                ) {
+                    let from_id = symbol_node_ids
+                        .get(&format!(
+                            "{}::{}",
+                            entry.path, implementation.implementing_type
+                        ))
+                        .and_then(|ids| (ids.len() == 1).then_some(ids[0]))
+                        .unwrap_or(file_id);
+                    add_edge(
+                        EdgeKind::Implements,
+                        from_id,
+                        target_id,
+                        Confidence::Resolved,
+                        Some(implementation.trait_or_interface.clone()),
+                    );
                 }
             }
         }
@@ -817,6 +912,9 @@ mod tests {
             references: vec![],
             exports: vec![],
             type_references: vec![],
+            instantiations: vec![],
+            inheritances: vec![],
+            implementations: vec![],
         };
         let pf2 = ParsedFile {
             symbols: vec![Symbol {
@@ -835,6 +933,7 @@ mod tests {
             references: vec![],
             exports: vec![],
             type_references: vec![],
+            ..Default::default()
         };
         let g1 = build_graph(vec![
             ("a.rs".to_string(), Some(Language::Rust), pf1.clone()),
@@ -871,6 +970,7 @@ mod tests {
             references: vec![],
             exports: vec![],
             type_references: vec![],
+            ..Default::default()
         };
         let pf_b = ParsedFile {
             symbols: vec![Symbol {
@@ -889,6 +989,7 @@ mod tests {
             references: vec![],
             exports: vec![],
             type_references: vec![],
+            ..Default::default()
         };
         let pf_c = ParsedFile {
             symbols: vec![Symbol {
@@ -907,6 +1008,7 @@ mod tests {
             references: vec![],
             exports: vec![],
             type_references: vec![],
+            ..Default::default()
         };
         let g = build_graph(vec![
             ("a.rs".to_string(), Some(Language::Rust), pf_a),
@@ -939,6 +1041,7 @@ mod tests {
             references: vec![],
             exports: vec![],
             type_references: vec![],
+            ..Default::default()
         };
         let target = ParsedFile {
             symbols: vec![Symbol {
@@ -957,6 +1060,7 @@ mod tests {
             references: vec![],
             exports: vec![],
             type_references: vec![],
+            ..Default::default()
         };
         let graph = build_graph(vec![
             ("a.rs".to_string(), Some(Language::Rust), caller),
@@ -991,6 +1095,7 @@ mod tests {
             references: vec![],
             exports: vec![],
             type_references: vec![],
+            ..Default::default()
         };
         let target = ParsedFile {
             symbols: vec![Symbol {
@@ -1009,6 +1114,7 @@ mod tests {
             references: vec![],
             exports: vec![],
             type_references: vec![],
+            ..Default::default()
         };
         let graph = build_graph(vec![
             ("a.rs".to_string(), Some(Language::Rust), caller),

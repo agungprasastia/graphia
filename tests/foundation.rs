@@ -202,7 +202,9 @@ fn graph_has_file_containment_and_stable_ids() {
             edge.kind == EdgeKind::Calls && edge.from == caller_id && edge.to == helper_id
         });
         if !res {
-            println!("TEST FOUNDATION FAILURE for {file}, caller_id: {caller_id:?}, helper_id: {helper_id:?}");
+            println!(
+                "TEST FOUNDATION FAILURE for {file}, caller_id: {caller_id:?}, helper_id: {helper_id:?}"
+            );
             for n in &first.nodes {
                 if n.id == caller_id || n.id == helper_id {
                     println!("  NODE: {n:?}");

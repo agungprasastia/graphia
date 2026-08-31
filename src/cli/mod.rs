@@ -267,8 +267,6 @@ pub enum Commands {
         repo: Option<PathBuf>,
         #[arg(long)]
         debounce_ms: Option<u64>,
-        #[arg(long)]
-        foreground: bool,
     },
     DaemonStatus {
         #[arg(long)]
@@ -1160,7 +1158,6 @@ pub fn run(cli: Cli) -> crate::error::Result<()> {
             action,
             repo,
             debounce_ms,
-            foreground: _,
         } => {
             if let Some(DaemonAction::Status {
                 repo: action_repo,

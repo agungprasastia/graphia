@@ -113,10 +113,14 @@ impl LiveStateManager {
     pub fn apply_actions(&self, actions: &[SemanticAction]) -> Result<bool> {
         self.set_health(DaemonHealth::Updating);
         let mut ws = self.workspace.write().expect("workspace write lock");
-        match ws.apply_changes(actions) {
+        // Apply against a clone so a parse or filesystem error cannot corrupt the
+        // last valid workspace while preserving its published generation.
+        let mut candidate = ws.clone();
+        match candidate.apply_changes(actions) {
             Ok(dirty) => {
                 if dirty {
-                    self.update_graph(ws.graph.clone());
+                    self.update_graph(candidate.graph.clone());
+                    *ws = candidate;
                 }
                 self.set_health(DaemonHealth::Healthy);
                 Ok(dirty)
@@ -160,6 +164,14 @@ impl LiveStateManager {
         let next_generation = self.update_graph(ws.graph.clone());
         self.set_health(DaemonHealth::Healthy);
         Ok(next_generation)
+    }
+
+    #[must_use]
+    pub fn fallback_reconcile_count(&self) -> usize {
+        self.workspace
+            .read()
+            .expect("workspace read lock")
+            .fallback_reconcile_count
     }
 
     #[must_use]

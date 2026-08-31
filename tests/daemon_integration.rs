@@ -250,7 +250,6 @@ fn test_daemon_cli_subcommands() {
             }),
             repo: None,
             debounce_ms: None,
-            foreground: false,
         },
     };
     run(cli_nested).expect("run nested daemon status CLI");

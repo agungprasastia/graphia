@@ -168,6 +168,9 @@ fn test_explicit_alias_resolution() {
         references: vec![],
         exports: vec![],
         type_references: vec![],
+        instantiations: vec![],
+        inheritances: vec![],
+        implementations: vec![],
     };
     let helper = ParsedFile {
         symbols: vec![func("helper.py", "original_func", 1)],
@@ -177,6 +180,7 @@ fn test_explicit_alias_resolution() {
         references: vec![],
         exports: vec![],
         type_references: vec![],
+        ..Default::default()
     };
 
     let mut graph = build_graph(vec![
@@ -230,6 +234,7 @@ fn test_receiver_aware_method_resolution() {
         references: vec![],
         exports: vec![],
         type_references: vec![],
+        ..Default::default()
     };
 
     let controller = ParsedFile {
@@ -247,6 +252,7 @@ fn test_receiver_aware_method_resolution() {
         references: vec![],
         exports: vec![],
         type_references: vec![],
+        ..Default::default()
     };
 
     let mut graph = build_graph(vec![
@@ -310,6 +316,7 @@ fn test_ambiguity_preservation_and_negative_test() {
         references: vec![],
         exports: vec![],
         type_references: vec![],
+        ..Default::default()
     };
     let mod_a = ParsedFile {
         symbols: vec![func("mod_a.rs", "action", 1)],
@@ -319,6 +326,7 @@ fn test_ambiguity_preservation_and_negative_test() {
         references: vec![],
         exports: vec![],
         type_references: vec![],
+        ..Default::default()
     };
     let mod_b = ParsedFile {
         symbols: vec![func("mod_b.rs", "action", 1)],
@@ -328,6 +336,7 @@ fn test_ambiguity_preservation_and_negative_test() {
         references: vec![],
         exports: vec![],
         type_references: vec![],
+        ..Default::default()
     };
 
     let mut graph = build_graph(vec![
@@ -359,6 +368,7 @@ fn test_unimported_foreign_symbol_remains_unresolved() {
         references: vec![],
         exports: vec![],
         type_references: vec![],
+        ..Default::default()
     };
     let other = ParsedFile {
         symbols: vec![func("other.py", "foreign_helper", 1)],
@@ -368,6 +378,7 @@ fn test_unimported_foreign_symbol_remains_unresolved() {
         references: vec![],
         exports: vec![],
         type_references: vec![],
+        ..Default::default()
     };
 
     let mut graph = build_graph(vec![
@@ -430,6 +441,7 @@ fn test_engine_same_name_different_modules() {
         references: vec![],
         exports: vec![],
         type_references: vec![],
+        ..Default::default()
     };
     let mod_b = ParsedFile {
         symbols: vec![func("mod_b.rs", "compute", 1)],
@@ -439,6 +451,7 @@ fn test_engine_same_name_different_modules() {
         references: vec![],
         exports: vec![],
         type_references: vec![],
+        ..Default::default()
     };
     let app = ParsedFile {
         symbols: vec![func("app.rs", "main", 1)],
@@ -451,6 +464,7 @@ fn test_engine_same_name_different_modules() {
         references: vec![],
         exports: vec![],
         type_references: vec![],
+        ..Default::default()
     };
 
     let files = vec![
@@ -487,9 +501,14 @@ fn test_engine_same_name_different_containers() {
         references: vec![],
         exports: vec![],
         type_references: vec![],
+        ..Default::default()
     };
 
-    let files = vec![("service.ts".to_string(), Some(Language::TypeScript), service)];
+    let files = vec![(
+        "service.ts".to_string(),
+        Some(Language::TypeScript),
+        service,
+    )];
     let graph = build_graph(files.clone());
     let mut engine = graphia::resolve::ResolutionEngine::new();
     engine.index_files(&graph.nodes, &files);
@@ -501,7 +520,13 @@ fn test_engine_same_name_different_containers() {
         .unwrap()
         .id;
 
-    let res = engine.resolve_reference("service.ts", Some(alpha_run_id), "run", EdgeKind::Calls, None);
+    let res = engine.resolve_reference(
+        "service.ts",
+        Some(alpha_run_id),
+        "run",
+        EdgeKind::Calls,
+        None,
+    );
     assert_eq!(res, graphia::resolve::Resolution::Resolved(alpha_run_id));
 }
 
@@ -518,6 +543,7 @@ fn test_engine_overload_resolution_by_param_count() {
         references: vec![],
         exports: vec![],
         type_references: vec![],
+        ..Default::default()
     };
 
     let files = vec![("math.cpp".to_string(), Some(Language::Cpp), math)];
@@ -558,6 +584,7 @@ fn test_engine_import_alias() {
         references: vec![],
         exports: vec![],
         type_references: vec![],
+        ..Default::default()
     };
     let app = ParsedFile {
         symbols: vec![func("app.py", "start", 1)],
@@ -570,6 +597,7 @@ fn test_engine_import_alias() {
         references: vec![],
         exports: vec![],
         type_references: vec![],
+        ..Default::default()
     };
 
     let files = vec![
@@ -605,6 +633,7 @@ fn test_engine_multi_hop_reexport() {
             target: Some("a.ts::Foo".to_string()),
         }],
         type_references: vec![],
+        ..Default::default()
     };
     let file_b = ParsedFile {
         symbols: vec![],
@@ -621,6 +650,7 @@ fn test_engine_multi_hop_reexport() {
             target: Some("a.ts::Foo".to_string()),
         }],
         type_references: vec![],
+        ..Default::default()
     };
     let file_c = ParsedFile {
         symbols: vec![func("c.ts", "main", 1)],
@@ -633,6 +663,7 @@ fn test_engine_multi_hop_reexport() {
         references: vec![],
         exports: vec![],
         type_references: vec![],
+        ..Default::default()
     };
 
     let files = vec![
@@ -668,6 +699,7 @@ fn test_engine_receiver_method() {
         references: vec![],
         exports: vec![],
         type_references: vec![],
+        ..Default::default()
     };
     let client = ParsedFile {
         symbols: vec![func("client.ts", "login", 1)],
@@ -680,10 +712,15 @@ fn test_engine_receiver_method() {
         references: vec![],
         exports: vec![],
         type_references: vec![],
+        ..Default::default()
     };
 
     let files = vec![
-        ("service.ts".to_string(), Some(Language::TypeScript), service),
+        (
+            "service.ts".to_string(),
+            Some(Language::TypeScript),
+            service,
+        ),
         ("client.ts".to_string(), Some(Language::TypeScript), client),
     ];
     let graph = build_graph(files.clone());
@@ -724,6 +761,7 @@ fn test_engine_type_reference() {
         references: vec![],
         exports: vec![],
         type_references: vec![],
+        ..Default::default()
     };
     let handler = ParsedFile {
         symbols: vec![func("handler.rs", "handle_request", 1)],
@@ -736,6 +774,7 @@ fn test_engine_type_reference() {
         references: vec![],
         exports: vec![],
         type_references: vec![],
+        ..Default::default()
     };
 
     let files = vec![
@@ -767,6 +806,7 @@ fn test_engine_instantiation() {
         references: vec![],
         exports: vec![],
         type_references: vec![],
+        ..Default::default()
     };
     let app = ParsedFile {
         symbols: vec![func("app.py", "init_db", 1)],
@@ -779,6 +819,7 @@ fn test_engine_instantiation() {
         references: vec![],
         exports: vec![],
         type_references: vec![],
+        ..Default::default()
     };
 
     let files = vec![
@@ -810,6 +851,7 @@ fn test_engine_inheritance() {
         references: vec![],
         exports: vec![],
         type_references: vec![],
+        ..Default::default()
     };
     let derived = ParsedFile {
         symbols: vec![class_sym("user_ctrl.py", "UserController", 1)],
@@ -822,6 +864,7 @@ fn test_engine_inheritance() {
         references: vec![],
         exports: vec![],
         type_references: vec![],
+        ..Default::default()
     };
 
     let files = vec![
@@ -853,6 +896,7 @@ fn test_engine_implementation() {
         references: vec![],
         exports: vec![],
         type_references: vec![],
+        ..Default::default()
     };
     let impl_file = ParsedFile {
         symbols: vec![class_sym("pg_repo.rs", "PostgresRepository", 1)],
@@ -865,6 +909,7 @@ fn test_engine_implementation() {
         references: vec![],
         exports: vec![],
         type_references: vec![],
+        ..Default::default()
     };
 
     let files = vec![
@@ -896,6 +941,7 @@ fn test_engine_ambiguous_reference() {
         references: vec![],
         exports: vec![],
         type_references: vec![],
+        ..Default::default()
     };
     let mod_b = ParsedFile {
         symbols: vec![func("mod_b.rs", "duplicate_fn", 1)],
@@ -905,6 +951,7 @@ fn test_engine_ambiguous_reference() {
         references: vec![],
         exports: vec![],
         type_references: vec![],
+        ..Default::default()
     };
     let caller = ParsedFile {
         symbols: vec![func("caller.rs", "main", 1)],
@@ -923,6 +970,7 @@ fn test_engine_ambiguous_reference() {
         references: vec![],
         exports: vec![],
         type_references: vec![],
+        ..Default::default()
     };
 
     let files = vec![
@@ -953,6 +1001,7 @@ fn test_engine_unresolved_reference() {
         references: vec![],
         exports: vec![],
         type_references: vec![],
+        ..Default::default()
     };
 
     let files = vec![("caller.rs".to_string(), Some(Language::Rust), caller)];
@@ -960,7 +1009,12 @@ fn test_engine_unresolved_reference() {
     let mut engine = graphia::resolve::ResolutionEngine::new();
     engine.index_files(&graph.nodes, &files);
 
-    let res = engine.resolve_reference("caller.rs", None, "non_existent_symbol", EdgeKind::Calls, None);
+    let res = engine.resolve_reference(
+        "caller.rs",
+        None,
+        "non_existent_symbol",
+        EdgeKind::Calls,
+        None,
+    );
     assert_eq!(res, graphia::resolve::Resolution::Unresolved);
 }
-

@@ -127,12 +127,48 @@ pub fn check_architecture_boundaries(
 
 fn get_node_layer(file_path: &str, config: &ArchitectureRulesConfig) -> Option<String> {
     let norm = file_path.replace('\\', "/");
-    for layer in &config.layers {
-        for pat in &layer.path_patterns {
-            if norm.contains(pat) {
-                return Some(layer.name.clone());
-            }
+    let segments: Vec<&str> = norm
+        .split('/')
+        .filter(|segment| !segment.is_empty())
+        .collect();
+    let mut matches = config
+        .layers
+        .iter()
+        .filter(|layer| {
+            layer.path_patterns.iter().any(|pattern| {
+                let pattern = pattern.trim_matches('/');
+                if pattern.is_empty() {
+                    return false;
+                }
+                if pattern.contains('/') {
+                    norm == pattern || norm.ends_with(&format!("/{pattern}"))
+                } else {
+                    segments.iter().any(|segment| {
+                        *segment == pattern || wildcard_segment_matches(segment, pattern)
+                    })
+                }
+            })
+        })
+        .map(|layer| layer.name.clone())
+        .collect::<Vec<_>>();
+
+    // A path matching more than one layer is intentionally unclassified. This
+    // prevents configuration order from becoming hidden semantic precedence.
+    matches.sort();
+    matches.dedup();
+    (matches.len() == 1).then(|| matches.remove(0))
+}
+
+fn wildcard_segment_matches(segment: &str, pattern: &str) -> bool {
+    let mut remaining = segment;
+    for part in pattern.split('*') {
+        if part.is_empty() {
+            continue;
         }
+        let Some(index) = remaining.find(part) else {
+            return false;
+        };
+        remaining = &remaining[index + part.len()..];
     }
-    None
+    pattern.starts_with('*') || pattern.ends_with('*') || remaining.is_empty()
 }

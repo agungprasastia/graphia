@@ -8,6 +8,16 @@ pub struct User {
     pub name: String,
 }
 
+#[test]
+fn test_rust_parser_extracts_relationship_ir() {
+    let code = "trait Render {} struct Widget; impl Render for Widget {} fn make() { Widget; Widget::new(); }";
+    let pf = parse_file("widget.rs", GraphiaLanguage::Rust, code);
+    assert!(pf.instantiations.iter().any(|item| item.type_name == "Widget"));
+    assert!(pf.implementations.iter().any(|item| {
+        item.implementing_type.contains("Widget") && item.trait_or_interface == "Render"
+    }));
+}
+
 pub trait Greeter {
     fn greet(&self, target: &str) -> String;
 }

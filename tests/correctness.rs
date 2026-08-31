@@ -137,6 +137,9 @@ fn resolver_reports_ambiguous_calls_without_fabricating_edge() {
         references: vec![],
         exports: vec![],
         type_references: vec![],
+        instantiations: vec![],
+        inheritances: vec![],
+        implementations: vec![],
     };
     let first = ParsedFile {
         symbols: vec![function("first.rs", "same", 1)],
@@ -146,6 +149,7 @@ fn resolver_reports_ambiguous_calls_without_fabricating_edge() {
         references: vec![],
         exports: vec![],
         type_references: vec![],
+        ..Default::default()
     };
     let second = ParsedFile {
         symbols: vec![function("second.rs", "same", 1)],
@@ -155,6 +159,7 @@ fn resolver_reports_ambiguous_calls_without_fabricating_edge() {
         references: vec![],
         exports: vec![],
         type_references: vec![],
+        ..Default::default()
     };
     let mut graph = build_graph(vec![
         ("second.rs".to_string(), Some(Language::Rust), second),
