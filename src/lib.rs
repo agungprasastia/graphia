@@ -1,8 +1,11 @@
 pub mod analysis;
 pub mod cli;
+pub mod context;
 pub mod error;
 pub mod graph;
 pub mod incremental;
+pub mod intelligence;
+pub mod mcp;
 pub mod model;
 pub mod parse;
 pub mod parser;

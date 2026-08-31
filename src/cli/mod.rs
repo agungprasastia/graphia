@@ -6,7 +6,29 @@ use crate::analysis::{
     AnalysisLevel, AnalysisOptions, CommunityConfig, CycleConfig, compute_hotspots,
     detect_communities, find_cycles, project_graph, run_analysis,
 };
-use crate::model::EdgeKind;
+use crate::context::{BudgetValueType, ContextRequest, generate_context};
+use crate::intelligence::{
+    NeighborhoodOptions, SearchOptions, analyze_impact, detect_entrypoints, discover_tests,
+    get_architecture_overview, get_neighborhood, map_source_to_tests, search_graph,
+};
+use crate::model::{EdgeKind, NodeKind};
+
+#[derive(Debug, Clone, Copy, ValueEnum, PartialEq, Eq)]
+pub enum CliBudgetType {
+    Tokens,
+    Bytes,
+    Chars,
+}
+
+impl From<CliBudgetType> for BudgetValueType {
+    fn from(b: CliBudgetType) -> Self {
+        match b {
+            CliBudgetType::Tokens => BudgetValueType::ApproxTokens,
+            CliBudgetType::Bytes => BudgetValueType::Bytes,
+            CliBudgetType::Chars => BudgetValueType::Characters,
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy, ValueEnum, PartialEq, Eq)]
 pub enum CliLevel {
@@ -21,6 +43,33 @@ impl From<CliLevel> for AnalysisLevel {
             CliLevel::Symbol => AnalysisLevel::Symbol,
             CliLevel::File => AnalysisLevel::File,
             CliLevel::Module => AnalysisLevel::Module,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum, PartialEq, Eq)]
+pub enum CliNodeKind {
+    File,
+    Module,
+    Function,
+    Method,
+    Class,
+    Struct,
+    Trait,
+    Interface,
+}
+
+impl From<CliNodeKind> for NodeKind {
+    fn from(kind: CliNodeKind) -> Self {
+        match kind {
+            CliNodeKind::File => NodeKind::File,
+            CliNodeKind::Module => NodeKind::Module,
+            CliNodeKind::Function => NodeKind::Function,
+            CliNodeKind::Method => NodeKind::Method,
+            CliNodeKind::Class => NodeKind::Class,
+            CliNodeKind::Struct => NodeKind::Struct,
+            CliNodeKind::Trait => NodeKind::Trait,
+            CliNodeKind::Interface => NodeKind::Interface,
         }
     }
 }
@@ -135,6 +184,79 @@ pub enum Commands {
         limit: Option<usize>,
         #[arg(long, value_enum, default_value_t = CliFormat::Human)]
         format: CliFormat,
+    },
+    Search {
+        repo: PathBuf,
+        query: String,
+        #[arg(long, value_enum)]
+        kind: Option<CliNodeKind>,
+        #[arg(long)]
+        file: Option<String>,
+        #[arg(long)]
+        limit: Option<usize>,
+        #[arg(long, value_enum, default_value_t = CliFormat::Human)]
+        format: CliFormat,
+    },
+    Neighborhood {
+        repo: PathBuf,
+        target: String,
+        #[arg(long, default_value_t = 1)]
+        depth: usize,
+        #[arg(long, default_value_t = 50)]
+        limit: usize,
+        #[arg(long, value_enum, default_value_t = CliFormat::Human)]
+        format: CliFormat,
+    },
+    Impact {
+        repo: PathBuf,
+        target: String,
+        #[arg(long, default_value_t = 3)]
+        depth: usize,
+        #[arg(long)]
+        files: bool,
+        #[arg(long, value_enum, default_value_t = CliFormat::Human)]
+        format: CliFormat,
+    },
+    Tests {
+        repo: PathBuf,
+        #[arg(long)]
+        target: Option<String>,
+        #[arg(long, value_enum, default_value_t = CliFormat::Human)]
+        format: CliFormat,
+    },
+    Entrypoints {
+        repo: PathBuf,
+        #[arg(long, value_enum, default_value_t = CliFormat::Human)]
+        format: CliFormat,
+    },
+    Architecture {
+        repo: PathBuf,
+        #[arg(long, value_enum, default_value_t = CliFormat::Human)]
+        format: CliFormat,
+    },
+    Context {
+        repo: PathBuf,
+        #[arg(long)]
+        symbol: Option<String>,
+        #[arg(long)]
+        file: Option<String>,
+        #[arg(long)]
+        query: Option<String>,
+        #[arg(long)]
+        changed: bool,
+        #[arg(long)]
+        token_budget: Option<usize>,
+        #[arg(long, value_enum, default_value_t = CliBudgetType::Tokens)]
+        budget_type: CliBudgetType,
+        #[arg(long, default_value_t = 3)]
+        depth: usize,
+        #[arg(long, default_value_t = 100)]
+        limit: usize,
+        #[arg(long, value_enum, default_value_t = CliFormat::Human)]
+        format: CliFormat,
+    },
+    Mcp {
+        repo: Option<PathBuf>,
     },
 }
 
@@ -534,6 +656,427 @@ pub fn run(cli: Cli) -> crate::error::Result<()> {
                     }
                 }
             }
+            Ok(())
+        }
+        Commands::Search {
+            repo,
+            query,
+            kind,
+            file,
+            limit,
+            format,
+        } => {
+            let graph = load_or_build(&repo)?;
+            let options = SearchOptions {
+                query,
+                kind_filter: kind.map(Into::into),
+                file_filter: file,
+                limit,
+            };
+            let results = search_graph(&graph, &options);
+
+            match format {
+                CliFormat::Json => {
+                    let json = serde_json::to_string_pretty(&results).map_err(|e| {
+                        crate::error::GraphiaError::Storage {
+                            message: e.to_string(),
+                        }
+                    })?;
+                    println!("{json}");
+                }
+                CliFormat::Human => {
+                    println!("Found {} search result(s):", results.len());
+                    for (i, res) in results.iter().enumerate() {
+                        println!(
+                            "  {}. [{}] {} (score: {:.2}, file: {}:{}:{})",
+                            i + 1,
+                            res.node.kind.as_str(),
+                            res.node.qualified_name,
+                            res.score.total_score,
+                            res.node.location.file,
+                            res.node.location.start_line,
+                            res.node.location.start_col
+                        );
+                    }
+                }
+            }
+            Ok(())
+        }
+        Commands::Neighborhood {
+            repo,
+            target,
+            depth,
+            limit,
+            format,
+        } => {
+            let graph = load_or_build(&repo)?;
+            let options = NeighborhoodOptions {
+                target: target.clone(),
+                depth,
+                limit,
+            };
+            let Some(neighborhood) = get_neighborhood(&graph, &options) else {
+                return Err(crate::error::GraphiaError::InvalidArgument(format!(
+                    "target '{target}' not found"
+                )));
+            };
+
+            match format {
+                CliFormat::Json => {
+                    let json = serde_json::to_string_pretty(&neighborhood).map_err(|e| {
+                        crate::error::GraphiaError::Storage {
+                            message: e.to_string(),
+                        }
+                    })?;
+                    println!("{json}");
+                }
+                CliFormat::Human => {
+                    println!(
+                        "Structural Neighborhood for [{}] {}:",
+                        neighborhood.target.kind.as_str(),
+                        neighborhood.target.qualified_name
+                    );
+                    if let Some(c) = &neighborhood.container {
+                        println!("  Container: [{}] {}", c.kind.as_str(), c.qualified_name);
+                    }
+                    if let Some(m) = &neighborhood.parent_module {
+                        println!(
+                            "  Parent Module: [{}] {}",
+                            m.kind.as_str(),
+                            m.qualified_name
+                        );
+                    }
+                    println!("  Children ({}):", neighborhood.children.len());
+                    for child in &neighborhood.children {
+                        println!("    - [{}] {}", child.kind.as_str(), child.qualified_name);
+                    }
+                    println!("  Callers ({}):", neighborhood.callers.len());
+                    for c in &neighborhood.callers {
+                        println!("    - [{}] {}", c.kind.as_str(), c.qualified_name);
+                    }
+                    println!("  Callees ({}):", neighborhood.callees.len());
+                    for c in &neighborhood.callees {
+                        println!("    - [{}] {}", c.kind.as_str(), c.qualified_name);
+                    }
+                    println!("  Imports ({}):", neighborhood.imports.len());
+                    for imp in &neighborhood.imports {
+                        println!("    - [{}] {}", imp.kind.as_str(), imp.qualified_name);
+                    }
+                    println!("  Exports ({}):", neighborhood.exports.len());
+                    for exp in &neighborhood.exports {
+                        println!("    - [{}] {}", exp.kind.as_str(), exp.qualified_name);
+                    }
+                    println!(
+                        "  Referenced Types ({}):",
+                        neighborhood.referenced_types.len()
+                    );
+                    for rt in &neighborhood.referenced_types {
+                        println!("    - [{}] {}", rt.kind.as_str(), rt.qualified_name);
+                    }
+                    println!(
+                        "  Trait/Interface Impls ({}):",
+                        neighborhood.trait_implementations.len()
+                    );
+                    for ti in &neighborhood.trait_implementations {
+                        println!("    - [{}] {}", ti.kind.as_str(), ti.qualified_name);
+                    }
+                    println!("  Related Tests ({}):", neighborhood.related_tests.len());
+                    for t in &neighborhood.related_tests {
+                        println!("    - [{}] {}", t.kind.as_str(), t.qualified_name);
+                    }
+                }
+            }
+            Ok(())
+        }
+        Commands::Impact {
+            repo,
+            target,
+            depth,
+            files,
+            format,
+        } => {
+            let graph = load_or_build(&repo)?;
+            let Some(analysis) = analyze_impact(&graph, &target, depth) else {
+                return Err(crate::error::GraphiaError::InvalidArgument(format!(
+                    "target '{target}' not found"
+                )));
+            };
+
+            match format {
+                CliFormat::Json => {
+                    let json = serde_json::to_string_pretty(&analysis).map_err(|e| {
+                        crate::error::GraphiaError::Storage {
+                            message: e.to_string(),
+                        }
+                    })?;
+                    println!("{json}");
+                }
+                CliFormat::Human => {
+                    println!(
+                        "Change Surface & Blast Radius for [{}] {}:",
+                        analysis.target.kind.as_str(),
+                        analysis.target.qualified_name
+                    );
+                    println!(
+                        "  Total Impacted: {} (direct: {}, transitive: {}, possible: {})",
+                        analysis.total_impacted,
+                        analysis.direct_count,
+                        analysis.transitive_count,
+                        analysis.possible_count
+                    );
+                    if files {
+                        println!("  Impacted Files ({}):", analysis.impacted_files.len());
+                        for f in &analysis.impacted_files {
+                            println!("    - {f}");
+                        }
+                        println!("  Related Tests ({}):", analysis.related_tests.len());
+                        for t in &analysis.related_tests {
+                            println!("    - {t}");
+                        }
+                    } else {
+                        println!("  Impacted Symbols:");
+                        for imp in &analysis.impacted_nodes {
+                            println!(
+                                "    [{}] [{}] {} (depth: {}, because: {})",
+                                imp.kind.as_str(),
+                                imp.node.kind.as_str(),
+                                imp.node.qualified_name,
+                                imp.depth,
+                                imp.explanation.because
+                            );
+                        }
+                        println!("  Impacted Files ({}):", analysis.impacted_files.len());
+                        for f in &analysis.impacted_files {
+                            println!("    - {f}");
+                        }
+                        println!("  Related Tests ({}):", analysis.related_tests.len());
+                        for t in &analysis.related_tests {
+                            println!("    - {t}");
+                        }
+                    }
+                }
+            }
+            Ok(())
+        }
+        Commands::Tests {
+            repo,
+            target,
+            format,
+        } => {
+            let graph = load_or_build(&repo)?;
+
+            if let Some(target_spec) = target {
+                let tests = map_source_to_tests(&graph, &target_spec);
+                match format {
+                    CliFormat::Json => {
+                        let json = serde_json::to_string_pretty(&tests).map_err(|e| {
+                            crate::error::GraphiaError::Storage {
+                                message: e.to_string(),
+                            }
+                        })?;
+                        println!("{json}");
+                    }
+                    CliFormat::Human => {
+                        println!("Discovered {} test(s) for '{target_spec}':", tests.len());
+                        for (i, t) in tests.iter().enumerate() {
+                            let sym = t.test_symbol.as_deref().unwrap_or("<file-level>");
+                            println!(
+                                "  {}. {} ({}) - reason: {}",
+                                i + 1,
+                                sym,
+                                t.test_file,
+                                t.reason
+                            );
+                        }
+                    }
+                }
+            } else {
+                let report = discover_tests(&graph);
+                match format {
+                    CliFormat::Json => {
+                        let json = serde_json::to_string_pretty(&report).map_err(|e| {
+                            crate::error::GraphiaError::Storage {
+                                message: e.to_string(),
+                            }
+                        })?;
+                        println!("{json}");
+                    }
+                    CliFormat::Human => {
+                        println!("Discovered {} total test mapping(s):", report.total_tests);
+                        for mapping in &report.mappings {
+                            let src = mapping
+                                .source_symbol
+                                .as_deref()
+                                .unwrap_or(&mapping.source_file);
+                            println!("  Source: {src}");
+                            for t in &mapping.tests {
+                                let sym = t.test_symbol.as_deref().unwrap_or("<file-level>");
+                                println!("    -> Test: {} ({}) [{}]", sym, t.test_file, t.reason);
+                            }
+                        }
+                    }
+                }
+            }
+            Ok(())
+        }
+        Commands::Entrypoints { repo, format } => {
+            let graph = load_or_build(&repo)?;
+            let entrypoints = detect_entrypoints(&graph);
+
+            match format {
+                CliFormat::Json => {
+                    let json = serde_json::to_string_pretty(&entrypoints).map_err(|e| {
+                        crate::error::GraphiaError::Storage {
+                            message: e.to_string(),
+                        }
+                    })?;
+                    println!("{json}");
+                }
+                CliFormat::Human => {
+                    println!("Detected {} entrypoint(s):", entrypoints.len());
+                    for (i, ep) in entrypoints.iter().enumerate() {
+                        println!(
+                            "  {}. [{:?}] {} (file: {}:{}:{}) - {}",
+                            i + 1,
+                            ep.kind,
+                            ep.node.qualified_name,
+                            ep.node.location.file,
+                            ep.node.location.start_line,
+                            ep.node.location.start_col,
+                            ep.description
+                        );
+                    }
+                }
+            }
+            Ok(())
+        }
+        Commands::Architecture { repo, format } => {
+            let graph = load_or_build(&repo)?;
+            let overview = get_architecture_overview(&graph);
+
+            match format {
+                CliFormat::Json => {
+                    let json = serde_json::to_string_pretty(&overview).map_err(|e| {
+                        crate::error::GraphiaError::Storage {
+                            message: e.to_string(),
+                        }
+                    })?;
+                    println!("{json}");
+                }
+                CliFormat::Human => {
+                    println!("Repository Architectural Overview:");
+                    println!(
+                        "  Totals: {} nodes (files: {}, symbols: {}), {} edges, {} modules",
+                        overview.total_nodes,
+                        overview.file_count,
+                        overview.symbol_count,
+                        overview.total_edges,
+                        overview.module_count
+                    );
+                    println!("  Entrypoints ({}):", overview.entrypoints.len());
+                    for ep in &overview.entrypoints {
+                        println!("    - [{:?}] {}", ep.kind, ep.node.qualified_name);
+                    }
+                    println!("  Cycle Count: {}", overview.cycle_count);
+                    println!("  Communities: {}", overview.communities.len());
+                    println!("  High-Centrality Modules:");
+                    for (i, m) in overview.high_centrality_modules.iter().enumerate() {
+                        println!(
+                            "    {}. {} (pagerank: {:.4}, in: {}, out: {})",
+                            i + 1,
+                            m.id,
+                            m.pagerank,
+                            m.in_degree,
+                            m.out_degree
+                        );
+                    }
+                    println!("  Primary Dependency Flows:");
+                    for flow in overview.dependency_direction.iter().take(10) {
+                        println!("    {} -> {} (weight: {})", flow.from, flow.to, flow.weight);
+                    }
+                }
+            }
+            Ok(())
+        }
+        Commands::Context {
+            repo,
+            symbol,
+            file,
+            query,
+            changed,
+            token_budget,
+            budget_type,
+            depth,
+            limit,
+            format,
+        } => {
+            let graph = load_or_build(&repo)?;
+            let req = ContextRequest {
+                symbol,
+                file,
+                query,
+                changed,
+                budget: token_budget,
+                budget_type: budget_type.into(),
+                max_depth: depth,
+                max_candidates: limit,
+            };
+
+            let bundle = generate_context(&graph, &req, Some(&repo));
+
+            match format {
+                CliFormat::Json => {
+                    let json = serde_json::to_string_pretty(&bundle).map_err(|e| {
+                        crate::error::GraphiaError::Storage {
+                            message: e.to_string(),
+                        }
+                    })?;
+                    println!("{json}");
+                }
+                CliFormat::Human => {
+                    println!(
+                        "Context Bundle: {} item(s) across {} file(s) (approx tokens: {}, budget used: {}/{})",
+                        bundle.total_items,
+                        bundle.files.len(),
+                        bundle.total_approx_tokens,
+                        bundle.budget.budget_used,
+                        bundle.budget.budget_limit
+                    );
+                    for file_bundle in &bundle.files {
+                        println!(
+                            "\n--- File: {} (tokens: {}) ---",
+                            file_bundle.file, file_bundle.total_approx_tokens
+                        );
+                        for slice in &file_bundle.slices {
+                            println!(
+                                "  [{}] {} (lines {}-{}, score: {:.2}, reason: {})",
+                                slice.role.as_str(),
+                                slice.symbol,
+                                slice.start_line,
+                                slice.end_line,
+                                slice.score,
+                                slice.reason
+                            );
+                            if !slice.content.is_empty() {
+                                for line in slice.content.lines() {
+                                    println!("    | {line}");
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            Ok(())
+        }
+        Commands::Mcp { repo } => {
+            let mut server = crate::mcp::McpServer::new(repo);
+            let stdin = std::io::stdin().lock();
+            let stdout = std::io::stdout().lock();
+            server
+                .run_stream(stdin, stdout)
+                .map_err(|e| crate::error::GraphiaError::Storage {
+                    message: format!("MCP server error: {e}"),
+                })?;
             Ok(())
         }
     }

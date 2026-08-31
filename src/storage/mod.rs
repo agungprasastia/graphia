@@ -254,7 +254,7 @@ pub fn save_metadata(root: &Path, metadata: &Metadata) -> Result<()> {
     atomic_write(&root.join(".graphia/metadata.json"), &data)
 }
 
-fn load_metadata(root: &Path) -> Result<Option<Metadata>> {
+pub fn load_metadata(root: &Path) -> Result<Option<Metadata>> {
     let path = root.join(".graphia/metadata.json");
     if !path.exists() {
         return Ok(None);

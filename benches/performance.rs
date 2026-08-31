@@ -3,7 +3,12 @@ use std::hint::black_box;
 use std::path::Path;
 use std::time::Instant;
 
+use graphia::context::{BudgetValueType, ContextRequest, generate_context};
 use graphia::graph::build_graph;
+use graphia::intelligence::{
+    NeighborhoodOptions, SearchOptions, analyze_impact, get_neighborhood, search_graph,
+};
+use graphia::mcp::{CallToolParams, CallToolResult, JsonRpcRequest, RequestId, call_tool};
 use graphia::model::Language;
 use graphia::parser::parse_bytes;
 use graphia::query::{QueryIndex, TraversalLimits};
@@ -172,6 +177,104 @@ fn measure_dataset(dataset: Dataset, fixture: &TempDir) {
         updated, clean,
         "incremental graph differs from clean rebuild"
     );
+
+    let search_options = SearchOptions {
+        query: "function_0".to_string(),
+        kind_filter: None,
+        file_filter: None,
+        limit: Some(10),
+    };
+    let intel_search_start = Instant::now();
+    for _ in 0..ITERATIONS {
+        let results = search_graph(&graph, &search_options);
+        let _ = black_box(results);
+    }
+    let intel_search = intel_search_start.elapsed().as_nanos() / ITERATIONS as u128;
+
+    let target_symbol = graph
+        .nodes
+        .first()
+        .map(|n| n.name.as_str())
+        .unwrap_or("function_0");
+    let intel_neighborhood_start = Instant::now();
+    let n_opts = NeighborhoodOptions {
+        target: target_symbol.to_string(),
+        depth: 2,
+        limit: 20,
+    };
+    for _ in 0..ITERATIONS {
+        let neighborhood = get_neighborhood(&graph, &n_opts);
+        let _ = black_box(neighborhood);
+    }
+    let intel_neighborhood = intel_neighborhood_start.elapsed().as_nanos() / ITERATIONS as u128;
+
+    let intel_impact_start = Instant::now();
+    for _ in 0..ITERATIONS {
+        let impact = analyze_impact(&graph, target_symbol, 3);
+        let _ = black_box(impact);
+    }
+    let intel_impact = intel_impact_start.elapsed().as_nanos() / ITERATIONS as u128;
+
+    let ctx_request = ContextRequest {
+        symbol: Some("function_0".to_string()),
+        file: None,
+        query: None,
+        changed: false,
+        budget: Some(2000),
+        budget_type: BudgetValueType::ApproxTokens,
+        max_depth: 3,
+        max_candidates: 50,
+    };
+    let context_gen_start = Instant::now();
+    for _ in 0..ITERATIONS {
+        let bundle = generate_context(&graph, &ctx_request, Some(fixture.path()));
+        let _ = black_box(bundle);
+    }
+    let context_gen = context_gen_start.elapsed().as_nanos() / ITERATIONS as u128;
+
+    let mcp_call_params = CallToolParams {
+        name: "graphia_search_symbol".to_string(),
+        arguments: Some(
+            serde_json::json!({
+                "query": "function_0",
+                "limit": 10
+            })
+            .as_object()
+            .cloned()
+            .unwrap(),
+        ),
+    };
+    let mcp_exec_start = Instant::now();
+    for _ in 0..ITERATIONS {
+        let res = call_tool(
+            &graph,
+            Some(fixture.path()),
+            &mcp_call_params.name,
+            mcp_call_params.arguments.as_ref(),
+        );
+        let _ = black_box(res);
+    }
+    let mcp_tool_call = mcp_exec_start.elapsed().as_nanos() / ITERATIONS as u128;
+
+    let sample_tool_res = CallToolResult::text("benchmark payload text content for serialization");
+    let json_req = JsonRpcRequest {
+        jsonrpc: "2.0".to_string(),
+        id: Some(RequestId::Number(42)),
+        method: "tools/call".to_string(),
+        params: Some(serde_json::to_value(&mcp_call_params).unwrap()),
+    };
+    let mcp_serde_start = Instant::now();
+    for _ in 0..ITERATIONS {
+        let req_json = serde_json::to_string(&json_req).expect("serialize request");
+        let _deser_req: JsonRpcRequest =
+            serde_json::from_str(&req_json).expect("deserialize request");
+        let res_json = serde_json::to_string(&sample_tool_res).expect("serialize response");
+        let _deser_res: CallToolResult =
+            serde_json::from_str(&res_json).expect("deserialize response");
+        let _ = black_box((req_json, res_json));
+    }
+    let mcp_serde = mcp_serde_start.elapsed().as_nanos() / ITERATIONS as u128;
+
     let values = [
         ("scan", scan),
         ("parse_extract", parse),
@@ -182,6 +285,12 @@ fn measure_dataset(dataset: Dataset, fixture: &TempDir) {
         ("binary_write", binary_write),
         ("binary_load", binary_load),
         ("incremental", incremental),
+        ("intel_search", intel_search),
+        ("intel_neighborhood", intel_neighborhood),
+        ("intel_impact", intel_impact),
+        ("context_generation", context_gen),
+        ("mcp_tool_call", mcp_tool_call),
+        ("mcp_serialization", mcp_serde),
     ];
     for (stage, duration) in values {
         println!(
