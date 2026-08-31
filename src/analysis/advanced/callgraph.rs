@@ -70,20 +70,20 @@ fn build_trait_maps(graph: &Graph) -> TraitMaps {
     for edge in &graph.edges {
         if edge.kind == EdgeKind::Implements || edge.kind == EdgeKind::Inherits {
             impl_map.entry(edge.to).or_default().push(edge.from);
-        } else if edge.kind == EdgeKind::Contains {
-            if let (Some(parent), Some(child)) = (
+        } else if edge.kind == EdgeKind::Contains
+            && let (Some(parent), Some(child)) = (
                 graph.nodes.iter().find(|n| n.id == edge.from),
                 graph.nodes.iter().find(|n| n.id == edge.to),
-            ) {
-                if matches!(parent.kind, NodeKind::Trait | NodeKind::Interface)
-                    && matches!(child.kind, NodeKind::Method | NodeKind::Function)
-                {
-                    trait_methods.entry(parent.id).or_default().push(child.id);
-                } else if matches!(parent.kind, NodeKind::Struct | NodeKind::Class)
-                    && matches!(child.kind, NodeKind::Method | NodeKind::Function)
-                {
-                    struct_methods.entry(parent.id).or_default().push(child.id);
-                }
+            )
+        {
+            if matches!(parent.kind, NodeKind::Trait | NodeKind::Interface)
+                && matches!(child.kind, NodeKind::Method | NodeKind::Function)
+            {
+                trait_methods.entry(parent.id).or_default().push(child.id);
+            } else if matches!(parent.kind, NodeKind::Struct | NodeKind::Class)
+                && matches!(child.kind, NodeKind::Method | NodeKind::Function)
+            {
+                struct_methods.entry(parent.id).or_default().push(child.id);
             }
         }
     }
@@ -110,11 +110,12 @@ pub fn analyze_callgraph(graph: &Graph) -> RefinedCallGraph {
         let mut caller_dispatch_targets = Vec::new();
 
         for edge in &graph.edges {
-            if edge.kind == EdgeKind::Calls && edge.from == caller.id {
-                if let Some(target) = graph.nodes.iter().find(|n| n.id == edge.to) {
-                    caller_direct_callees.push(target.clone());
-                    find_dispatch_targets(graph, target, &maps, &mut caller_dispatch_targets);
-                }
+            if edge.kind == EdgeKind::Calls
+                && edge.from == caller.id
+                && let Some(target) = graph.nodes.iter().find(|n| n.id == edge.to)
+            {
+                caller_direct_callees.push(target.clone());
+                find_dispatch_targets(graph, target, &maps, &mut caller_dispatch_targets);
             }
         }
 
@@ -175,17 +176,15 @@ fn find_dispatch_targets(
                         .map_or("", |s| s.name.as_str());
                     if let Some(m_ids) = maps.struct_methods.get(&impl_id) {
                         for &m_id in m_ids {
-                            if let Some(m_node) = graph.nodes.iter().find(|n| n.id == m_id) {
-                                if m_node.name == target.name {
-                                    out.push(DispatchTarget {
-                                        target: m_node.clone(),
-                                        confidence: DispatchConfidence::Inferred,
-                                        via_interface: trait_name.clone(),
-                                        explanation: format!(
-                                            "Dynamic dispatch candidate via {s_name}"
-                                        ),
-                                    });
-                                }
+                            if let Some(m_node) = graph.nodes.iter().find(|n| n.id == m_id)
+                                && m_node.name == target.name
+                            {
+                                out.push(DispatchTarget {
+                                    target: m_node.clone(),
+                                    confidence: DispatchConfidence::Inferred,
+                                    via_interface: trait_name.clone(),
+                                    explanation: format!("Dynamic dispatch candidate via {s_name}"),
+                                });
                             }
                         }
                     }

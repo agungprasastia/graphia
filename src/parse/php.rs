@@ -442,33 +442,32 @@ pub fn extract_calls_php(
 ) {
     let mut stack = vec![*node];
     while let Some(n) = stack.pop() {
-        if n.kind() == "function_call_expression" || n.kind() == "member_call_expression" {
-            if let Some(func) = n
+        if (n.kind() == "function_call_expression" || n.kind() == "member_call_expression")
+            && let Some(func) = n
                 .child_by_field_name("function")
                 .or_else(|| n.child_by_field_name("name"))
+        {
+            let callee_raw = node_text(&func, source).trim().to_string();
+            let simple = callee_raw
+                .rsplit("->")
+                .next()
+                .unwrap_or(&callee_raw)
+                .rsplit("::")
+                .next()
+                .unwrap_or(&callee_raw)
+                .to_string();
+            if !simple.is_empty()
+                && simple
+                    .chars()
+                    .next()
+                    .is_some_and(|c| c.is_alphabetic() || c == '_')
             {
-                let callee_raw = node_text(&func, source).trim().to_string();
-                let simple = callee_raw
-                    .rsplit("->")
-                    .next()
-                    .unwrap_or(&callee_raw)
-                    .rsplit("::")
-                    .next()
-                    .unwrap_or(&callee_raw)
-                    .to_string();
-                if !simple.is_empty()
-                    && simple
-                        .chars()
-                        .next()
-                        .is_some_and(|c| c.is_alphabetic() || c == '_')
-                {
-                    let loc = location_for_node(file, &n);
-                    calls.push(Call {
-                        caller: caller.to_string(),
-                        callee: simple,
-                        location: loc,
-                    });
-                }
+                let loc = location_for_node(file, &n);
+                calls.push(Call {
+                    caller: caller.to_string(),
+                    callee: simple,
+                    location: loc,
+                });
             }
         }
         for child in children_vec(&n).into_iter().rev() {

@@ -601,10 +601,10 @@ fn tool_dependency_path(
         Ok(Some(path_edges)) => {
             let mut steps: Vec<&Node> = vec![start_node];
             for edge_id in path_edges {
-                if let Some(edge) = graph.edges.iter().find(|e| e.id == edge_id) {
-                    if let Some(node) = graph.nodes.iter().find(|n| n.id == edge.to) {
-                        steps.push(node);
-                    }
+                if let Some(edge) = graph.edges.iter().find(|e| e.id == edge_id)
+                    && let Some(node) = graph.nodes.iter().find(|n| n.id == edge.to)
+                {
+                    steps.push(node);
                 }
             }
             let output = serde_json::to_string_pretty(&json!({

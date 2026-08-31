@@ -88,21 +88,20 @@ pub fn check_architecture_boundaries(
             (node_layers.get(&edge.from), node_layers.get(&edge.to))
         {
             total_evaluated += 1;
-            if from_layer != to_layer {
-                if let Some(allowed) = layer_allowed_map.get(from_layer) {
-                    if !allowed.contains(to_layer) {
-                        violations.push(RuleViolation {
-                            from_file: from_file.clone(),
-                            to_file: to_file.clone(),
-                            from_layer: from_layer.clone(),
-                            to_layer: to_layer.clone(),
-                            edge_kind: edge.kind,
-                            reason: format!(
-                                "Layer '{from_layer}' is not allowed to depend on layer '{to_layer}'"
-                            ),
-                        });
-                    }
-                }
+            if from_layer != to_layer
+                && let Some(allowed) = layer_allowed_map.get(from_layer)
+                && !allowed.contains(to_layer)
+            {
+                violations.push(RuleViolation {
+                    from_file: from_file.clone(),
+                    to_file: to_file.clone(),
+                    from_layer: from_layer.clone(),
+                    to_layer: to_layer.clone(),
+                    edge_kind: edge.kind,
+                    reason: format!(
+                        "Layer '{from_layer}' is not allowed to depend on layer '{to_layer}'"
+                    ),
+                });
             }
         }
     }

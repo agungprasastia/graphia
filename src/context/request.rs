@@ -85,19 +85,18 @@ pub fn resolve_seeds(
     }
 
     // 4. Resolve --changed
-    if request.changed {
-        if let Some(root) = repo_root {
-            if let Ok(changed_files) = detect_changed_files(root) {
-                for node in &graph.nodes {
-                    let node_file = node.file.replace('\\', "/");
-                    if changed_files.iter().any(|cf| {
-                        let cf_norm = cf.replace('\\', "/");
-                        node_file == cf_norm || node_file.ends_with(&cf_norm)
-                    }) && seen_ids.insert(node.id)
-                    {
-                        seeds.push(node.clone());
-                    }
-                }
+    if request.changed
+        && let Some(root) = repo_root
+        && let Ok(changed_files) = detect_changed_files(root)
+    {
+        for node in &graph.nodes {
+            let node_file = node.file.replace('\\', "/");
+            if changed_files.iter().any(|cf| {
+                let cf_norm = cf.replace('\\', "/");
+                node_file == cf_norm || node_file.ends_with(&cf_norm)
+            }) && seen_ids.insert(node.id)
+            {
+                seeds.push(node.clone());
             }
         }
     }
@@ -115,16 +114,16 @@ pub fn resolve_seeds(
 fn detect_changed_files(root: &Path) -> crate::error::Result<Vec<String>> {
     let scanned = crate::scan::scan_repo(root)?;
     let metadata_path = root.join(".graphia/metadata.json");
-    if metadata_path.exists() {
-        if let Some(prev_meta) = crate::storage::load_metadata(root)? {
-            let changes = crate::incremental::classify_changes(&prev_meta.files, &scanned)?;
-            let changed = changes
-                .into_iter()
-                .filter(|c| c.kind != crate::incremental::ChangeKind::Unchanged)
-                .map(|c| c.path)
-                .collect();
-            return Ok(changed);
-        }
+    if metadata_path.exists()
+        && let Some(prev_meta) = crate::storage::load_metadata(root)?
+    {
+        let changes = crate::incremental::classify_changes(&prev_meta.files, &scanned)?;
+        let changed = changes
+            .into_iter()
+            .filter(|c| c.kind != crate::incremental::ChangeKind::Unchanged)
+            .map(|c| c.path)
+            .collect();
+        return Ok(changed);
     }
     Ok(Vec::new())
 }

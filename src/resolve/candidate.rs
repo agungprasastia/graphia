@@ -129,17 +129,16 @@ impl CandidateSelector {
     pub fn add(&mut self, node_id: NodeId, priority: u32, reason: ResolutionReason) {
         if self.candidates.len() >= MAX_AMBIGUOUS_CANDIDATES {
             // Bounded candidate storage: if capacity reached, only keep if higher priority
-            if let Some(max_cand) = self.candidates.iter().next_back().cloned() {
-                if priority < max_cand.priority
-                    || (priority == max_cand.priority && node_id.0 < max_cand.node_id.0)
-                {
-                    self.candidates.remove(&max_cand);
-                    self.candidates.insert(Candidate {
-                        node_id,
-                        priority,
-                        reason,
-                    });
-                }
+            if let Some(max_cand) = self.candidates.iter().next_back().cloned()
+                && (priority < max_cand.priority
+                    || (priority == max_cand.priority && node_id.0 < max_cand.node_id.0))
+            {
+                self.candidates.remove(&max_cand);
+                self.candidates.insert(Candidate {
+                    node_id,
+                    priority,
+                    reason,
+                });
             }
             return;
         }

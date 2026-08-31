@@ -268,31 +268,31 @@ fn extract_relationships(
                     });
                 }
             }
-        } else if matches!(kind, "struct_expression" | "composite_literal") {
-            if let Some(type_node) = node.child_by_field_name("type") {
-                let type_name = node_text(&type_node, source).trim().to_string();
-                if !type_name.is_empty() {
-                    parsed.instantiations.push(Instantiation {
-                        type_name,
-                        location: location_for_node(file, &node),
-                        caller: caller.clone(),
-                    });
-                }
-            }
-        }
-        if matches!(kind, "call_expression" | "call") && text.contains("::new(") {
-            if let Some(type_name) = text
-                .split("::new(")
-                .next()
-                .map(str::trim)
-                .filter(|name| !name.is_empty())
-            {
+        } else if matches!(kind, "struct_expression" | "composite_literal")
+            && let Some(type_node) = node.child_by_field_name("type")
+        {
+            let type_name = node_text(&type_node, source).trim().to_string();
+            if !type_name.is_empty() {
                 parsed.instantiations.push(Instantiation {
-                    type_name: type_name.to_string(),
+                    type_name,
                     location: location_for_node(file, &node),
                     caller: caller.clone(),
                 });
             }
+        }
+        if matches!(kind, "call_expression" | "call")
+            && text.contains("::new(")
+            && let Some(type_name) = text
+                .split("::new(")
+                .next()
+                .map(str::trim)
+                .filter(|name| !name.is_empty())
+        {
+            parsed.instantiations.push(Instantiation {
+                type_name: type_name.to_string(),
+                location: location_for_node(file, &node),
+                caller: caller.clone(),
+            });
         }
         if matches!(kind, "call" | "call_expression" | "expression_statement") {
             let candidate = text.split(['(', '{']).next().unwrap_or(text).trim();
@@ -485,16 +485,16 @@ fn parse_rust(file: &str, root: &tree_sitter::Node<'_>, source: &[u8]) -> Parsed
 
                     if let Some(params_node) = node.child_by_field_name("parameters") {
                         for p in children_vec(&params_node) {
-                            if p.kind() == "parameter" {
-                                if let Some(type_node) = p.child_by_field_name("type") {
-                                    let tname = node_text(&type_node, source).trim().to_string();
-                                    if !tname.is_empty() {
-                                        type_references.push(TypeReference {
-                                            name: tname,
-                                            location: location_for_node(file, &type_node),
-                                            container: Some(qualified.clone()),
-                                        });
-                                    }
+                            if p.kind() == "parameter"
+                                && let Some(type_node) = p.child_by_field_name("type")
+                            {
+                                let tname = node_text(&type_node, source).trim().to_string();
+                                if !tname.is_empty() {
+                                    type_references.push(TypeReference {
+                                        name: tname,
+                                        location: location_for_node(file, &type_node),
+                                        container: Some(qualified.clone()),
+                                    });
                                 }
                             }
                         }
@@ -702,69 +702,67 @@ fn parse_rust(file: &str, root: &tree_sitter::Node<'_>, source: &[u8]) -> Parsed
                     for child in children_vec(&node) {
                         if child.kind() == "declaration_list" {
                             for sub in children_vec(&child) {
-                                if sub.kind() == "function_item" {
-                                    if let Some(name_node) = sub.child_by_field_name("name") {
-                                        let name = node_text(&name_node, source).to_string();
-                                        let qualified = format!("{file}::{name}");
-                                        let loc = location_for_node(file, &sub);
-                                        let is_pub =
-                                            node_text(&sub, source).trim_start().starts_with("pub");
-                                        let vis = if is_pub {
-                                            Visibility::Public
-                                        } else {
-                                            Visibility::Private
-                                        };
+                                if sub.kind() == "function_item"
+                                    && let Some(name_node) = sub.child_by_field_name("name")
+                                {
+                                    let name = node_text(&name_node, source).to_string();
+                                    let qualified = format!("{file}::{name}");
+                                    let loc = location_for_node(file, &sub);
+                                    let is_pub =
+                                        node_text(&sub, source).trim_start().starts_with("pub");
+                                    let vis = if is_pub {
+                                        Visibility::Public
+                                    } else {
+                                        Visibility::Private
+                                    };
 
-                                        let params_text = sub
-                                            .child_by_field_name("parameters")
-                                            .map(|p| node_text(&p, source))
-                                            .unwrap_or("()");
-                                        let return_type = sub
-                                            .child_by_field_name("return_type")
-                                            .map(|r| {
-                                                node_text(&r, source)
-                                                    .trim_start_matches("->")
-                                                    .trim()
-                                            })
-                                            .unwrap_or("");
-                                        let raw_sig = if return_type.is_empty() {
-                                            format!("{name}{params_text}")
-                                        } else {
-                                            format!("{name}{params_text}->{return_type}")
-                                        };
-                                        let sig = Some(normalize_signature(&raw_sig));
+                                    let params_text = sub
+                                        .child_by_field_name("parameters")
+                                        .map(|p| node_text(&p, source))
+                                        .unwrap_or("()");
+                                    let return_type = sub
+                                        .child_by_field_name("return_type")
+                                        .map(|r| {
+                                            node_text(&r, source).trim_start_matches("->").trim()
+                                        })
+                                        .unwrap_or("");
+                                    let raw_sig = if return_type.is_empty() {
+                                        format!("{name}{params_text}")
+                                    } else {
+                                        format!("{name}{params_text}->{return_type}")
+                                    };
+                                    let sig = Some(normalize_signature(&raw_sig));
 
-                                        symbols.push(Symbol {
-                                            kind: NodeKind::Method,
+                                    symbols.push(Symbol {
+                                        kind: NodeKind::Method,
+                                        name: name.clone(),
+                                        qualified_name: qualified.clone(),
+                                        location: loc.clone(),
+                                        parent: Some(tname.clone()),
+                                        visibility: vis,
+                                        signature: sig.clone(),
+                                        container: Some(tname.clone()),
+                                    });
+                                    definitions.push(Definition {
+                                        kind: NodeKind::Method,
+                                        name: name.clone(),
+                                        qualified_name: qualified.clone(),
+                                        location: loc.clone(),
+                                        container: Some(tname.clone()),
+                                        visibility: vis,
+                                        signature: sig,
+                                    });
+                                    if is_pub {
+                                        exports.push(Export {
                                             name: name.clone(),
-                                            qualified_name: qualified.clone(),
                                             location: loc.clone(),
-                                            parent: Some(tname.clone()),
-                                            visibility: vis,
-                                            signature: sig.clone(),
-                                            container: Some(tname.clone()),
+                                            target: Some(qualified.clone()),
                                         });
-                                        definitions.push(Definition {
-                                            kind: NodeKind::Method,
-                                            name: name.clone(),
-                                            qualified_name: qualified.clone(),
-                                            location: loc.clone(),
-                                            container: Some(tname.clone()),
-                                            visibility: vis,
-                                            signature: sig,
-                                        });
-                                        if is_pub {
-                                            exports.push(Export {
-                                                name: name.clone(),
-                                                location: loc.clone(),
-                                                target: Some(qualified.clone()),
-                                            });
-                                        }
-                                        if let Some(body) = sub.child_by_field_name("body") {
-                                            extract_calls_rust(
-                                                file, &body, source, &qualified, &mut calls,
-                                            );
-                                        }
+                                    }
+                                    if let Some(body) = sub.child_by_field_name("body") {
+                                        extract_calls_rust(
+                                            file, &body, source, &qualified, &mut calls,
+                                        );
                                     }
                                 }
                             }
@@ -815,30 +813,30 @@ fn extract_calls_rust(
 ) {
     let mut stack = vec![*node];
     while let Some(n) = stack.pop() {
-        if n.kind() == "call_expression" {
-            if let Some(func) = n.child_by_field_name("function") {
-                let called_text = node_text(&func, source).trim().to_string();
-                let simple = called_text
-                    .rsplit("::")
+        if n.kind() == "call_expression"
+            && let Some(func) = n.child_by_field_name("function")
+        {
+            let called_text = node_text(&func, source).trim().to_string();
+            let simple = called_text
+                .rsplit("::")
+                .next()
+                .unwrap_or(&called_text)
+                .rsplit('.')
+                .next()
+                .unwrap_or(&called_text)
+                .to_string();
+            if !simple.is_empty()
+                && simple
+                    .chars()
                     .next()
-                    .unwrap_or(&called_text)
-                    .rsplit('.')
-                    .next()
-                    .unwrap_or(&called_text)
-                    .to_string();
-                if !simple.is_empty()
-                    && simple
-                        .chars()
-                        .next()
-                        .is_some_and(|c| c.is_alphabetic() || c == '_')
-                {
-                    let loc = location_for_node(file, &n);
-                    calls.push(Call {
-                        caller: caller.to_string(),
-                        callee: simple,
-                        location: loc,
-                    });
-                }
+                    .is_some_and(|c| c.is_alphabetic() || c == '_')
+            {
+                let loc = location_for_node(file, &n);
+                calls.push(Call {
+                    caller: caller.to_string(),
+                    callee: simple,
+                    location: loc,
+                });
             }
         }
         for child in children_vec(&n).into_iter().rev() {
@@ -1032,22 +1030,22 @@ fn extract_calls_python(
 ) {
     let mut stack = vec![*node];
     while let Some(n) = stack.pop() {
-        if n.kind() == "call" {
-            if let Some(func) = n.child_by_field_name("function") {
-                let callee_raw = node_text(&func, source).trim().to_string();
-                let simple = callee_raw
-                    .rsplit('.')
-                    .next()
-                    .unwrap_or(&callee_raw)
-                    .to_string();
-                if !simple.is_empty() {
-                    let loc = location_for_node(file, &n);
-                    calls.push(Call {
-                        caller: caller.to_string(),
-                        callee: simple,
-                        location: loc,
-                    });
-                }
+        if n.kind() == "call"
+            && let Some(func) = n.child_by_field_name("function")
+        {
+            let callee_raw = node_text(&func, source).trim().to_string();
+            let simple = callee_raw
+                .rsplit('.')
+                .next()
+                .unwrap_or(&callee_raw)
+                .to_string();
+            if !simple.is_empty() {
+                let loc = location_for_node(file, &n);
+                calls.push(Call {
+                    caller: caller.to_string(),
+                    callee: simple,
+                    location: loc,
+                });
             }
         }
         for child in children_vec(&n).into_iter().rev() {

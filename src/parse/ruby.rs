@@ -288,29 +288,29 @@ pub fn extract_calls_ruby(
 ) {
     let mut stack = vec![*node];
     while let Some(n) = stack.pop() {
-        if n.kind() == "call" {
-            if let Some(method_node) = n.child_by_field_name("method") {
-                let callee_raw = node_text(&method_node, source).trim().to_string();
-                let simple = callee_raw
-                    .rsplit('.')
+        if n.kind() == "call"
+            && let Some(method_node) = n.child_by_field_name("method")
+        {
+            let callee_raw = node_text(&method_node, source).trim().to_string();
+            let simple = callee_raw
+                .rsplit('.')
+                .next()
+                .unwrap_or(&callee_raw)
+                .to_string();
+            if !simple.is_empty()
+                && simple != "require"
+                && simple != "require_relative"
+                && simple
+                    .chars()
                     .next()
-                    .unwrap_or(&callee_raw)
-                    .to_string();
-                if !simple.is_empty()
-                    && simple != "require"
-                    && simple != "require_relative"
-                    && simple
-                        .chars()
-                        .next()
-                        .is_some_and(|c| c.is_alphabetic() || c == '_')
-                {
-                    let loc = location_for_node(file, &n);
-                    calls.push(Call {
-                        caller: caller.to_string(),
-                        callee: simple,
-                        location: loc,
-                    });
-                }
+                    .is_some_and(|c| c.is_alphabetic() || c == '_')
+            {
+                let loc = location_for_node(file, &n);
+                calls.push(Call {
+                    caller: caller.to_string(),
+                    callee: simple,
+                    location: loc,
+                });
             }
         }
         for child in children_vec(&n).into_iter().rev() {

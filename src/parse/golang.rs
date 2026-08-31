@@ -258,54 +258,54 @@ pub fn parse_go(file: &str, root: &TsNode<'_>, source: &[u8]) -> ParsedFile {
             }
             "type_declaration" => {
                 for child in children_vec(&node) {
-                    if child.kind() == "type_spec" || child.kind() == "type_alias" {
-                        if let Some(name_node) = child.child_by_field_name("name") {
-                            let name = node_text(&name_node, source).to_string();
-                            let qualified = format!("{file}::{name}");
-                            let loc = location_for_node(file, &child);
+                    if (child.kind() == "type_spec" || child.kind() == "type_alias")
+                        && let Some(name_node) = child.child_by_field_name("name")
+                    {
+                        let name = node_text(&name_node, source).to_string();
+                        let qualified = format!("{file}::{name}");
+                        let loc = location_for_node(file, &child);
 
-                            let kind = if let Some(type_node) = child.child_by_field_name("type") {
-                                match type_node.kind() {
-                                    "struct_type" => NodeKind::Struct,
-                                    "interface_type" => NodeKind::Interface,
-                                    _ => NodeKind::Struct,
-                                }
-                            } else {
-                                NodeKind::Struct
-                            };
-
-                            let is_exported = name.chars().next().is_some_and(char::is_uppercase);
-                            let visibility = if is_exported {
-                                Visibility::Public
-                            } else {
-                                Visibility::Package
-                            };
-                            symbols.push(Symbol {
-                                kind,
-                                name: name.clone(),
-                                qualified_name: qualified.clone(),
-                                location: loc.clone(),
-                                parent: None,
-                                visibility,
-                                signature: None,
-                                container: None,
-                            });
-                            definitions.push(Definition {
-                                kind,
-                                name: name.clone(),
-                                qualified_name: qualified.clone(),
-                                location: loc.clone(),
-                                container: None,
-                                visibility,
-                                signature: None,
-                            });
-                            if is_exported {
-                                exports.push(Export {
-                                    name: name.clone(),
-                                    location: loc.clone(),
-                                    target: Some(qualified),
-                                });
+                        let kind = if let Some(type_node) = child.child_by_field_name("type") {
+                            match type_node.kind() {
+                                "struct_type" => NodeKind::Struct,
+                                "interface_type" => NodeKind::Interface,
+                                _ => NodeKind::Struct,
                             }
+                        } else {
+                            NodeKind::Struct
+                        };
+
+                        let is_exported = name.chars().next().is_some_and(char::is_uppercase);
+                        let visibility = if is_exported {
+                            Visibility::Public
+                        } else {
+                            Visibility::Package
+                        };
+                        symbols.push(Symbol {
+                            kind,
+                            name: name.clone(),
+                            qualified_name: qualified.clone(),
+                            location: loc.clone(),
+                            parent: None,
+                            visibility,
+                            signature: None,
+                            container: None,
+                        });
+                        definitions.push(Definition {
+                            kind,
+                            name: name.clone(),
+                            qualified_name: qualified.clone(),
+                            location: loc.clone(),
+                            container: None,
+                            visibility,
+                            signature: None,
+                        });
+                        if is_exported {
+                            exports.push(Export {
+                                name: name.clone(),
+                                location: loc.clone(),
+                                target: Some(qualified),
+                            });
                         }
                     }
                 }
@@ -422,27 +422,27 @@ pub fn extract_calls_go(
 ) {
     let mut stack = vec![*node];
     while let Some(n) = stack.pop() {
-        if n.kind() == "call_expression" {
-            if let Some(func) = n.child_by_field_name("function") {
-                let callee_raw = node_text(&func, source).trim().to_string();
-                let simple = callee_raw
-                    .rsplit('.')
+        if n.kind() == "call_expression"
+            && let Some(func) = n.child_by_field_name("function")
+        {
+            let callee_raw = node_text(&func, source).trim().to_string();
+            let simple = callee_raw
+                .rsplit('.')
+                .next()
+                .unwrap_or(&callee_raw)
+                .to_string();
+            if !simple.is_empty()
+                && simple
+                    .chars()
                     .next()
-                    .unwrap_or(&callee_raw)
-                    .to_string();
-                if !simple.is_empty()
-                    && simple
-                        .chars()
-                        .next()
-                        .is_some_and(|c| c.is_alphabetic() || c == '_')
-                {
-                    let loc = location_for_node(file, &n);
-                    calls.push(Call {
-                        caller: caller.to_string(),
-                        callee: simple,
-                        location: loc,
-                    });
-                }
+                    .is_some_and(|c| c.is_alphabetic() || c == '_')
+            {
+                let loc = location_for_node(file, &n);
+                calls.push(Call {
+                    caller: caller.to_string(),
+                    callee: simple,
+                    location: loc,
+                });
             }
         }
         for child in children_vec(&n).into_iter().rev() {

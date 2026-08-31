@@ -347,20 +347,19 @@ pub fn extract_calls_kotlin(
                     break;
                 }
             }
-            if let Some(simple) = callee_simple {
-                if !simple.is_empty()
-                    && simple
-                        .chars()
-                        .next()
-                        .is_some_and(|c| c.is_alphabetic() || c == '_')
-                {
-                    let loc = location_for_node(file, &n);
-                    calls.push(Call {
-                        caller: caller.to_string(),
-                        callee: simple,
-                        location: loc,
-                    });
-                }
+            if let Some(simple) = callee_simple
+                && !simple.is_empty()
+                && simple
+                    .chars()
+                    .next()
+                    .is_some_and(|c| c.is_alphabetic() || c == '_')
+            {
+                let loc = location_for_node(file, &n);
+                calls.push(Call {
+                    caller: caller.to_string(),
+                    callee: simple,
+                    location: loc,
+                });
             }
         }
         for child in children_vec(&n).into_iter().rev() {

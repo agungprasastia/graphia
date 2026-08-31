@@ -197,52 +197,51 @@ pub fn parse_zig(file: &str, root: &TsNode<'_>, source: &[u8]) -> ParsedFile {
                     || full_text.contains("union")
                     || full_text.contains("opaque");
 
-                if let Some(name) = name_opt {
-                    if is_struct_or_enum
-                        && (full_text.contains("struct")
-                            || full_text.contains("enum")
-                            || full_text.contains("union"))
-                    {
-                        let qualified = format!("{file}::{name}");
-                        let loc = location_for_node(file, &node);
-                        let kind = if full_text.contains("enum") {
-                            NodeKind::Enum
-                        } else {
-                            NodeKind::Struct
-                        };
+                if let Some(name) = name_opt
+                    && is_struct_or_enum
+                    && (full_text.contains("struct")
+                        || full_text.contains("enum")
+                        || full_text.contains("union"))
+                {
+                    let qualified = format!("{file}::{name}");
+                    let loc = location_for_node(file, &node);
+                    let kind = if full_text.contains("enum") {
+                        NodeKind::Enum
+                    } else {
+                        NodeKind::Struct
+                    };
 
-                        symbols.push(Symbol {
-                            kind,
+                    symbols.push(Symbol {
+                        kind,
+                        name: name.clone(),
+                        qualified_name: qualified.clone(),
+                        location: loc.clone(),
+                        parent: parent_scope.clone(),
+                        visibility: vis,
+                        signature: None,
+                        container: parent_scope.clone(),
+                    });
+                    definitions.push(Definition {
+                        kind,
+                        name: name.clone(),
+                        qualified_name: qualified.clone(),
+                        location: loc.clone(),
+                        container: parent_scope.clone(),
+                        visibility: vis,
+                        signature: None,
+                    });
+                    if is_pub {
+                        exports.push(Export {
                             name: name.clone(),
-                            qualified_name: qualified.clone(),
-                            location: loc.clone(),
-                            parent: parent_scope.clone(),
-                            visibility: vis,
-                            signature: None,
-                            container: parent_scope.clone(),
+                            location: loc,
+                            target: Some(qualified),
                         });
-                        definitions.push(Definition {
-                            kind,
-                            name: name.clone(),
-                            qualified_name: qualified.clone(),
-                            location: loc.clone(),
-                            container: parent_scope.clone(),
-                            visibility: vis,
-                            signature: None,
-                        });
-                        if is_pub {
-                            exports.push(Export {
-                                name: name.clone(),
-                                location: loc,
-                                target: Some(qualified),
-                            });
-                        }
-
-                        for child in children_vec(&node).into_iter().rev() {
-                            stack.push((child, Some(name.clone())));
-                        }
-                        continue;
                     }
+
+                    for child in children_vec(&node).into_iter().rev() {
+                        stack.push((child, Some(name.clone())));
+                    }
+                    continue;
                 }
             }
             "IDENTIFIER" | "identifier" => {
@@ -294,21 +293,20 @@ pub fn extract_calls_zig(
                     break;
                 }
             }
-            if let Some(simple) = callee_opt {
-                if !simple.is_empty()
-                    && simple != "@import"
-                    && simple
-                        .chars()
-                        .next()
-                        .is_some_and(|c| c.is_alphabetic() || c == '_')
-                {
-                    let loc = location_for_node(file, &n);
-                    calls.push(Call {
-                        caller: caller.to_string(),
-                        callee: simple,
-                        location: loc,
-                    });
-                }
+            if let Some(simple) = callee_opt
+                && !simple.is_empty()
+                && simple != "@import"
+                && simple
+                    .chars()
+                    .next()
+                    .is_some_and(|c| c.is_alphabetic() || c == '_')
+            {
+                let loc = location_for_node(file, &n);
+                calls.push(Call {
+                    caller: caller.to_string(),
+                    callee: simple,
+                    location: loc,
+                });
             }
         }
         for child in children_vec(&n).into_iter().rev() {

@@ -150,46 +150,46 @@ fn parse_rust_import(raw: &str) -> Vec<ImportDirective> {
 fn parse_python_import(raw: &str) -> Vec<ImportDirective> {
     let text = raw.trim();
     // from foo import bar as baz, qux
-    if let Some(rest) = text.strip_prefix("from ") {
-        if let Some((module, imports_part)) = rest.split_once(" import ") {
-            let module = module.trim();
-            let mut directives = Vec::new();
-            for item in imports_part.trim().trim_matches(['(', ')']).split(',') {
-                let item = item.trim();
-                if item.is_empty() {
-                    continue;
-                }
-                if item == "*" {
-                    directives.push(ImportDirective {
-                        raw: raw.to_string(),
-                        language: Some(Language::Python),
-                        target_module_or_path: module.to_string(),
-                        imported_symbol: Some("*".to_string()),
-                        alias: None,
-                        is_wildcard: true,
-                    });
-                } else if let Some((sym, alias)) = item.split_once(" as ") {
-                    directives.push(ImportDirective {
-                        raw: raw.to_string(),
-                        language: Some(Language::Python),
-                        target_module_or_path: module.to_string(),
-                        imported_symbol: Some(sym.trim().to_string()),
-                        alias: Some(alias.trim().to_string()),
-                        is_wildcard: false,
-                    });
-                } else {
-                    directives.push(ImportDirective {
-                        raw: raw.to_string(),
-                        language: Some(Language::Python),
-                        target_module_or_path: module.to_string(),
-                        imported_symbol: Some(item.to_string()),
-                        alias: None,
-                        is_wildcard: false,
-                    });
-                }
+    if let Some(rest) = text.strip_prefix("from ")
+        && let Some((module, imports_part)) = rest.split_once(" import ")
+    {
+        let module = module.trim();
+        let mut directives = Vec::new();
+        for item in imports_part.trim().trim_matches(['(', ')']).split(',') {
+            let item = item.trim();
+            if item.is_empty() {
+                continue;
             }
-            return directives;
+            if item == "*" {
+                directives.push(ImportDirective {
+                    raw: raw.to_string(),
+                    language: Some(Language::Python),
+                    target_module_or_path: module.to_string(),
+                    imported_symbol: Some("*".to_string()),
+                    alias: None,
+                    is_wildcard: true,
+                });
+            } else if let Some((sym, alias)) = item.split_once(" as ") {
+                directives.push(ImportDirective {
+                    raw: raw.to_string(),
+                    language: Some(Language::Python),
+                    target_module_or_path: module.to_string(),
+                    imported_symbol: Some(sym.trim().to_string()),
+                    alias: Some(alias.trim().to_string()),
+                    is_wildcard: false,
+                });
+            } else {
+                directives.push(ImportDirective {
+                    raw: raw.to_string(),
+                    language: Some(Language::Python),
+                    target_module_or_path: module.to_string(),
+                    imported_symbol: Some(item.to_string()),
+                    alias: None,
+                    is_wildcard: false,
+                });
+            }
         }
+        return directives;
     }
 
     // import foo.bar as baz
@@ -591,13 +591,13 @@ impl ImportTable {
                         .entry(alias.clone())
                         .or_default()
                         .push((d.target_module_or_path.clone(), d.imported_symbol.clone()));
-                } else if let Some(sym) = &d.imported_symbol {
-                    if !d.is_wildcard {
-                        aliases
-                            .entry(sym.clone())
-                            .or_default()
-                            .push((d.target_module_or_path.clone(), Some(sym.clone())));
-                    }
+                } else if let Some(sym) = &d.imported_symbol
+                    && !d.is_wildcard
+                {
+                    aliases
+                        .entry(sym.clone())
+                        .or_default()
+                        .push((d.target_module_or_path.clone(), Some(sym.clone())));
                 }
             }
             directives.extend(parsed);

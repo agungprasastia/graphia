@@ -68,13 +68,14 @@ pub fn get_neighborhood_with_cancel(
         if cancelled.is_some_and(|check| check()) {
             return None;
         }
-        if edge.kind == EdgeKind::Contains && edge.to == target_id {
-            if let Some(n) = graph.nodes.iter().find(|n| n.id == edge.from) {
-                if n.kind == NodeKind::Module || n.kind == NodeKind::File {
-                    parent_module = Some(n.clone());
-                }
-                container = Some(n.clone());
+        if edge.kind == EdgeKind::Contains
+            && edge.to == target_id
+            && let Some(n) = graph.nodes.iter().find(|n| n.id == edge.from)
+        {
+            if n.kind == NodeKind::Module || n.kind == NodeKind::File {
+                parent_module = Some(n.clone());
             }
+            container = Some(n.clone());
         }
     }
 
@@ -248,13 +249,13 @@ fn collect_neighbors_k_hop(
                 None
             };
 
-            if let Some(nid) = next_id {
-                if visited.insert(nid) {
-                    if let Some(node) = graph.nodes.iter().find(|n| n.id == nid) {
-                        result_nodes.push(node.clone());
-                    }
-                    queue.push_back((nid, depth + 1));
+            if let Some(nid) = next_id
+                && visited.insert(nid)
+            {
+                if let Some(node) = graph.nodes.iter().find(|n| n.id == nid) {
+                    result_nodes.push(node.clone());
                 }
+                queue.push_back((nid, depth + 1));
             }
         }
     }

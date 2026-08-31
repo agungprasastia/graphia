@@ -78,27 +78,27 @@ pub fn discover_tests(graph: &Graph) -> TestDiscoveryReport {
             let caller = graph.nodes.iter().find(|n| n.id == edge.from);
             let callee = graph.nodes.iter().find(|n| n.id == edge.to);
 
-            if let (Some(caller_node), Some(callee_node)) = (caller, callee) {
-                if is_test_symbol(caller_node) || is_test_file(&caller_node.file) {
-                    // Test caller calls target callee
-                    let reason = format!(
-                        "test {} {} target {}",
-                        caller_node.name,
-                        edge.kind.as_str().to_lowercase(),
-                        callee_node.name
-                    );
+            if let (Some(caller_node), Some(callee_node)) = (caller, callee)
+                && (is_test_symbol(caller_node) || is_test_file(&caller_node.file))
+            {
+                // Test caller calls target callee
+                let reason = format!(
+                    "test {} {} target {}",
+                    caller_node.name,
+                    edge.kind.as_str().to_lowercase(),
+                    callee_node.name
+                );
 
-                    let key = (
-                        callee_node.file.clone(),
-                        Some(callee_node.qualified_name.clone()),
-                    );
-                    mappings_map.entry(key).or_default().push(DiscoveredTest {
-                        test_file: caller_node.file.clone(),
-                        test_symbol: Some(caller_node.qualified_name.clone()),
-                        test_symbol_id: Some(caller_node.id),
-                        reason,
-                    });
-                }
+                let key = (
+                    callee_node.file.clone(),
+                    Some(callee_node.qualified_name.clone()),
+                );
+                mappings_map.entry(key).or_default().push(DiscoveredTest {
+                    test_file: caller_node.file.clone(),
+                    test_symbol: Some(caller_node.qualified_name.clone()),
+                    test_symbol_id: Some(caller_node.id),
+                    reason,
+                });
             }
         }
     }

@@ -39,15 +39,15 @@ pub fn search_graph(graph: &Graph, options: &SearchOptions) -> Vec<SearchResult>
         .nodes
         .iter()
         .filter(|node| {
-            if let Some(kind) = options.kind_filter {
-                if node.kind != kind {
-                    return false;
-                }
+            if let Some(kind) = options.kind_filter
+                && node.kind != kind
+            {
+                return false;
             }
-            if let Some(ref file) = options.file_filter {
-                if !node.file.contains(file) {
-                    return false;
-                }
+            if let Some(ref file) = options.file_filter
+                && !node.file.contains(file)
+            {
+                return false;
             }
             true
         })

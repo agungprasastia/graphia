@@ -608,22 +608,22 @@ pub fn build_graph(files: Vec<(String, Option<Language>, ParsedFile)>) -> Graph 
 
         if let Some(&file_id) = file_node_ids.get(&entry.path) {
             for exp in &entry.parsed.exports {
-                if exp.target.is_some() {
-                    if let Resolution::Resolved(target_id) = engine.resolve_reference(
+                if exp.target.is_some()
+                    && let Resolution::Resolved(target_id) = engine.resolve_reference(
                         &entry.path,
                         None,
                         &exp.name,
                         EdgeKind::Exports,
                         None,
-                    ) {
-                        add_edge(
-                            EdgeKind::Exports,
-                            file_id,
-                            target_id,
-                            Confidence::Resolved,
-                            Some(exp.name.clone()),
-                        );
-                    }
+                    )
+                {
+                    add_edge(
+                        EdgeKind::Exports,
+                        file_id,
+                        target_id,
+                        Confidence::Resolved,
+                        Some(exp.name.clone()),
+                    );
                 }
             }
 

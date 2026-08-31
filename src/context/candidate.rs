@@ -131,15 +131,15 @@ pub fn expand_candidates_with_cancel(
     }
 
     for (test_id, seed_name, reason) in seed_test_ids {
-        if visited.insert(test_id) {
-            if let Some(test_node) = graph.nodes.iter().find(|n| n.id == test_id) {
-                candidates.push(ContextCandidate {
-                    node: test_node.clone(),
-                    role: CandidateRole::Test,
-                    distance: 1,
-                    reason: format!("Test for {seed_name}: {reason}"),
-                });
-            }
+        if visited.insert(test_id)
+            && let Some(test_node) = graph.nodes.iter().find(|n| n.id == test_id)
+        {
+            candidates.push(ContextCandidate {
+                node: test_node.clone(),
+                role: CandidateRole::Test,
+                distance: 1,
+                reason: format!("Test for {seed_name}: {reason}"),
+            });
         }
     }
 
@@ -162,21 +162,19 @@ pub fn expand_candidates_with_cancel(
 
         // Check container (Contains edge pointing TO curr_id)
         for edge in &graph.edges {
-            if edge.kind == EdgeKind::Contains && edge.to == curr_id && visited.insert(edge.from) {
-                if let Some(container_node) = graph.nodes.iter().find(|n| n.id == edge.from) {
-                    candidates.push(ContextCandidate {
-                        node: container_node.clone(),
-                        role: CandidateRole::Container,
-                        distance: depth + 1,
-                        reason: format!("Container of {path_prefix}"),
-                    });
-                    if depth + 1 < max_depth {
-                        queue.push_back((
-                            edge.from,
-                            depth + 1,
-                            format!("{path_prefix} <- container"),
-                        ));
-                    }
+            if edge.kind == EdgeKind::Contains
+                && edge.to == curr_id
+                && visited.insert(edge.from)
+                && let Some(container_node) = graph.nodes.iter().find(|n| n.id == edge.from)
+            {
+                candidates.push(ContextCandidate {
+                    node: container_node.clone(),
+                    role: CandidateRole::Container,
+                    distance: depth + 1,
+                    reason: format!("Container of {path_prefix}"),
+                });
+                if depth + 1 < max_depth {
+                    queue.push_back((edge.from, depth + 1, format!("{path_prefix} <- container")));
                 }
             }
         }
@@ -189,21 +187,21 @@ pub fn expand_candidates_with_cancel(
                 } else {
                     CandidateRole::IndirectNeighbor
                 };
-                if visited.insert(edge.to) {
-                    if let Some(callee_node) = graph.nodes.iter().find(|n| n.id == edge.to) {
-                        candidates.push(ContextCandidate {
-                            node: callee_node.clone(),
-                            role,
-                            distance: depth + 1,
-                            reason: format!("Callee of {path_prefix}"),
-                        });
-                        if depth + 1 < max_depth {
-                            queue.push_back((
-                                edge.to,
-                                depth + 1,
-                                format!("{path_prefix} -> {}", callee_node.name),
-                            ));
-                        }
+                if visited.insert(edge.to)
+                    && let Some(callee_node) = graph.nodes.iter().find(|n| n.id == edge.to)
+                {
+                    candidates.push(ContextCandidate {
+                        node: callee_node.clone(),
+                        role,
+                        distance: depth + 1,
+                        reason: format!("Callee of {path_prefix}"),
+                    });
+                    if depth + 1 < max_depth {
+                        queue.push_back((
+                            edge.to,
+                            depth + 1,
+                            format!("{path_prefix} -> {}", callee_node.name),
+                        ));
                     }
                 }
             }
@@ -217,27 +215,27 @@ pub fn expand_candidates_with_cancel(
                 } else {
                     CandidateRole::IndirectNeighbor
                 };
-                if visited.insert(edge.from) {
-                    if let Some(caller_node) = graph.nodes.iter().find(|n| n.id == edge.from) {
-                        // Check if caller is a test function/file
-                        let is_test = caller_node.file.contains("test")
-                            || caller_node.name.starts_with("test_")
-                            || caller_node.name.ends_with("_test");
-                        let final_role = if is_test { CandidateRole::Test } else { role };
+                if visited.insert(edge.from)
+                    && let Some(caller_node) = graph.nodes.iter().find(|n| n.id == edge.from)
+                {
+                    // Check if caller is a test function/file
+                    let is_test = caller_node.file.contains("test")
+                        || caller_node.name.starts_with("test_")
+                        || caller_node.name.ends_with("_test");
+                    let final_role = if is_test { CandidateRole::Test } else { role };
 
-                        candidates.push(ContextCandidate {
-                            node: caller_node.clone(),
-                            role: final_role,
-                            distance: depth + 1,
-                            reason: format!("Caller of {path_prefix}"),
-                        });
-                        if depth + 1 < max_depth {
-                            queue.push_back((
-                                edge.from,
-                                depth + 1,
-                                format!("{} -> {path_prefix}", caller_node.name),
-                            ));
-                        }
+                    candidates.push(ContextCandidate {
+                        node: caller_node.clone(),
+                        role: final_role,
+                        distance: depth + 1,
+                        reason: format!("Caller of {path_prefix}"),
+                    });
+                    if depth + 1 < max_depth {
+                        queue.push_back((
+                            edge.from,
+                            depth + 1,
+                            format!("{} -> {path_prefix}", caller_node.name),
+                        ));
                     }
                 }
             }
@@ -253,17 +251,17 @@ pub fn expand_candidates_with_cancel(
                 } else {
                     edge.from
                 };
-                if visited.insert(other_id) {
-                    if let Some(impl_node) = graph.nodes.iter().find(|n| n.id == other_id) {
-                        candidates.push(ContextCandidate {
-                            node: impl_node.clone(),
-                            role: CandidateRole::Implementation,
-                            distance: depth + 1,
-                            reason: format!("Implementation/trait link for {path_prefix}"),
-                        });
-                        if depth + 1 < max_depth {
-                            queue.push_back((other_id, depth + 1, format!("impl({path_prefix})")));
-                        }
+                if visited.insert(other_id)
+                    && let Some(impl_node) = graph.nodes.iter().find(|n| n.id == other_id)
+                {
+                    candidates.push(ContextCandidate {
+                        node: impl_node.clone(),
+                        role: CandidateRole::Implementation,
+                        distance: depth + 1,
+                        reason: format!("Implementation/trait link for {path_prefix}"),
+                    });
+                    if depth + 1 < max_depth {
+                        queue.push_back((other_id, depth + 1, format!("impl({path_prefix})")));
                     }
                 }
             }
@@ -273,23 +271,21 @@ pub fn expand_candidates_with_cancel(
         for edge in &graph.edges {
             if (edge.kind == EdgeKind::Imports || edge.kind == EdgeKind::Calls)
                 && edge.from == curr_id
+                && let Some(type_node) = graph.nodes.iter().find(|n| n.id == edge.to)
+                && matches!(
+                    type_node.kind,
+                    NodeKind::Struct | NodeKind::Trait | NodeKind::Interface | NodeKind::Class
+                )
+                && visited.insert(edge.to)
             {
-                if let Some(type_node) = graph.nodes.iter().find(|n| n.id == edge.to) {
-                    if matches!(
-                        type_node.kind,
-                        NodeKind::Struct | NodeKind::Trait | NodeKind::Interface | NodeKind::Class
-                    ) && visited.insert(edge.to)
-                    {
-                        candidates.push(ContextCandidate {
-                            node: type_node.clone(),
-                            role: CandidateRole::ReferencedType,
-                            distance: depth + 1,
-                            reason: format!("Referenced type in {path_prefix}"),
-                        });
-                        if depth + 1 < max_depth {
-                            queue.push_back((edge.to, depth + 1, format!("type({path_prefix})")));
-                        }
-                    }
+                candidates.push(ContextCandidate {
+                    node: type_node.clone(),
+                    role: CandidateRole::ReferencedType,
+                    distance: depth + 1,
+                    reason: format!("Referenced type in {path_prefix}"),
+                });
+                if depth + 1 < max_depth {
+                    queue.push_back((edge.to, depth + 1, format!("type({path_prefix})")));
                 }
             }
         }

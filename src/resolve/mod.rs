@@ -185,10 +185,10 @@ impl ResolutionEngine {
     ) -> usize {
         if let Some(scope) = self.scope_tree.get(file_scope_id) {
             for &child_id in &scope.children {
-                if let Some(child) = self.scope_tree.get(child_id) {
-                    if child.name == type_name {
-                        return child_id;
-                    }
+                if let Some(child) = self.scope_tree.get(child_id)
+                    && child.name == type_name
+                {
+                    return child_id;
                 }
             }
         }
@@ -382,29 +382,21 @@ impl ResolutionEngine {
         let imported_files = self.collect_all_imported_files(file);
 
         // 1. Lexical Scope Lookup (if caller node is provided)
-        if let Some(c) = caller {
-            if let Some(caller_scope) = self.scope_tree.node_scope(c.id) {
-                if let Some((scope_id, ids)) =
-                    self.scope_tree.lookup_lexical(caller_scope, target_name)
-                {
-                    let is_local =
-                        scope_id != 0 && scope_id != self.scope_tree.file_scope(file).unwrap_or(0);
-                    let priority = if is_local { 1 } else { 2 };
-                    let reason = if is_local {
-                        ResolutionReason::LexicalScope
-                    } else {
-                        ResolutionReason::SameFile
-                    };
-                    for &id in ids {
-                        if self.candidate_matches_filter(
-                            id,
-                            edge_kind,
-                            param_count,
-                            container_context,
-                        ) {
-                            selector.add(id, priority, reason.clone());
-                        }
-                    }
+        if let Some(c) = caller
+            && let Some(caller_scope) = self.scope_tree.node_scope(c.id)
+            && let Some((scope_id, ids)) = self.scope_tree.lookup_lexical(caller_scope, target_name)
+        {
+            let is_local =
+                scope_id != 0 && scope_id != self.scope_tree.file_scope(file).unwrap_or(0);
+            let priority = if is_local { 1 } else { 2 };
+            let reason = if is_local {
+                ResolutionReason::LexicalScope
+            } else {
+                ResolutionReason::SameFile
+            };
+            for &id in ids {
+                if self.candidate_matches_filter(id, edge_kind, param_count, container_context) {
+                    selector.add(id, priority, reason.clone());
                 }
             }
         }
@@ -479,23 +471,21 @@ impl ResolutionEngine {
         if let Some(dirs) = self.import_table.directives(file) {
             for d in dirs {
                 let sym = d.imported_symbol.as_deref().unwrap_or(target_name);
-                if sym == target_name || sym == "*" {
-                    if let Some((final_sym, final_target_file)) =
+                if (sym == target_name || sym == "*")
+                    && let Some((final_sym, final_target_file)) =
                         self.trace_reexport_path(&d.target_module_or_path, sym)
-                    {
-                        if let Some(candidates) = self.name_index.get(&final_sym) {
-                            for c in candidates {
-                                if matches_import_target(&c.file, &final_target_file)
-                                    && self.candidate_matches_filter(
-                                        c.node_id,
-                                        edge_kind,
-                                        param_count,
-                                        container_context,
-                                    )
-                                {
-                                    selector.add(c.node_id, 4, ResolutionReason::ExplicitImport);
-                                }
-                            }
+                    && let Some(candidates) = self.name_index.get(&final_sym)
+                {
+                    for c in candidates {
+                        if matches_import_target(&c.file, &final_target_file)
+                            && self.candidate_matches_filter(
+                                c.node_id,
+                                edge_kind,
+                                param_count,
+                                container_context,
+                            )
+                        {
+                            selector.add(c.node_id, 4, ResolutionReason::ExplicitImport);
                         }
                     }
                 }
@@ -601,12 +591,11 @@ impl ResolutionEngine {
             if let Some(target) = self
                 .export_table
                 .get(&(curr_file.clone(), curr_sym.clone()))
+                && let Some((target_f, target_s)) = target.rsplit_once("::")
             {
-                if let Some((target_f, target_s)) = target.rsplit_once("::") {
-                    curr_file = target_f.to_string();
-                    curr_sym = target_s.to_string();
-                    continue;
-                }
+                curr_file = target_f.to_string();
+                curr_sym = target_s.to_string();
+                continue;
             }
             // Check if curr_file imports curr_sym from another file that re-exports it
             if let Some(alias_bindings) = self.import_table.resolve_alias(&curr_file, &curr_sym) {
@@ -681,38 +670,36 @@ impl ResolutionEngine {
             if !visited.insert((f.clone(), sym_name.to_string())) {
                 continue;
             }
-            if let Some(target) = self.export_table.get(&(f.clone(), sym_name.to_string())) {
-                if let Some((target_f, target_s)) = target.rsplit_once("::") {
-                    let mut resolved_target_file = target_f.to_string();
-                    for real_f in self.file_nodes.keys() {
-                        if matches_import_target(real_f, target_f) {
-                            resolved_target_file = real_f.clone();
-                            break;
-                        }
+            if let Some(target) = self.export_table.get(&(f.clone(), sym_name.to_string()))
+                && let Some((target_f, target_s)) = target.rsplit_once("::")
+            {
+                let mut resolved_target_file = target_f.to_string();
+                for real_f in self.file_nodes.keys() {
+                    if matches_import_target(real_f, target_f) {
+                        resolved_target_file = real_f.clone();
+                        break;
                     }
-                    if f != resolved_target_file {
-                        if let Some((deep_s, deep_f)) = self.trace_reexport_path_internal(
-                            &resolved_target_file,
-                            target_s,
-                            visited,
-                        ) {
-                            return Some((deep_s, deep_f));
-                        }
-                        return Some((target_s.to_string(), resolved_target_file));
+                }
+                if f != resolved_target_file {
+                    if let Some((deep_s, deep_f)) =
+                        self.trace_reexport_path_internal(&resolved_target_file, target_s, visited)
+                    {
+                        return Some((deep_s, deep_f));
                     }
+                    return Some((target_s.to_string(), resolved_target_file));
                 }
             }
             if let Some(dirs) = self.import_table.directives(&f) {
                 for d in dirs {
                     let imported_s = d.imported_symbol.as_deref().unwrap_or(sym_name);
-                    if imported_s == sym_name || imported_s == "*" {
-                        if let Some((deep_s, deep_f)) = self.trace_reexport_path_internal(
+                    if (imported_s == sym_name || imported_s == "*")
+                        && let Some((deep_s, deep_f)) = self.trace_reexport_path_internal(
                             &d.target_module_or_path,
                             sym_name,
                             visited,
-                        ) {
-                            return Some((deep_s, deep_f));
-                        }
+                        )
+                    {
+                        return Some((deep_s, deep_f));
                     }
                 }
             }
@@ -734,10 +721,10 @@ impl ResolutionEngine {
                 }
                 return Some((orig_s, orig_f));
             }
-            if let Some(candidates) = self.name_index.get(sym_name) {
-                if candidates.iter().any(|c| c.file == f) {
-                    return Some((sym_name.to_string(), f.clone()));
-                }
+            if let Some(candidates) = self.name_index.get(sym_name)
+                && candidates.iter().any(|c| c.file == f)
+            {
+                return Some((sym_name.to_string(), f.clone()));
             }
         }
         None
@@ -799,22 +786,20 @@ impl ResolutionEngine {
             | EdgeKind::Exports => {}
         }
 
-        if let Some(expected_params) = param_count {
-            if let Some(sig) = &node.signature {
-                if let Some(actual_count) = extract_param_count_from_signature(sig) {
-                    if actual_count != expected_params {
-                        return false;
-                    }
-                }
-            }
+        if let Some(expected_params) = param_count
+            && let Some(sig) = &node.signature
+            && let Some(actual_count) = extract_param_count_from_signature(sig)
+            && actual_count != expected_params
+        {
+            return false;
         }
 
-        if let Some(expected_container) = container_context {
-            if let Some(c) = &node.container {
-                if c != expected_container && !c.ends_with(expected_container) {
-                    return false;
-                }
-            }
+        if let Some(expected_container) = container_context
+            && let Some(c) = &node.container
+            && c != expected_container
+            && !c.ends_with(expected_container)
+        {
+            return false;
         }
 
         true
@@ -842,28 +827,28 @@ impl ResolutionEngine {
             .collect();
         let imported_paths = self.collect_all_imported_files(caller_file);
         for p in imported_paths {
-            if let Some(id) = self.file_nodes.get(&p) {
-                if !imported_file_ids.contains(id) {
-                    imported_file_ids.push(*id);
-                }
+            if let Some(id) = self.file_nodes.get(&p)
+                && !imported_file_ids.contains(id)
+            {
+                imported_file_ids.push(*id);
             }
         }
 
         // 1. Lexical Scope Lookup (Local scope in caller function/class/file)
-        if let Some(caller_scope) = self.scope_tree.node_scope(caller.id) {
-            if let Some((scope_id, ids)) = self.scope_tree.lookup_lexical(caller_scope, callee) {
-                let is_local = scope_id != 0
-                    && scope_id != self.scope_tree.file_scope(caller_file).unwrap_or(0);
-                let priority = if is_local { 1 } else { 2 };
-                let reason = if is_local {
-                    ResolutionReason::LexicalScope
-                } else {
-                    ResolutionReason::SameFile
-                };
-                for &id in ids {
-                    if self.candidate_matches_filter(id, EdgeKind::Calls, None, None) {
-                        selector.add(id, priority, reason.clone());
-                    }
+        if let Some(caller_scope) = self.scope_tree.node_scope(caller.id)
+            && let Some((scope_id, ids)) = self.scope_tree.lookup_lexical(caller_scope, callee)
+        {
+            let is_local =
+                scope_id != 0 && scope_id != self.scope_tree.file_scope(caller_file).unwrap_or(0);
+            let priority = if is_local { 1 } else { 2 };
+            let reason = if is_local {
+                ResolutionReason::LexicalScope
+            } else {
+                ResolutionReason::SameFile
+            };
+            for &id in ids {
+                if self.candidate_matches_filter(id, EdgeKind::Calls, None, None) {
+                    selector.add(id, priority, reason.clone());
                 }
             }
         }
@@ -911,39 +896,38 @@ impl ResolutionEngine {
         if let Some(dirs) = self.import_table.directives(caller_file) {
             for d in dirs {
                 if let Some(sym) = &d.imported_symbol {
-                    if sym == callee || sym == "*" {
-                        if let Some(candidates) = self.name_index.get(callee) {
-                            for c in candidates {
-                                let is_same_lang = caller.language == c.language
-                                    || c.language.is_none()
-                                    || caller.language.is_none();
-                                if is_same_lang
-                                    && matches_import_target(&c.file, &d.target_module_or_path)
-                                {
-                                    selector.add(c.node_id, 4, ResolutionReason::ExplicitImport);
-                                }
-                            }
-                        }
-                    }
-                } else if matches_import_target(&d.target_module_or_path, callee)
-                    || d.target_module_or_path.ends_with(&format!("::{callee}"))
-                    || d.target_module_or_path.ends_with(&format!("/{callee}"))
-                    || d.target_module_or_path.ends_with(callee)
-                {
-                    if let Some(candidates) = self.name_index.get(callee) {
+                    if (sym == callee || sym == "*")
+                        && let Some(candidates) = self.name_index.get(callee)
+                    {
                         for c in candidates {
                             let is_same_lang = caller.language == c.language
                                 || c.language.is_none()
                                 || caller.language.is_none();
                             if is_same_lang
-                                && (matches_import_target(&c.file, &d.target_module_or_path)
-                                    || matches_import_target(&d.target_module_or_path, &c.file)
-                                    || c.file.ends_with(&format!("{}.rs", d.target_module_or_path))
-                                    || c.file.ends_with(&format!("{}.py", d.target_module_or_path))
-                                    || c.file.ends_with(&format!("{}.ts", d.target_module_or_path)))
+                                && matches_import_target(&c.file, &d.target_module_or_path)
                             {
                                 selector.add(c.node_id, 4, ResolutionReason::ExplicitImport);
                             }
+                        }
+                    }
+                } else if (matches_import_target(&d.target_module_or_path, callee)
+                    || d.target_module_or_path.ends_with(&format!("::{callee}"))
+                    || d.target_module_or_path.ends_with(&format!("/{callee}"))
+                    || d.target_module_or_path.ends_with(callee))
+                    && let Some(candidates) = self.name_index.get(callee)
+                {
+                    for c in candidates {
+                        let is_same_lang = caller.language == c.language
+                            || c.language.is_none()
+                            || caller.language.is_none();
+                        if is_same_lang
+                            && (matches_import_target(&c.file, &d.target_module_or_path)
+                                || matches_import_target(&d.target_module_or_path, &c.file)
+                                || c.file.ends_with(&format!("{}.rs", d.target_module_or_path))
+                                || c.file.ends_with(&format!("{}.py", d.target_module_or_path))
+                                || c.file.ends_with(&format!("{}.ts", d.target_module_or_path)))
+                        {
+                            selector.add(c.node_id, 4, ResolutionReason::ExplicitImport);
                         }
                     }
                 }
@@ -954,33 +938,33 @@ impl ResolutionEngine {
         // Check if callee is a known method name
         if let Some(candidates) = self.name_index.get(callee) {
             for c in candidates {
-                if c.kind == NodeKind::Method {
-                    if let Some(parent) = &c.parent_type {
-                        // If caller is in same type
-                        if caller.qualified_name.contains(parent) {
-                            selector.add(c.node_id, 2, ResolutionReason::ReceiverMethod);
-                        } else if let Some(target_file_id) = self.file_nodes.get(&c.file) {
-                            if imported_file_ids.contains(target_file_id) {
-                                selector.add(c.node_id, 5, ResolutionReason::ReceiverMethod);
-                            }
-                        } else if imported_file_ids.iter().any(|id| {
-                            self.file_nodes.iter().any(|(path, fid)| {
-                                fid == id
-                                    && (matches_import_target(path, &c.file)
-                                        || matches_import_target(&c.file, path))
-                            })
-                        }) {
+                if c.kind == NodeKind::Method
+                    && let Some(parent) = &c.parent_type
+                {
+                    // If caller is in same type
+                    if caller.qualified_name.contains(parent) {
+                        selector.add(c.node_id, 2, ResolutionReason::ReceiverMethod);
+                    } else if let Some(target_file_id) = self.file_nodes.get(&c.file) {
+                        if imported_file_ids.contains(target_file_id) {
                             selector.add(c.node_id, 5, ResolutionReason::ReceiverMethod);
-                        } else if let Some(dirs) = self.import_table.directives(caller_file) {
-                            for d in dirs {
-                                if matches_import_target(&c.file, &d.target_module_or_path)
-                                    || d.imported_symbol.as_deref() == Some(parent)
-                                    || d.imported_symbol.as_deref() == Some(&c.name)
-                                    || d.target_module_or_path.ends_with(parent)
-                                    || d.target_module_or_path.ends_with(&c.name)
-                                {
-                                    selector.add(c.node_id, 5, ResolutionReason::ReceiverMethod);
-                                }
+                        }
+                    } else if imported_file_ids.iter().any(|id| {
+                        self.file_nodes.iter().any(|(path, fid)| {
+                            fid == id
+                                && (matches_import_target(path, &c.file)
+                                    || matches_import_target(&c.file, path))
+                        })
+                    }) {
+                        selector.add(c.node_id, 5, ResolutionReason::ReceiverMethod);
+                    } else if let Some(dirs) = self.import_table.directives(caller_file) {
+                        for d in dirs {
+                            if matches_import_target(&c.file, &d.target_module_or_path)
+                                || d.imported_symbol.as_deref() == Some(parent)
+                                || d.imported_symbol.as_deref() == Some(&c.name)
+                                || d.target_module_or_path.ends_with(parent)
+                                || d.target_module_or_path.ends_with(&c.name)
+                            {
+                                selector.add(c.node_id, 5, ResolutionReason::ReceiverMethod);
                             }
                         }
                     }
@@ -991,12 +975,11 @@ impl ResolutionEngine {
         // 5. Cross-file imported candidates (via file-level Imports edge or matching import directives)
         if let Some(candidates) = self.name_index.get(callee) {
             for c in candidates {
-                if c.file != caller_file {
-                    if let Some(target_file_id) = self.file_nodes.get(&c.file) {
-                        if imported_file_ids.contains(target_file_id) {
-                            selector.add(c.node_id, 4, ResolutionReason::ExplicitImport);
-                        }
-                    }
+                if c.file != caller_file
+                    && let Some(target_file_id) = self.file_nodes.get(&c.file)
+                    && imported_file_ids.contains(target_file_id)
+                {
+                    selector.add(c.node_id, 4, ResolutionReason::ExplicitImport);
                 }
             }
         }

@@ -68,12 +68,11 @@ pub fn detect_language_with_content(path: &Path, content: Option<&[u8]>) -> Opti
                 if is_cpp_header_content(bytes) {
                     return Some(Language::Cpp);
                 }
-            } else if path.exists() {
-                if let Ok(file_bytes) = fs::read(path) {
-                    if is_cpp_header_content(&file_bytes) {
-                        return Some(Language::Cpp);
-                    }
-                }
+            } else if path.exists()
+                && let Ok(file_bytes) = fs::read(path)
+                && is_cpp_header_content(&file_bytes)
+            {
+                return Some(Language::Cpp);
             }
             Some(Language::C)
         }
@@ -91,8 +90,8 @@ pub fn detect_language_with_content(path: &Path, content: Option<&[u8]>) -> Opti
 
 fn is_cpp_header_content(bytes: &[u8]) -> bool {
     let inspect_len = bytes.len().min(4096);
-    if let Ok(text) = std::str::from_utf8(&bytes[..inspect_len]) {
-        if text.contains("class ")
+    if let Ok(text) = std::str::from_utf8(&bytes[..inspect_len])
+        && (text.contains("class ")
             || text.contains("namespace ")
             || text.contains("template<")
             || text.contains("template <")
@@ -103,10 +102,9 @@ fn is_cpp_header_content(bytes: &[u8]) -> bool {
             || text.contains("using namespace ")
             || text.contains("#include <iostream>")
             || text.contains("#include <vector>")
-            || text.contains("#include <string>")
-        {
-            return true;
-        }
+            || text.contains("#include <string>"))
+    {
+        return true;
     }
     false
 }

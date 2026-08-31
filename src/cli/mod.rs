@@ -435,10 +435,10 @@ pub fn run(cli: Cli) -> crate::error::Result<()> {
                 Ok(Some(path)) => {
                     println!("{}", starts[0].qualified_name);
                     for edge_id in path {
-                        if let Some(edge) = graph.edges.iter().find(|edge| edge.id == edge_id) {
-                            if let Some(node) = graph.nodes.iter().find(|node| node.id == edge.to) {
-                                println!("{}", node.qualified_name);
-                            }
+                        if let Some(edge) = graph.edges.iter().find(|edge| edge.id == edge_id)
+                            && let Some(node) = graph.nodes.iter().find(|node| node.id == edge.to)
+                        {
+                            println!("{}", node.qualified_name);
                         }
                     }
                 }

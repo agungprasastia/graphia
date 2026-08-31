@@ -392,13 +392,13 @@ impl McpServer {
         params: Option<serde_json::Value>,
         id: RequestId,
     ) -> JsonRpcResponse {
-        if let Some(val) = params {
-            if let Ok(init_params) = serde_json::from_value::<InitializeParams>(val) {
-                eprintln!(
-                    "[graphia-mcp] Initializing MCP session with protocol version: {}",
-                    init_params.protocol_version
-                );
-            }
+        if let Some(val) = params
+            && let Ok(init_params) = serde_json::from_value::<InitializeParams>(val)
+        {
+            eprintln!(
+                "[graphia-mcp] Initializing MCP session with protocol version: {}",
+                init_params.protocol_version
+            );
         }
 
         self.initialized = true;
@@ -471,16 +471,17 @@ impl McpServer {
         // Path sandbox validation: inspect arguments for any disallowed path traversal
         if let Some(ref args) = call_params.arguments {
             for (key, val) in args {
-                if let Some(path_str) = val.as_str() {
-                    if (key == "file" || key.contains("path")) && self.is_path_traversal(path_str) {
-                        return JsonRpcResponse::error(
-                            id,
-                            McpError::PathTraversal(format!(
-                                "Path traversal attempted in parameter '{key}': '{path_str}'"
-                            ))
-                            .to_jsonrpc_error(),
-                        );
-                    }
+                if let Some(path_str) = val.as_str()
+                    && (key == "file" || key.contains("path"))
+                    && self.is_path_traversal(path_str)
+                {
+                    return JsonRpcResponse::error(
+                        id,
+                        McpError::PathTraversal(format!(
+                            "Path traversal attempted in parameter '{key}': '{path_str}'"
+                        ))
+                        .to_jsonrpc_error(),
+                    );
                 }
             }
         }
@@ -587,10 +588,10 @@ impl McpServer {
 
         let p = Path::new(path_str);
         if p.is_absolute() {
-            if let Ok(canonical_repo) = self.repo_root.canonicalize() {
-                if let Ok(canonical_p) = p.canonicalize() {
-                    return !canonical_p.starts_with(canonical_repo);
-                }
+            if let Ok(canonical_repo) = self.repo_root.canonicalize()
+                && let Ok(canonical_p) = p.canonicalize()
+            {
+                return !canonical_p.starts_with(canonical_repo);
             }
             return true;
         }
