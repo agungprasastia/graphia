@@ -67,7 +67,13 @@ impl DataFlowGraph {
             let Ok(source) = fs::read_to_string(root.join(&function.file)) else {
                 continue;
             };
-            let flow = extract_local_flow_graph(&function.name, &function.file, &source, 1);
+            let function_source = slice_source_span(&source, &function.location);
+            let flow = extract_local_flow_graph(
+                &function.name,
+                &function.file,
+                function_source.as_ref(),
+                function.location.start_line,
+            );
             let mut names = BTreeSet::new();
             for parameter in &flow.parameters {
                 names.insert(parameter.name.clone());
@@ -171,6 +177,23 @@ impl DataFlowGraph {
         result.edges.dedup();
         result
     }
+}
+
+fn slice_source_span(source: &str, location: &crate::model::SourceLocation) -> String {
+    let line_starts = std::iter::once(0usize)
+        .chain(source.match_indices('\n').map(|(index, _)| index + 1))
+        .collect::<Vec<_>>();
+    let start_line = location.start_line.saturating_sub(1) as usize;
+    let end_line = location.end_line.saturating_sub(1) as usize;
+    let Some(&line_start) = line_starts.get(start_line) else {
+        return String::new();
+    };
+    let start = line_start.saturating_add(location.start_col.saturating_sub(1) as usize);
+    let end_line_start = line_starts.get(end_line).copied().unwrap_or(source.len());
+    let end = end_line_start
+        .saturating_add(location.end_col.saturating_sub(1) as usize)
+        .min(source.len());
+    source.get(start.min(end)..end).unwrap_or("").to_string()
 }
 
 fn flow_node(function: &Node, name: &str) -> NodeId {

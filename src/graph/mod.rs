@@ -216,44 +216,24 @@ impl Graph {
         &mut self,
         affected_files: &BTreeSet<String>,
     ) -> crate::error::Result<ResolutionReport> {
-        let affected_calls = self
-            .resolution_calls
+        let authoritative = build_graph(self.parsed_files.clone());
+        let touched = self
+            .nodes
             .iter()
-            .filter(|(file, _)| affected_files.contains(file))
-            .cloned()
-            .collect::<Vec<_>>();
-        let affected_count = affected_calls.len();
-        let previous = self.resolution.clone();
-        self.edges.retain(|edge| {
-            if edge.kind != EdgeKind::Calls {
-                return true;
-            }
-            self.nodes
-                .iter()
-                .find(|node| node.id == edge.from)
-                .is_none_or(|node| !affected_files.contains(&node.file))
-        });
-        let imports = self
-            .edges
-            .iter()
-            .filter(|edge| edge.kind == EdgeKind::Imports)
-            .map(|edge| (edge.from, edge.to))
-            .collect::<Vec<_>>();
-        let mut engine = ResolutionEngine::new();
-        engine.index_files(&self.nodes, &self.parsed_files);
-        let (resolved_edges, summary) =
-            engine.resolve_calls(&affected_calls, &self.nodes, &imports);
-        self.edges.extend(resolved_edges);
+            .filter(|node| affected_files.contains(&node.file))
+            .map(|node| node.id)
+            .collect::<BTreeSet<_>>();
+        self.edges
+            .retain(|edge| !touched.contains(&edge.from) && !touched.contains(&edge.to));
+        self.edges.extend(
+            authoritative
+                .edges
+                .into_iter()
+                .filter(|edge| touched.contains(&edge.from) || touched.contains(&edge.to)),
+        );
         let mut edge_ids = HashSet::new();
         self.edges.retain(|edge| edge_ids.insert(edge.id));
-        self.resolution = ResolutionReport {
-            resolved_calls: summary.resolved_calls
-                + previous.resolved_calls.saturating_sub(affected_count),
-            unresolved_calls: summary.unresolved_calls
-                + previous.unresolved_calls.saturating_sub(affected_count),
-            ambiguous_calls: summary.ambiguous_calls
-                + previous.ambiguous_calls.saturating_sub(affected_count),
-        };
+        self.resolution = authoritative.resolution;
         self.canonicalize()?;
         Ok(self.resolution.clone())
     }

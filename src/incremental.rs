@@ -316,8 +316,10 @@ impl IncrementalWorkspace {
                 fallback_reason: None,
             });
         }
+        let mut dependency_seeds = changed_files.clone();
+        dependency_seeds.extend(self.new_dependency_hints(&changed_files));
         let affected_files =
-            self.compute_affected_closure(&changed_files.iter().cloned().collect::<Vec<_>>());
+            self.compute_affected_closure(&dependency_seeds.iter().cloned().collect::<Vec<_>>());
         let component_files = self.expand_graph_component(&affected_files);
         let old_nodes = self.graph.nodes.len();
         let old_edges = self.graph.edges.len();
@@ -399,6 +401,19 @@ impl IncrementalWorkspace {
                 .map(|node| node.id)
                 .collect::<BTreeSet<_>>();
             for edge in &self.graph.edges {
+                if !matches!(
+                    edge.kind,
+                    EdgeKind::Imports
+                        | EdgeKind::References
+                        | EdgeKind::TypeReferences
+                        | EdgeKind::Inherits
+                        | EdgeKind::Implements
+                        | EdgeKind::Instantiates
+                        | EdgeKind::Exports
+                        | EdgeKind::Calls
+                ) {
+                    continue;
+                }
                 if !node_ids.contains(&edge.from) && !node_ids.contains(&edge.to) {
                     continue;
                 }
@@ -412,6 +427,66 @@ impl IncrementalWorkspace {
             }
         }
         files
+    }
+
+    fn new_dependency_hints(&self, changed_files: &BTreeSet<String>) -> BTreeSet<String> {
+        let mut hints = BTreeSet::new();
+        for file in changed_files {
+            let Some((_, parsed)) = self.files.get(file) else {
+                continue;
+            };
+            let mut names = BTreeSet::new();
+            names.extend(parsed.type_references.iter().map(|item| item.name.as_str()));
+            names.extend(parsed.references.iter().map(|item| item.name.as_str()));
+            names.extend(
+                parsed
+                    .instantiations
+                    .iter()
+                    .map(|item| item.type_name.as_str()),
+            );
+            names.extend(
+                parsed
+                    .inheritances
+                    .iter()
+                    .flat_map(|item| [item.base_type.as_str(), item.derived_type.as_str()]),
+            );
+            names.extend(parsed.implementations.iter().flat_map(|item| {
+                [
+                    item.trait_or_interface.as_str(),
+                    item.implementing_type.as_str(),
+                ]
+            }));
+            names.extend(parsed.calls.iter().map(|item| item.callee.as_str()));
+            for import in &parsed.imports {
+                let normalized = import.path.replace("::", "/");
+                for candidate in self.files.keys() {
+                    let stem = candidate
+                        .rsplit('/')
+                        .next()
+                        .and_then(|name| name.split('.').next())
+                        .unwrap_or(candidate);
+                    if normalized.contains(candidate)
+                        || candidate.contains(&normalized)
+                        || normalized.split(['/', ':', '.']).any(|part| part == stem)
+                    {
+                        hints.insert(candidate.clone());
+                    }
+                }
+            }
+            for (candidate, (_, target)) in &self.files {
+                if target.symbols.iter().any(|symbol| {
+                    names.iter().any(|name| {
+                        let short = name.rsplit([':', '.']).next().unwrap_or(name);
+                        symbol.name == short
+                            || symbol.qualified_name == *name
+                            || symbol.qualified_name.ends_with(&format!("::{short}"))
+                    })
+                }) {
+                    hints.insert(candidate.clone());
+                }
+            }
+        }
+        hints
     }
 
     fn normalize_path(&self, path: &Path) -> (PathBuf, String) {

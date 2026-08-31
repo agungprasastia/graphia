@@ -111,3 +111,32 @@ fn unknown_rename_records_explicit_fallback_reason() {
     );
     assert_eq!(ws.fallback_reconcile_count, 1);
 }
+
+#[test]
+fn new_dependency_matches_clean_graph_without_full_rebuild() {
+    let temp = tempdir().expect("tempdir");
+    let root = temp.path();
+    let a = root.join("a.rs");
+    let b = root.join("b.rs");
+    let c = root.join("c.rs");
+    fs::write(&a, "pub fn process() {}").expect("write a");
+    fs::write(&b, "pub struct User;").expect("write b");
+    fs::write(&c, "pub fn unrelated() {}").expect("write c");
+    let mut ws = IncrementalWorkspace::new(root.to_path_buf()).expect("workspace init");
+
+    fs::write(
+        &a,
+        "use crate::b::User;\npub fn process(user: User) { let _value = user; }",
+    )
+    .expect("modify a");
+    let summary = ws
+        .apply_changes_selective(&[SemanticAction::Modified(a)])
+        .expect("selective update");
+
+    assert!(!summary.full_rebuild);
+    assert!(!summary.fallback_used);
+    assert_eq!(summary.files_reparsed, 1);
+    assert!(!summary.affected_files.contains("c.rs"));
+    let clean = IncrementalWorkspace::new(root.to_path_buf()).expect("clean workspace");
+    assert_eq!(ws.graph, clean.graph);
+}

@@ -326,6 +326,55 @@ fn runtime_ast_flow_links_parameter_assignment_and_return() {
 }
 
 #[test]
+fn runtime_dataflow_isolated_per_function_and_interprocedural() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    std::fs::write(
+        temp.path().join("flow.rs"),
+        "fn a(input: String) -> String { b(input) }\nfn b(value: String) -> String { let result = value; result }\nfn c(input: String) { let value = input; }\n",
+    )
+    .expect("write flow source");
+    let graph = graphia::storage::build_graph_from_repo(temp.path()).expect("build graph");
+    let dataflow = build_dataflow_graph(&graph);
+    let qualified = dataflow
+        .nodes
+        .iter()
+        .map(|node| node.qualified_name.as_str())
+        .collect::<std::collections::BTreeSet<_>>();
+    assert!(qualified.contains("flow.rs::a::#flow::input"));
+    assert!(qualified.contains("flow.rs::b::#flow::value"));
+    assert!(qualified.contains("flow.rs::b::#flow::result"));
+    assert!(qualified.contains("flow.rs::c::#flow::input"));
+    assert!(!qualified.contains("flow.rs::a::#flow::value"));
+    assert!(!qualified.contains("flow.rs::c::#flow::result"));
+
+    let edge_names = dataflow
+        .edges
+        .iter()
+        .filter_map(|edge| {
+            let from = dataflow.nodes.iter().find(|node| node.id == edge.from)?;
+            let to = dataflow.nodes.iter().find(|node| node.id == edge.to)?;
+            Some((from.qualified_name.as_str(), to.qualified_name.as_str()))
+        })
+        .collect::<std::collections::BTreeSet<_>>();
+    assert!(edge_names.contains(&("flow.rs::a::#flow::input", "flow.rs::b::#flow::value")));
+    assert!(edge_names.contains(&("flow.rs::b::#flow::value", "flow.rs::b::#flow::result")));
+    assert!(!edge_names.contains(&("flow.rs::a::#flow::input", "flow.rs::c::#flow::input")));
+}
+
+#[test]
+fn runtime_dataflow_plain_calls_do_not_create_value_flow() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    std::fs::write(
+        temp.path().join("calls.rs"),
+        "fn a() { b(); }\nfn b() { c(); }\nfn c() {}\n",
+    )
+    .expect("write calls source");
+    let graph = graphia::storage::build_graph_from_repo(temp.path()).expect("build graph");
+    let dataflow = build_dataflow_graph(&graph);
+    assert!(dataflow.edges.is_empty());
+}
+
+#[test]
 fn test_advanced_boundaries_and_drift() {
     let nodes = vec![
         Node {
