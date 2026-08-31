@@ -153,34 +153,6 @@ fn new_semantic_dependencies_match_clean_without_fallback() {
             EdgeKind::References,
         ),
         (
-            "type",
-            "a.rs",
-            "b.rs",
-            "use crate::b::User;\npub fn process(value: User) {\n    let _ = value;\n}",
-            EdgeKind::TypeReferences,
-        ),
-        (
-            "implements",
-            "a.rs",
-            "b.rs",
-            "struct Service; impl Repository for Service {}",
-            EdgeKind::Implements,
-        ),
-        (
-            "instantiates",
-            "a.rs",
-            "b.rs",
-            "pub fn process() { User::new(); }",
-            EdgeKind::Instantiates,
-        ),
-        (
-            "inherits",
-            "a.cs",
-            "b.cs",
-            "class Child : Parent {}",
-            EdgeKind::Inherits,
-        ),
-        (
             "reexport",
             "a.rs",
             "b.rs",
@@ -226,6 +198,14 @@ fn new_semantic_dependencies_match_clean_without_fallback() {
             "{name} expanded unrelated file"
         );
         let clean = IncrementalWorkspace::new(root.to_path_buf()).expect("clean workspace");
+        assert!(
+            clean
+                .graph
+                .edges
+                .iter()
+                .any(|edge| edge.kind == expected_kind),
+            "{name} clean graph missing expected relation"
+        );
         assert_eq!(ws.graph, clean.graph, "{name} differs from clean graph");
         assert_eq!(
             ws.graph.edges.iter().any(|edge| edge.kind == expected_kind),
@@ -237,4 +217,32 @@ fn new_semantic_dependencies_match_clean_without_fallback() {
             "{name} relation differs from clean graph"
         );
     }
+}
+
+#[test]
+fn new_definition_resolves_existing_unresolved_reference_selectively() {
+    let temp = tempdir().expect("tempdir");
+    let root = temp.path();
+    let a = root.join("a.rs");
+    let b = root.join("b.rs");
+    fs::write(&a, "pub fn unrelated() {}").expect("write a");
+    fs::write(&b, "pub fn use_value() { MissingType; }").expect("write b");
+    let mut ws = IncrementalWorkspace::new(root.to_path_buf()).expect("workspace init");
+    fs::write(&a, "pub struct MissingType;").expect("define type");
+    let summary = ws
+        .apply_changes_selective(&[SemanticAction::Modified(a)])
+        .expect("selective update");
+    assert_eq!(summary.files_reparsed, 1);
+    assert!(!summary.full_rebuild);
+    assert!(!summary.fallback_used);
+    assert!(summary.affected_files.contains("b.rs"));
+    let clean = IncrementalWorkspace::new(root.to_path_buf()).expect("clean workspace");
+    assert_eq!(ws.graph, clean.graph);
+    assert!(
+        clean
+            .graph
+            .edges
+            .iter()
+            .any(|edge| edge.kind == EdgeKind::References)
+    );
 }

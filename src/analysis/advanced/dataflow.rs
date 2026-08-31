@@ -194,21 +194,14 @@ impl DataFlowGraph {
                     confidence: Confidence::Resolved,
                 });
             }
-            for argument in &flow.call_arguments {
-                if flow
-                    .assignments
-                    .iter()
-                    .any(|assignment| assignment.from == argument.call)
-                {
-                    continue;
-                }
+            for call_name in &flow.call_returns {
                 let Some(call) = graph.edges.iter().find(|edge| {
                     edge.from == *caller_id
                         && edge.kind == EdgeKind::Calls
                         && graph
                             .nodes
                             .iter()
-                            .any(|node| node.id == edge.to && node.name == argument.call)
+                            .any(|node| node.id == edge.to && node.name == *call_name)
                 }) else {
                     continue;
                 };
