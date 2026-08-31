@@ -55,6 +55,10 @@ impl LanguageAnalyzer for PhpAnalyzer {
                 symbols: Vec::new(),
                 imports: Vec::new(),
                 calls: Vec::new(),
+                definitions: Vec::new(),
+                references: Vec::new(),
+                exports: Vec::new(),
+                type_references: Vec::new(),
             });
         };
         let root = tree.root_node();
@@ -108,11 +112,14 @@ pub fn parse_php(file: &str, root: &TsNode<'_>, source: &[u8]) -> ParsedFile {
                     let qualified = format!("{file}::{name}");
                     let loc = location_for_node(file, &node);
                     symbols.push(Symbol {
-                        kind: NodeKind::Module,
+                        kind: NodeKind::Namespace,
                         name: name.clone(),
                         qualified_name: qualified,
                         location: loc,
                         parent: None,
+                        visibility: crate::model::Visibility::Public,
+                        signature: None,
+                        container: None,
                     });
                 }
             }
@@ -150,6 +157,9 @@ pub fn parse_php(file: &str, root: &TsNode<'_>, source: &[u8]) -> ParsedFile {
                         qualified_name: qualified,
                         location: loc,
                         parent: parent_scope.clone(),
+                        visibility: crate::model::Visibility::Public,
+                        signature: None,
+                        container: parent_scope.clone(),
                     });
 
                     if let Some(body) = node.child_by_field_name("body") {
@@ -174,6 +184,9 @@ pub fn parse_php(file: &str, root: &TsNode<'_>, source: &[u8]) -> ParsedFile {
                         qualified_name: qualified,
                         location: loc,
                         parent: parent_scope.clone(),
+                        visibility: crate::model::Visibility::Public,
+                        signature: None,
+                        container: parent_scope.clone(),
                     });
 
                     if let Some(body) = node.child_by_field_name("body") {
@@ -198,6 +211,9 @@ pub fn parse_php(file: &str, root: &TsNode<'_>, source: &[u8]) -> ParsedFile {
                         qualified_name: qualified,
                         location: loc,
                         parent: parent_scope.clone(),
+                        visibility: crate::model::Visibility::Public,
+                        signature: None,
+                        container: parent_scope.clone(),
                     });
 
                     if let Some(body) = node.child_by_field_name("body") {
@@ -217,11 +233,14 @@ pub fn parse_php(file: &str, root: &TsNode<'_>, source: &[u8]) -> ParsedFile {
                     let qualified = format!("{file}::{name}");
                     let loc = location_for_node(file, &node);
                     symbols.push(Symbol {
-                        kind: NodeKind::Struct,
+                        kind: NodeKind::Enum,
                         name: name.clone(),
                         qualified_name: qualified,
                         location: loc,
                         parent: parent_scope.clone(),
+                        visibility: crate::model::Visibility::Public,
+                        signature: None,
+                        container: parent_scope.clone(),
                     });
 
                     if let Some(body) = node.child_by_field_name("body") {
@@ -246,6 +265,9 @@ pub fn parse_php(file: &str, root: &TsNode<'_>, source: &[u8]) -> ParsedFile {
                         qualified_name: qualified.clone(),
                         location: loc,
                         parent: parent_scope.clone(),
+                        visibility: crate::model::Visibility::Public,
+                        signature: None,
+                        container: parent_scope.clone(),
                     });
 
                     if let Some(body) = node.child_by_field_name("body") {
@@ -273,6 +295,9 @@ pub fn parse_php(file: &str, root: &TsNode<'_>, source: &[u8]) -> ParsedFile {
                         qualified_name: qualified.clone(),
                         location: loc,
                         parent: parent_scope.clone(),
+                        visibility: crate::model::Visibility::Public,
+                        signature: None,
+                        container: parent_scope.clone(),
                     });
 
                     if let Some(body) = node.child_by_field_name("body") {
@@ -293,6 +318,10 @@ pub fn parse_php(file: &str, root: &TsNode<'_>, source: &[u8]) -> ParsedFile {
         symbols,
         imports,
         calls,
+        definitions: Vec::new(),
+        references: Vec::new(),
+        exports: Vec::new(),
+        type_references: Vec::new(),
     }
 }
 

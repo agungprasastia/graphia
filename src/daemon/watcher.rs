@@ -5,50 +5,12 @@ use notify::{Config, Event, RecommendedWatcher, RecursiveMode, Watcher};
 
 use crate::error::{GraphiaError, Result};
 use crate::scan::detect_language;
+pub use crate::scan::is_excluded_path;
 
-const EXCLUDE_DIRS: &[&str] = &[
-    ".git",
-    ".graphia",
-    "target",
-    "node_modules",
-    "dist",
-    "build",
-    "__pycache__",
-    ".venv",
-    "venv",
-    ".mypy_cache",
-    ".pytest_cache",
-    "vendor",
-    ".next",
-    "out",
-    "coverage",
-    ".tox",
-    ".eggs",
-];
-
-/// Check if a relative or absolute path component matches exclusion rules.
-#[must_use]
-pub fn is_excluded_path(path: &Path) -> bool {
-    for component in path.components() {
-        let name = component.as_os_str().to_string_lossy();
-        if EXCLUDE_DIRS.contains(&name.as_ref()) {
-            return true;
-        }
-        // Exclude temporary files (.tmp-*, .swp, .swo, ~)
-        if name.starts_with(".tmp-") || name.ends_with(".swp") || name.ends_with('~') {
-            return true;
-        }
-    }
-    false
-}
-
-/// Check if path is relevant for code graph indexing.
-#[must_use]
 pub fn is_relevant_source_file(path: &Path) -> bool {
     if is_excluded_path(path) {
         return false;
     }
-    // Check if it has a supported language extension or is a directory event
     detect_language(path).is_some()
 }
 

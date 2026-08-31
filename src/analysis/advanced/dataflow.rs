@@ -136,7 +136,10 @@ fn bfs_flow_path(graph: &Graph, source: &Node, sink: &Node) -> Option<SourceSink
                     let mut next_path = curr_path.clone();
                     let conf = match edge.confidence {
                         crate::model::Confidence::Extracted => DispatchConfidence::Extracted,
-                        crate::model::Confidence::Inferred => DispatchConfidence::Inferred,
+                        crate::model::Confidence::Resolved | crate::model::Confidence::Inferred => {
+                            DispatchConfidence::Inferred
+                        }
+                        crate::model::Confidence::Possible => DispatchConfidence::Possible,
                     };
                     next_path.push((next_id, edge.kind.as_str().to_string(), conf));
                     queue.push_back((next_id, next_path));

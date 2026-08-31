@@ -19,18 +19,25 @@ pub struct McpServer {
     repo_root: PathBuf,
     graph: Option<Graph>,
     initialized: bool,
+    auto_index: bool,
 }
 
 impl McpServer {
     /// Create a new MCP server instance bound to an optional repository root.
     #[must_use]
     pub fn new(repo_root: Option<PathBuf>) -> Self {
+        Self::new_with_auto_index(repo_root, false)
+    }
+
+    #[must_use]
+    pub fn new_with_auto_index(repo_root: Option<PathBuf>, auto_index: bool) -> Self {
         let repo_root = repo_root
             .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
         Self {
             repo_root,
             graph: None,
             initialized: false,
+            auto_index,
         }
     }
 
@@ -45,15 +52,17 @@ impl McpServer {
                 )));
             }
 
-            let graph = if root.join(".graphia/index.bin").exists() {
-                crate::storage::load_graph_binary(&root.join(".graphia/index.bin"))
+            let binary_index = root.join(".graphia/index.bin");
+            let graph = if binary_index.exists() {
+                crate::storage::load_graph_binary(&binary_index)
                     .map_err(|e| McpError::Internal(format!("Failed to load binary index: {e}")))?
-            } else if root.join("graph.json").exists() {
-                crate::storage::load_graph_json(&root.join("graph.json"))
-                    .map_err(|e| McpError::Internal(format!("Failed to load graph.json: {e}")))?
-            } else {
+            } else if self.auto_index {
                 crate::storage::build_graph_from_repo(root)
                     .map_err(|e| McpError::Internal(format!("Failed to build graph: {e}")))?
+            } else {
+                return Err(McpError::Internal(
+                    "Repository not indexed. Run 'graphia build <repo>' or start MCP with '--auto-index'.".to_string(),
+                ));
             };
 
             self.graph = Some(graph);
@@ -65,7 +74,9 @@ impl McpServer {
     /// Load or build graph for the repository root and return a reference.
     pub fn load_graph(&mut self) -> Result<&Graph> {
         self.ensure_graph_loaded()?;
-        Ok(self.graph.as_ref().expect("graph initialized"))
+        self.graph
+            .as_ref()
+            .ok_or_else(|| McpError::Internal("Graph not initialized".to_string()))
     }
 
     /// Set an explicit pre-built graph (useful for tests and in-memory execution).

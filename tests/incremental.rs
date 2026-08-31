@@ -168,7 +168,7 @@ fn clean_build_removes_stale_cache_and_metadata_schema_classifies_cleanly() {
     let rebuilt_cache: serde_json::Value =
         serde_json::from_str(&fs::read_to_string(cache).expect("read rebuilt cache"))
             .expect("parse rebuilt cache");
-    assert_eq!(rebuilt_cache["schema_version"], serde_json::json!(1));
+    assert_eq!(rebuilt_cache["schema_version"], serde_json::json!(2));
     assert!(changes.iter().any(|change| {
         change.path == "a.rs" && change.change == graphia::storage::FileChange::Added
     }));

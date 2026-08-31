@@ -21,6 +21,9 @@ fn make_node(id: u64, name: &str, file: &str) -> Node {
             end_col: 1,
         },
         language: None,
+        visibility: graphia::model::Visibility::Public,
+        signature: None,
+        container: None,
     }
 }
 

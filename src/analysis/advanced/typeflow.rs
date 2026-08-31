@@ -27,7 +27,26 @@ pub fn extract_intraprocedural_typeflow(
 ) -> ProceduralTypeFlow {
     let mut assignments = Vec::new();
     let mut return_sources = Vec::new();
-    let parameter_flows = Vec::new();
+    let mut parameter_flows = Vec::new();
+
+    if let Some(param_start) = body_src.find('(') {
+        if let Some(param_end) = body_src[param_start..].find(')') {
+            let params_text = &body_src[param_start + 1..param_start + param_end];
+            for p in params_text.split(',') {
+                let p_trim = p.trim();
+                if !p_trim.is_empty() {
+                    let param_name = p_trim.split([':', ' ']).next().unwrap_or("").trim();
+                    if !param_name.is_empty()
+                        && param_name != "self"
+                        && param_name != "&self"
+                        && param_name != "&mut self"
+                    {
+                        parameter_flows.push(param_name.to_string());
+                    }
+                }
+            }
+        }
+    }
 
     for (line_idx, line) in body_src.lines().enumerate() {
         let current_line = start_line + line_idx as u32;
@@ -43,7 +62,6 @@ pub fn extract_intraprocedural_typeflow(
             }
         }
 
-        // Intra-procedural assignment heuristic: "let x = y", "x := y", "x = y", "var x = y", "val x = y"
         if let Some((left, right)) = parse_assignment_line(trimmed) {
             assignments.push(AssignmentEdge {
                 from_var: right,

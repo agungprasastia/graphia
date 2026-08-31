@@ -20,6 +20,9 @@ fn func(file: &str, name: &str, line: u32) -> Symbol {
         qualified_name: format!("{file}::{name}"),
         location: loc(file, line),
         parent: None,
+        visibility: graphia::model::Visibility::Public,
+        signature: None,
+        container: None,
     }
 }
 
@@ -30,6 +33,9 @@ fn method(file: &str, class_name: &str, name: &str, line: u32) -> Symbol {
         qualified_name: format!("{file}::{class_name}::{name}"),
         location: loc(file, line),
         parent: Some(class_name.to_string()),
+        visibility: graphia::model::Visibility::Public,
+        signature: None,
+        container: Some(class_name.to_string()),
     }
 }
 
@@ -158,11 +164,19 @@ fn test_explicit_alias_resolution() {
             callee: "renamed_func".to_string(),
             location: loc("app.py", 2),
         }],
+        definitions: vec![],
+        references: vec![],
+        exports: vec![],
+        type_references: vec![],
     };
     let helper = ParsedFile {
         symbols: vec![func("helper.py", "original_func", 1)],
         imports: vec![],
         calls: vec![],
+        definitions: vec![],
+        references: vec![],
+        exports: vec![],
+        type_references: vec![],
     };
 
     let mut graph = build_graph(vec![
@@ -204,11 +218,18 @@ fn test_receiver_aware_method_resolution() {
                 qualified_name: "service.ts::UserService".to_string(),
                 location: loc("service.ts", 1),
                 parent: None,
+                visibility: graphia::model::Visibility::Public,
+                signature: None,
+                container: None,
             },
             method("service.ts", "UserService", "authenticate", 2),
         ],
         imports: vec![],
         calls: vec![],
+        definitions: vec![],
+        references: vec![],
+        exports: vec![],
+        type_references: vec![],
     };
 
     let controller = ParsedFile {
@@ -222,6 +243,10 @@ fn test_receiver_aware_method_resolution() {
             callee: "authenticate".to_string(),
             location: loc("controller.ts", 2),
         }],
+        definitions: vec![],
+        references: vec![],
+        exports: vec![],
+        type_references: vec![],
     };
 
     let mut graph = build_graph(vec![
@@ -281,16 +306,28 @@ fn test_ambiguity_preservation_and_negative_test() {
             callee: "action".to_string(),
             location: loc("main.rs", 3),
         }],
+        definitions: vec![],
+        references: vec![],
+        exports: vec![],
+        type_references: vec![],
     };
     let mod_a = ParsedFile {
         symbols: vec![func("mod_a.rs", "action", 1)],
         imports: vec![],
         calls: vec![],
+        definitions: vec![],
+        references: vec![],
+        exports: vec![],
+        type_references: vec![],
     };
     let mod_b = ParsedFile {
         symbols: vec![func("mod_b.rs", "action", 1)],
         imports: vec![],
         calls: vec![],
+        definitions: vec![],
+        references: vec![],
+        exports: vec![],
+        type_references: vec![],
     };
 
     let mut graph = build_graph(vec![
@@ -318,11 +355,19 @@ fn test_unimported_foreign_symbol_remains_unresolved() {
             callee: "foreign_helper".to_string(),
             location: loc("caller.py", 2),
         }],
+        definitions: vec![],
+        references: vec![],
+        exports: vec![],
+        type_references: vec![],
     };
     let other = ParsedFile {
         symbols: vec![func("other.py", "foreign_helper", 1)],
         imports: vec![],
         calls: vec![],
+        definitions: vec![],
+        references: vec![],
+        exports: vec![],
+        type_references: vec![],
     };
 
     let mut graph = build_graph(vec![

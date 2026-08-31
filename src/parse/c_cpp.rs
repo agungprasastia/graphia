@@ -51,6 +51,10 @@ impl LanguageAnalyzer for CCppAnalyzer {
                 symbols: Vec::new(),
                 imports: Vec::new(),
                 calls: Vec::new(),
+                definitions: Vec::new(),
+                references: Vec::new(),
+                exports: Vec::new(),
+                type_references: Vec::new(),
             });
         };
         let root = tree.root_node();
@@ -115,11 +119,14 @@ pub fn parse_c_cpp(file: &str, root: &TsNode<'_>, source: &[u8]) -> ParsedFile {
                     let qualified = format!("{file}::{name}");
                     let loc = location_for_node(file, &node);
                     symbols.push(Symbol {
-                        kind: NodeKind::Module,
+                        kind: NodeKind::Namespace,
                         name: name.clone(),
                         qualified_name: qualified,
                         location: loc,
                         parent: parent_scope.clone(),
+                        visibility: crate::model::Visibility::Public,
+                        signature: None,
+                        container: parent_scope.clone(),
                     });
                     if let Some(body) = node.child_by_field_name("body") {
                         for child in children_vec(&body).into_iter().rev() {
@@ -140,6 +147,9 @@ pub fn parse_c_cpp(file: &str, root: &TsNode<'_>, source: &[u8]) -> ParsedFile {
                         qualified_name: qualified,
                         location: loc,
                         parent: parent_scope.clone(),
+                        visibility: crate::model::Visibility::Public,
+                        signature: None,
+                        container: parent_scope.clone(),
                     });
                     if let Some(body) = node.child_by_field_name("body") {
                         for child in children_vec(&body).into_iter().rev() {
@@ -160,6 +170,9 @@ pub fn parse_c_cpp(file: &str, root: &TsNode<'_>, source: &[u8]) -> ParsedFile {
                         qualified_name: qualified,
                         location: loc,
                         parent: parent_scope.clone(),
+                        visibility: crate::model::Visibility::Public,
+                        signature: None,
+                        container: parent_scope.clone(),
                     });
                     if let Some(body) = node.child_by_field_name("body") {
                         for child in children_vec(&body).into_iter().rev() {
@@ -178,11 +191,14 @@ pub fn parse_c_cpp(file: &str, root: &TsNode<'_>, source: &[u8]) -> ParsedFile {
                         let qualified = format!("{file}::{name}");
                         let loc = location_for_node(file, &node);
                         symbols.push(Symbol {
-                            kind: NodeKind::Struct,
+                            kind: NodeKind::TypeAlias,
                             name,
                             qualified_name: qualified,
                             location: loc,
                             parent: parent_scope.clone(),
+                            visibility: crate::model::Visibility::Public,
+                            signature: None,
+                            container: parent_scope.clone(),
                         });
                     }
                 }
@@ -194,11 +210,14 @@ pub fn parse_c_cpp(file: &str, root: &TsNode<'_>, source: &[u8]) -> ParsedFile {
                     let qualified = format!("{file}::{name}");
                     let loc = location_for_node(file, &node);
                     symbols.push(Symbol {
-                        kind: NodeKind::Struct,
+                        kind: NodeKind::TypeAlias,
                         name,
                         qualified_name: qualified,
                         location: loc,
                         parent: parent_scope.clone(),
+                        visibility: crate::model::Visibility::Public,
+                        signature: None,
+                        container: parent_scope.clone(),
                     });
                 }
             }
@@ -220,7 +239,10 @@ pub fn parse_c_cpp(file: &str, root: &TsNode<'_>, source: &[u8]) -> ParsedFile {
                             name: name.clone(),
                             qualified_name: qualified.clone(),
                             location: loc,
-                            parent: effective_parent,
+                            parent: effective_parent.clone(),
+                            visibility: crate::model::Visibility::Public,
+                            signature: None,
+                            container: effective_parent,
                         });
                         if let Some(body) = node.child_by_field_name("body") {
                             extract_calls_c_cpp(file, &body, source, &qualified, &mut calls);
@@ -250,7 +272,10 @@ pub fn parse_c_cpp(file: &str, root: &TsNode<'_>, source: &[u8]) -> ParsedFile {
                                 name,
                                 qualified_name: qualified,
                                 location: loc,
-                                parent: effective_parent,
+                                parent: effective_parent.clone(),
+                                visibility: crate::model::Visibility::Public,
+                                signature: None,
+                                container: effective_parent,
                             });
                         }
                     }
@@ -268,6 +293,10 @@ pub fn parse_c_cpp(file: &str, root: &TsNode<'_>, source: &[u8]) -> ParsedFile {
         symbols,
         imports,
         calls,
+        definitions: Vec::new(),
+        references: Vec::new(),
+        exports: Vec::new(),
+        type_references: Vec::new(),
     }
 }
 

@@ -66,9 +66,9 @@ impl Graph {
             let identity = (
                 node.kind,
                 node.qualified_name.as_str(),
-                node.location.file.as_str(),
-                node.location.start_line,
-                node.location.start_col,
+                node.file.as_str(),
+                node.container.as_deref().unwrap_or(""),
+                node.signature.as_deref().unwrap_or(""),
             );
             if !identities.insert(identity) {
                 return Err(crate::error::GraphiaError::GraphInvariant {
@@ -202,15 +202,13 @@ fn stable_id(seed: &str) -> u64 {
 #[must_use]
 pub fn stable_node_id(identity: &NodeIdentity) -> NodeId {
     NodeId(stable_id(&format!(
-        "node\0{}\0{}\0{}\0{}:{}:{}:{}:{}",
+        "node\0{}\0{}\0{}\0{}\0{}\0{}",
+        identity.language.map_or(0, Language::code),
         identity.file,
         identity.kind.code(),
         identity.qualified_name,
-        identity.location.file,
-        identity.location.start_line,
-        identity.location.start_col,
-        identity.location.end_line,
-        identity.location.end_col,
+        identity.container.as_deref().unwrap_or(""),
+        identity.signature.as_deref().unwrap_or(""),
     )))
 }
 
@@ -261,12 +259,17 @@ pub fn build_graph(files: Vec<(String, Option<Language>, ParsedFile)>) -> Graph 
         a.1.qualified_name
             .cmp(&b.1.qualified_name)
             .then(a.1.kind.cmp(&b.1.kind))
+            .then(a.0.cmp(&b.0))
+            .then(a.1.signature.cmp(&b.1.signature))
+            .then(a.1.container.cmp(&b.1.container))
             .then(a.1.location.cmp(&b.1.location))
     });
     all_symbols.dedup_by(|a, b| {
-        a.1.kind == b.1.kind
+        a.0 == b.0
+            && a.1.kind == b.1.kind
             && a.1.qualified_name == b.1.qualified_name
-            && a.1.location == b.1.location
+            && a.1.signature == b.1.signature
+            && a.1.container == b.1.container
     });
 
     let mut nodes = Vec::with_capacity(entries.len() + all_symbols.len());
@@ -285,7 +288,7 @@ pub fn build_graph(files: Vec<(String, Option<Language>, ParsedFile)>) -> Graph 
                 .cloned()
                 .map(|call| (entry.path.clone(), call)),
         );
-        let location = SourceLocation {
+        let _location = SourceLocation {
             file: entry.path.clone(),
             start_line: 1,
             start_col: 1,
@@ -293,10 +296,12 @@ pub fn build_graph(files: Vec<(String, Option<Language>, ParsedFile)>) -> Graph 
             end_col: 1,
         };
         let id = stable_node_id(&NodeIdentity::new(
+            entry.language,
             &entry.path,
             NodeKind::File,
             &entry.path,
-            &location,
+            None,
+            None,
         ));
         file_node_ids.insert(entry.path.clone(), id);
         nodes.push(Node {
@@ -313,15 +318,24 @@ pub fn build_graph(files: Vec<(String, Option<Language>, ParsedFile)>) -> Graph 
                 end_col: 1,
             },
             language: entry.language,
+            visibility: crate::model::Visibility::Public,
+            signature: None,
+            container: None,
         });
     }
 
     for (file, symbol) in &all_symbols {
+        let file_entry_lang = entries
+            .iter()
+            .find(|e| e.path == *file)
+            .and_then(|e| e.language);
         let id = stable_node_id(&NodeIdentity::new(
+            file_entry_lang,
             file,
             symbol.kind,
             &symbol.qualified_name,
-            &symbol.location,
+            symbol.container.as_deref().or(symbol.parent.as_deref()),
+            symbol.signature.as_deref(),
         ));
         symbol_node_ids
             .entry(symbol.qualified_name.clone())
@@ -338,7 +352,10 @@ pub fn build_graph(files: Vec<(String, Option<Language>, ParsedFile)>) -> Graph 
             qualified_name: symbol.qualified_name.clone(),
             file: file.clone(),
             location: symbol.location.clone(),
-            language: None,
+            language: file_entry_lang,
+            visibility: symbol.visibility,
+            signature: symbol.signature.clone(),
+            container: symbol.container.clone().or_else(|| symbol.parent.clone()),
         });
     }
 
@@ -720,9 +737,16 @@ mod tests {
                 qualified_name: "a.rs::foo".to_string(),
                 location: loc("a.rs"),
                 parent: None,
+                visibility: crate::model::Visibility::Public,
+                signature: None,
+                container: None,
             }],
             imports: vec![],
             calls: vec![],
+            definitions: vec![],
+            references: vec![],
+            exports: vec![],
+            type_references: vec![],
         };
         let pf2 = ParsedFile {
             symbols: vec![Symbol {
@@ -731,9 +755,16 @@ mod tests {
                 qualified_name: "b.rs::bar".to_string(),
                 location: loc("b.rs"),
                 parent: None,
+                visibility: crate::model::Visibility::Public,
+                signature: None,
+                container: None,
             }],
             imports: vec![],
             calls: vec![],
+            definitions: vec![],
+            references: vec![],
+            exports: vec![],
+            type_references: vec![],
         };
         let g1 = build_graph(vec![
             ("a.rs".to_string(), Some(Language::Rust), pf1.clone()),
@@ -756,6 +787,9 @@ mod tests {
                 qualified_name: "a.rs::caller".to_string(),
                 location: loc("a.rs"),
                 parent: None,
+                visibility: crate::model::Visibility::Public,
+                signature: None,
+                container: None,
             }],
             imports: vec![],
             calls: vec![Call {
@@ -763,6 +797,10 @@ mod tests {
                 callee: "dup".to_string(),
                 location: loc("a.rs"),
             }],
+            definitions: vec![],
+            references: vec![],
+            exports: vec![],
+            type_references: vec![],
         };
         let pf_b = ParsedFile {
             symbols: vec![Symbol {
@@ -771,9 +809,16 @@ mod tests {
                 qualified_name: "b.rs::dup".to_string(),
                 location: loc("b.rs"),
                 parent: None,
+                visibility: crate::model::Visibility::Public,
+                signature: None,
+                container: None,
             }],
             imports: vec![],
             calls: vec![],
+            definitions: vec![],
+            references: vec![],
+            exports: vec![],
+            type_references: vec![],
         };
         let pf_c = ParsedFile {
             symbols: vec![Symbol {
@@ -782,9 +827,16 @@ mod tests {
                 qualified_name: "c.rs::dup".to_string(),
                 location: loc("c.rs"),
                 parent: None,
+                visibility: crate::model::Visibility::Public,
+                signature: None,
+                container: None,
             }],
             imports: vec![],
             calls: vec![],
+            definitions: vec![],
+            references: vec![],
+            exports: vec![],
+            type_references: vec![],
         };
         let g = build_graph(vec![
             ("a.rs".to_string(), Some(Language::Rust), pf_a),
@@ -803,6 +855,9 @@ mod tests {
                 qualified_name: "a.rs::caller".to_string(),
                 location: loc("a.rs"),
                 parent: None,
+                visibility: crate::model::Visibility::Public,
+                signature: None,
+                container: None,
             }],
             imports: vec![],
             calls: vec![Call {
@@ -810,6 +865,10 @@ mod tests {
                 callee: "target".to_string(),
                 location: loc("a.rs"),
             }],
+            definitions: vec![],
+            references: vec![],
+            exports: vec![],
+            type_references: vec![],
         };
         let target = ParsedFile {
             symbols: vec![Symbol {
@@ -818,9 +877,16 @@ mod tests {
                 qualified_name: "b.rs::target".to_string(),
                 location: loc("b.rs"),
                 parent: None,
+                visibility: crate::model::Visibility::Public,
+                signature: None,
+                container: None,
             }],
             imports: vec![],
             calls: vec![],
+            definitions: vec![],
+            references: vec![],
+            exports: vec![],
+            type_references: vec![],
         };
         let graph = build_graph(vec![
             ("a.rs".to_string(), Some(Language::Rust), caller),
@@ -838,6 +904,9 @@ mod tests {
                 qualified_name: "a.rs::caller".to_string(),
                 location: loc("a.rs"),
                 parent: None,
+                visibility: crate::model::Visibility::Public,
+                signature: None,
+                container: None,
             }],
             imports: vec![crate::parser::Import {
                 path: "b.rs".to_string(),
@@ -848,6 +917,10 @@ mod tests {
                 callee: "target".to_string(),
                 location: loc("a.rs"),
             }],
+            definitions: vec![],
+            references: vec![],
+            exports: vec![],
+            type_references: vec![],
         };
         let target = ParsedFile {
             symbols: vec![Symbol {
@@ -856,9 +929,16 @@ mod tests {
                 qualified_name: "b.rs::target".to_string(),
                 location: loc("b.rs"),
                 parent: None,
+                visibility: crate::model::Visibility::Public,
+                signature: None,
+                container: None,
             }],
             imports: vec![],
             calls: vec![],
+            definitions: vec![],
+            references: vec![],
+            exports: vec![],
+            type_references: vec![],
         };
         let graph = build_graph(vec![
             ("a.rs".to_string(), Some(Language::Rust), caller),

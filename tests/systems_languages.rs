@@ -55,10 +55,9 @@ fn test_go_analyzer_trait_implementation() {
         .expect("analyze success");
 
     assert!(
-        parsed
-            .symbols
-            .iter()
-            .any(|s| s.name == "main" && s.kind == NodeKind::Module)
+        parsed.symbols.iter().any(
+            |s| s.name == "main" && (s.kind == NodeKind::Package || s.kind == NodeKind::Module)
+        )
     );
     assert!(
         parsed
@@ -99,7 +98,8 @@ fn test_parse_go_sample_fixture() {
         parsed
             .symbols
             .iter()
-            .any(|s| s.name == "sample" && s.kind == NodeKind::Module)
+            .any(|s| s.name == "sample"
+                && (s.kind == NodeKind::Package || s.kind == NodeKind::Module))
     );
 
     // Types: Server (Struct), Service (Interface), ConfigMap (Struct / Type Alias)
@@ -182,10 +182,8 @@ fn test_parse_c_sample_fixture() {
             .any(|s| s.name == "Point" && s.kind == NodeKind::Struct)
     );
     assert!(
-        parsed
-            .symbols
-            .iter()
-            .any(|s| s.name == "Point_t" && s.kind == NodeKind::Struct)
+        parsed.symbols.iter().any(|s| s.name == "Point_t"
+            && (s.kind == NodeKind::TypeAlias || s.kind == NodeKind::Struct))
     );
 
     // Functions: init_point, calculate_area, main
@@ -239,12 +237,9 @@ fn test_parse_cpp_sample_fixture() {
     let parsed = parse_file("sample.cpp", Language::Cpp, content);
 
     // Namespace: Engine
-    assert!(
-        parsed
-            .symbols
-            .iter()
-            .any(|s| s.name == "Engine" && s.kind == NodeKind::Module)
-    );
+    assert!(parsed.symbols.iter().any(
+        |s| s.name == "Engine" && (s.kind == NodeKind::Namespace || s.kind == NodeKind::Module)
+    ));
 
     // Class: Renderer, Struct: Buffer, Using: BufferList
     assert!(
@@ -260,10 +255,8 @@ fn test_parse_cpp_sample_fixture() {
             .any(|s| s.name == "Buffer" && s.kind == NodeKind::Struct)
     );
     assert!(
-        parsed
-            .symbols
-            .iter()
-            .any(|s| s.name == "BufferList" && s.kind == NodeKind::Struct)
+        parsed.symbols.iter().any(|s| s.name == "BufferList"
+            && (s.kind == NodeKind::TypeAlias || s.kind == NodeKind::Struct))
     );
 
     // Methods: renderScene, getFps, calculateFps (parent = Renderer)

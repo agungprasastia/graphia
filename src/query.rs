@@ -317,23 +317,26 @@ impl From<&Node> for QueryMatch {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{Confidence, Edge, EdgeId, EdgeKind, SourceLocation};
+    use crate::model::{Confidence, Edge, EdgeId, EdgeKind};
 
     fn node(id: u64, name: &str) -> Node {
         Node {
-            id: NodeId(id),
-            kind: NodeKind::Function,
+            id: crate::model::NodeId(id),
+            kind: crate::model::NodeKind::Function,
             name: name.to_string(),
-            qualified_name: format!("a.rs::{name}"),
-            file: "a.rs".to_string(),
-            location: SourceLocation {
-                file: "a.rs".to_string(),
+            qualified_name: name.to_string(),
+            file: "test.rs".to_string(),
+            location: crate::model::SourceLocation {
+                file: "test.rs".to_string(),
                 start_line: 1,
                 start_col: 1,
-                end_line: 1,
+                end_line: 5,
                 end_col: 1,
             },
-            language: None,
+            language: Some(crate::model::Language::Rust),
+            visibility: crate::model::Visibility::Public,
+            signature: None,
+            container: None,
         }
     }
 

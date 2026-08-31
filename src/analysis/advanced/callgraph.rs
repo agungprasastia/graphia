@@ -27,7 +27,8 @@ impl From<Confidence> for DispatchConfidence {
     fn from(c: Confidence) -> Self {
         match c {
             Confidence::Extracted => Self::Extracted,
-            Confidence::Inferred => Self::Inferred,
+            Confidence::Resolved | Confidence::Inferred => Self::Inferred,
+            Confidence::Possible => Self::Possible,
         }
     }
 }

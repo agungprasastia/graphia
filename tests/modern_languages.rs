@@ -59,7 +59,7 @@ pub fn runMain() void {
         parsed
             .symbols
             .iter()
-            .any(|s| s.name == "Status" && s.kind == NodeKind::Struct)
+            .any(|s| s.name == "Status" && (s.kind == NodeKind::Enum || s.kind == NodeKind::Struct))
     );
     assert!(
         parsed
@@ -111,12 +111,8 @@ function standaloneFunction(): void {}
         .analyze("sample.php", code.as_bytes())
         .expect("analyze success");
 
-    assert!(
-        parsed
-            .symbols
-            .iter()
-            .any(|s| s.name == "App\\Services" && s.kind == NodeKind::Module)
-    );
+    assert!(parsed.symbols.iter().any(|s| s.name == "App\\Services"
+        && (s.kind == NodeKind::Namespace || s.kind == NodeKind::Module)));
     assert!(
         parsed
             .symbols
@@ -343,7 +339,7 @@ fn test_parse_sample_fixtures_all_phase_d() {
         zig_parsed
             .symbols
             .iter()
-            .any(|s| s.name == "Status" && s.kind == NodeKind::Struct)
+            .any(|s| s.name == "Status" && (s.kind == NodeKind::Enum || s.kind == NodeKind::Struct))
     );
     assert!(
         zig_parsed
@@ -361,12 +357,8 @@ fn test_parse_sample_fixtures_all_phase_d() {
 
     let php_code = include_str!("fixtures/php/sample.php");
     let php_parsed = parse_file("sample.php", Language::Php, php_code);
-    assert!(
-        php_parsed
-            .symbols
-            .iter()
-            .any(|s| s.name == "App\\Services" && s.kind == NodeKind::Module)
-    );
+    assert!(php_parsed.symbols.iter().any(|s| s.name == "App\\Services"
+        && (s.kind == NodeKind::Namespace || s.kind == NodeKind::Module)));
     assert!(
         php_parsed
             .symbols

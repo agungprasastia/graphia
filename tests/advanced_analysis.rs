@@ -30,6 +30,9 @@ fn test_advanced_callgraph_dynamic_dispatch() {
             file: "log.rs".into(),
             location: loc("log.rs", 1),
             language: Some(Language::Rust),
+            visibility: graphia::model::Visibility::Public,
+            signature: None,
+            container: None,
         },
         Node {
             id: NodeId(2),
@@ -39,6 +42,9 @@ fn test_advanced_callgraph_dynamic_dispatch() {
             file: "log.rs".into(),
             location: loc("log.rs", 2),
             language: Some(Language::Rust),
+            visibility: graphia::model::Visibility::Public,
+            signature: None,
+            container: Some("Logger".into()),
         },
         Node {
             id: NodeId(3),
@@ -48,6 +54,9 @@ fn test_advanced_callgraph_dynamic_dispatch() {
             file: "console.rs".into(),
             location: loc("console.rs", 1),
             language: Some(Language::Rust),
+            visibility: graphia::model::Visibility::Public,
+            signature: None,
+            container: None,
         },
         Node {
             id: NodeId(4),
@@ -57,6 +66,9 @@ fn test_advanced_callgraph_dynamic_dispatch() {
             file: "console.rs".into(),
             location: loc("console.rs", 2),
             language: Some(Language::Rust),
+            visibility: graphia::model::Visibility::Public,
+            signature: None,
+            container: Some("ConsoleLogger".into()),
         },
         Node {
             id: NodeId(5),
@@ -66,6 +78,9 @@ fn test_advanced_callgraph_dynamic_dispatch() {
             file: "main.rs".into(),
             location: loc("main.rs", 1),
             language: Some(Language::Rust),
+            visibility: graphia::model::Visibility::Public,
+            signature: None,
+            container: None,
         },
     ];
 
@@ -136,6 +151,9 @@ fn test_advanced_typeflow_and_dataflow() {
             file: "api.rs".into(),
             location: loc("api.rs", 1),
             language: Some(Language::Rust),
+            visibility: graphia::model::Visibility::Public,
+            signature: None,
+            container: None,
         },
         Node {
             id: NodeId(2),
@@ -145,6 +163,9 @@ fn test_advanced_typeflow_and_dataflow() {
             file: "service.rs".into(),
             location: loc("service.rs", 1),
             language: Some(Language::Rust),
+            visibility: graphia::model::Visibility::Public,
+            signature: None,
+            container: None,
         },
         Node {
             id: NodeId(3),
@@ -154,6 +175,9 @@ fn test_advanced_typeflow_and_dataflow() {
             file: "db.rs".into(),
             location: loc("db.rs", 1),
             language: Some(Language::Rust),
+            visibility: graphia::model::Visibility::Public,
+            signature: None,
+            container: None,
         },
     ];
 
@@ -198,6 +222,9 @@ fn test_advanced_boundaries_and_drift() {
             file: "src/model/domain.rs".into(),
             location: loc("src/model/domain.rs", 1),
             language: Some(Language::Rust),
+            visibility: graphia::model::Visibility::Public,
+            signature: None,
+            container: None,
         },
         Node {
             id: NodeId(2),
@@ -207,6 +234,9 @@ fn test_advanced_boundaries_and_drift() {
             file: "src/cli/app.rs".into(),
             location: loc("src/cli/app.rs", 1),
             language: Some(Language::Rust),
+            visibility: graphia::model::Visibility::Public,
+            signature: None,
+            container: None,
         },
     ];
 
@@ -291,6 +321,9 @@ fn test_advanced_dead_code_and_diffs() {
             file: "src/lib.rs".into(),
             location: loc("src/lib.rs", 1),
             language: Some(Language::Rust),
+            visibility: graphia::model::Visibility::Public,
+            signature: None,
+            container: None,
         },
         Node {
             id: NodeId(2),
@@ -300,6 +333,9 @@ fn test_advanced_dead_code_and_diffs() {
             file: "src/lib.rs".into(),
             location: loc("src/lib.rs", 10),
             language: Some(Language::Rust),
+            visibility: graphia::model::Visibility::Private,
+            signature: None,
+            container: None,
         },
     ];
     let old_edges = vec![];
@@ -317,6 +353,9 @@ fn test_advanced_dead_code_and_diffs() {
             file: "src/lib.rs".into(),
             location: loc("src/lib.rs", 5), // moved lines
             language: Some(Language::Rust),
+            visibility: graphia::model::Visibility::Public,
+            signature: None,
+            container: None,
         },
         Node {
             id: NodeId(3),
@@ -326,6 +365,9 @@ fn test_advanced_dead_code_and_diffs() {
             file: "src/lib.rs".into(),
             location: loc("src/lib.rs", 20),
             language: Some(Language::Rust),
+            visibility: graphia::model::Visibility::Public,
+            signature: None,
+            container: None,
         },
     ];
     let new_edges = vec![];
@@ -338,7 +380,7 @@ fn test_advanced_dead_code_and_diffs() {
 
     let apidiff = diff_public_api(&old_graph, &new_graph);
     assert_eq!(apidiff.added_public_symbols.len(), 1);
-    assert_eq!(apidiff.removed_public_symbols.len(), 1);
+    assert_eq!(apidiff.removed_public_symbols.len(), 0);
 }
 
 #[test]

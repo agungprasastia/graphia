@@ -12,38 +12,101 @@ pub struct NodeId(pub u64);
 #[serde(transparent)]
 pub struct EdgeId(pub u64);
 
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, Default,
+)]
+pub enum Visibility {
+    Public,
+    Protected,
+    Private,
+    Internal,
+    Package,
+    #[default]
+    Unknown,
+}
+
+impl Visibility {
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Public => "public",
+            Self::Protected => "protected",
+            Self::Private => "private",
+            Self::Internal => "internal",
+            Self::Package => "package",
+            Self::Unknown => "unknown",
+        }
+    }
+
+    #[must_use]
+    pub fn code(self) -> u8 {
+        match self {
+            Self::Public => 1,
+            Self::Protected => 2,
+            Self::Private => 3,
+            Self::Internal => 4,
+            Self::Package => 5,
+            Self::Unknown => 6,
+        }
+    }
+
+    pub fn from_code(code: u8) -> Option<Self> {
+        match code {
+            1 => Some(Self::Public),
+            2 => Some(Self::Protected),
+            3 => Some(Self::Private),
+            4 => Some(Self::Internal),
+            5 => Some(Self::Package),
+            6 => Some(Self::Unknown),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct NodeIdentity {
+pub struct SemanticNodeKey {
+    pub language: Option<Language>,
     pub file: String,
     pub kind: NodeKind,
     pub qualified_name: String,
-    pub location: SourceLocation,
+    pub container: Option<String>,
+    pub signature: Option<String>,
 }
 
-impl NodeIdentity {
+impl SemanticNodeKey {
     #[must_use]
     pub fn new(
+        language: Option<Language>,
         file: &str,
         kind: NodeKind,
         qualified_name: &str,
-        location: &SourceLocation,
+        container: Option<&str>,
+        signature: Option<&str>,
     ) -> Self {
         Self {
+            language,
             file: normalize_identity_path(file),
             kind,
             qualified_name: qualified_name.to_string(),
-            location: SourceLocation {
-                file: normalize_identity_path(&location.file),
-                ..location.clone()
-            },
+            container: container.map(str::to_string),
+            signature: signature.map(str::to_string),
         }
     }
 
     #[must_use]
     pub fn from_node(node: &Node) -> Self {
-        Self::new(&node.file, node.kind, &node.qualified_name, &node.location)
+        Self::new(
+            node.language,
+            &node.file,
+            node.kind,
+            &node.qualified_name,
+            node.container.as_deref(),
+            node.signature.as_deref(),
+        )
     }
 }
+
+pub type NodeIdentity = SemanticNodeKey;
 
 fn normalize_identity_path(path: &str) -> String {
     let normalized = path.replace('\\', "/");
@@ -173,12 +236,21 @@ impl Language {
 pub enum NodeKind {
     File,
     Module,
+    Package,
+    Namespace,
     Function,
     Method,
+    Constructor,
     Class,
     Struct,
     Trait,
     Interface,
+    Enum,
+    Variable,
+    Constant,
+    Field,
+    Property,
+    TypeAlias,
 }
 
 impl NodeKind {
@@ -187,12 +259,21 @@ impl NodeKind {
         match self {
             Self::File => "File",
             Self::Module => "Module",
+            Self::Package => "Package",
+            Self::Namespace => "Namespace",
             Self::Function => "Function",
             Self::Method => "Method",
+            Self::Constructor => "Constructor",
             Self::Class => "Class",
             Self::Struct => "Struct",
             Self::Trait => "Trait",
             Self::Interface => "Interface",
+            Self::Enum => "Enum",
+            Self::Variable => "Variable",
+            Self::Constant => "Constant",
+            Self::Field => "Field",
+            Self::Property => "Property",
+            Self::TypeAlias => "TypeAlias",
         }
     }
 
@@ -201,12 +282,21 @@ impl NodeKind {
         match self {
             Self::File => 1,
             Self::Module => 2,
-            Self::Function => 3,
-            Self::Method => 4,
-            Self::Class => 5,
-            Self::Struct => 6,
-            Self::Trait => 7,
-            Self::Interface => 8,
+            Self::Package => 3,
+            Self::Namespace => 4,
+            Self::Function => 5,
+            Self::Method => 6,
+            Self::Constructor => 7,
+            Self::Class => 8,
+            Self::Struct => 9,
+            Self::Trait => 10,
+            Self::Interface => 11,
+            Self::Enum => 12,
+            Self::Variable => 13,
+            Self::Constant => 14,
+            Self::Field => 15,
+            Self::Property => 16,
+            Self::TypeAlias => 17,
         }
     }
 
@@ -214,12 +304,21 @@ impl NodeKind {
         match code {
             1 => Some(Self::File),
             2 => Some(Self::Module),
-            3 => Some(Self::Function),
-            4 => Some(Self::Method),
-            5 => Some(Self::Class),
-            6 => Some(Self::Struct),
-            7 => Some(Self::Trait),
-            8 => Some(Self::Interface),
+            3 => Some(Self::Package),
+            4 => Some(Self::Namespace),
+            5 => Some(Self::Function),
+            6 => Some(Self::Method),
+            7 => Some(Self::Constructor),
+            8 => Some(Self::Class),
+            9 => Some(Self::Struct),
+            10 => Some(Self::Trait),
+            11 => Some(Self::Interface),
+            12 => Some(Self::Enum),
+            13 => Some(Self::Variable),
+            14 => Some(Self::Constant),
+            15 => Some(Self::Field),
+            16 => Some(Self::Property),
+            17 => Some(Self::TypeAlias),
             _ => None,
         }
     }
@@ -229,7 +328,11 @@ impl NodeKind {
 pub enum EdgeKind {
     Contains,
     Imports,
+    Exports,
     Calls,
+    References,
+    TypeReferences,
+    Instantiates,
     Inherits,
     Implements,
 }
@@ -240,7 +343,11 @@ impl EdgeKind {
         match self {
             Self::Contains => "Contains",
             Self::Imports => "Imports",
+            Self::Exports => "Exports",
             Self::Calls => "Calls",
+            Self::References => "References",
+            Self::TypeReferences => "TypeReferences",
+            Self::Instantiates => "Instantiates",
             Self::Inherits => "Inherits",
             Self::Implements => "Implements",
         }
@@ -251,9 +358,13 @@ impl EdgeKind {
         match self {
             Self::Contains => 1,
             Self::Imports => 2,
-            Self::Calls => 3,
-            Self::Inherits => 4,
-            Self::Implements => 5,
+            Self::Exports => 3,
+            Self::Calls => 4,
+            Self::References => 5,
+            Self::TypeReferences => 6,
+            Self::Instantiates => 7,
+            Self::Inherits => 8,
+            Self::Implements => 9,
         }
     }
 
@@ -261,9 +372,13 @@ impl EdgeKind {
         match code {
             1 => Some(Self::Contains),
             2 => Some(Self::Imports),
-            3 => Some(Self::Calls),
-            4 => Some(Self::Inherits),
-            5 => Some(Self::Implements),
+            3 => Some(Self::Exports),
+            4 => Some(Self::Calls),
+            5 => Some(Self::References),
+            6 => Some(Self::TypeReferences),
+            7 => Some(Self::Instantiates),
+            8 => Some(Self::Inherits),
+            9 => Some(Self::Implements),
             _ => None,
         }
     }
@@ -272,22 +387,38 @@ impl EdgeKind {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum Confidence {
     Extracted,
+    Resolved,
     Inferred,
+    Possible,
 }
 
 impl Confidence {
     #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Extracted => "Extracted",
+            Self::Resolved => "Resolved",
+            Self::Inferred => "Inferred",
+            Self::Possible => "Possible",
+        }
+    }
+
+    #[must_use]
     pub fn code(self) -> u8 {
         match self {
             Self::Extracted => 1,
-            Self::Inferred => 2,
+            Self::Resolved => 2,
+            Self::Inferred => 3,
+            Self::Possible => 4,
         }
     }
 
     pub fn from_code(code: u8) -> Option<Self> {
         match code {
             1 => Some(Self::Extracted),
-            2 => Some(Self::Inferred),
+            2 => Some(Self::Resolved),
+            3 => Some(Self::Inferred),
+            4 => Some(Self::Possible),
             _ => None,
         }
     }
@@ -311,6 +442,12 @@ pub struct Node {
     pub file: String,
     pub location: SourceLocation,
     pub language: Option<Language>,
+    #[serde(default)]
+    pub visibility: Visibility,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub signature: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub container: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

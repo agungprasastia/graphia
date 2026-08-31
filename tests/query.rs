@@ -17,6 +17,9 @@ fn node(id: u64, name: &str, file: &str) -> Node {
             end_col: 8,
         },
         language: None,
+        visibility: graphia::model::Visibility::Public,
+        signature: None,
+        container: None,
     }
 }
 

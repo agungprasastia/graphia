@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use tree_sitter::{Language, Parser, Tree};
 
-use crate::model::{Language as GraphiaLanguage, NodeKind, SourceLocation};
+use crate::model::{Language as GraphiaLanguage, NodeKind, SourceLocation, Visibility};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Symbol {
@@ -10,6 +10,44 @@ pub struct Symbol {
     pub qualified_name: String,
     pub location: SourceLocation,
     pub parent: Option<String>,
+    #[serde(default)]
+    pub visibility: Visibility,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub signature: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub container: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Definition {
+    pub kind: NodeKind,
+    pub name: String,
+    pub qualified_name: String,
+    pub location: SourceLocation,
+    pub container: Option<String>,
+    pub visibility: Visibility,
+    pub signature: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Reference {
+    pub name: String,
+    pub location: SourceLocation,
+    pub caller: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TypeReference {
+    pub name: String,
+    pub location: SourceLocation,
+    pub container: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Export {
+    pub name: String,
+    pub location: SourceLocation,
+    pub target: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -30,6 +68,14 @@ pub struct ParsedFile {
     pub symbols: Vec<Symbol>,
     pub imports: Vec<Import>,
     pub calls: Vec<Call>,
+    #[serde(default)]
+    pub definitions: Vec<Definition>,
+    #[serde(default)]
+    pub references: Vec<Reference>,
+    #[serde(default)]
+    pub exports: Vec<Export>,
+    #[serde(default)]
+    pub type_references: Vec<TypeReference>,
 }
 
 fn ts_language(lang: GraphiaLanguage) -> Language {
@@ -101,6 +147,10 @@ pub fn parse_bytes(
             symbols: Vec::new(),
             imports: Vec::new(),
             calls: Vec::new(),
+            definitions: Vec::new(),
+            references: Vec::new(),
+            exports: Vec::new(),
+            type_references: Vec::new(),
         });
     };
     let root = tree.root_node();
@@ -149,13 +199,16 @@ fn parse_rust(file: &str, root: &tree_sitter::Node<'_>, source: &[u8]) -> Parsed
                         qualified_name: qualified.clone(),
                         location: loc.clone(),
                         parent: None,
+                        visibility: crate::model::Visibility::Public,
+                        signature: None,
+                        container: None,
                     });
                     if let Some(body) = node.child_by_field_name("body") {
                         extract_calls_rust(file, &body, source, &qualified, &mut calls);
                     }
                 }
             }
-            "struct_item" | "enum_item" => {
+            "struct_item" => {
                 if let Some(name_node) = node.child_by_field_name("name") {
                     let name = node_text(&name_node, source).to_string();
                     let qualified = format!("{file}::{name}");
@@ -166,6 +219,26 @@ fn parse_rust(file: &str, root: &tree_sitter::Node<'_>, source: &[u8]) -> Parsed
                         qualified_name: qualified,
                         location: loc,
                         parent: None,
+                        visibility: crate::model::Visibility::Public,
+                        signature: None,
+                        container: None,
+                    });
+                }
+            }
+            "enum_item" => {
+                if let Some(name_node) = node.child_by_field_name("name") {
+                    let name = node_text(&name_node, source).to_string();
+                    let qualified = format!("{file}::{name}");
+                    let loc = location_for_node(file, &node);
+                    symbols.push(Symbol {
+                        kind: NodeKind::Enum,
+                        name,
+                        qualified_name: qualified,
+                        location: loc,
+                        parent: None,
+                        visibility: crate::model::Visibility::Public,
+                        signature: None,
+                        container: None,
                     });
                 }
             }
@@ -180,6 +253,9 @@ fn parse_rust(file: &str, root: &tree_sitter::Node<'_>, source: &[u8]) -> Parsed
                         qualified_name: qualified,
                         location: loc,
                         parent: None,
+                        visibility: crate::model::Visibility::Public,
+                        signature: None,
+                        container: None,
                     });
                 }
             }
@@ -194,6 +270,9 @@ fn parse_rust(file: &str, root: &tree_sitter::Node<'_>, source: &[u8]) -> Parsed
                         qualified_name: qualified,
                         location: loc,
                         parent: None,
+                        visibility: crate::model::Visibility::Public,
+                        signature: None,
+                        container: None,
                     });
                 }
             }
@@ -235,6 +314,9 @@ fn parse_rust(file: &str, root: &tree_sitter::Node<'_>, source: &[u8]) -> Parsed
                                             qualified_name: qualified.clone(),
                                             location: loc.clone(),
                                             parent: Some(tname.clone()),
+                                            visibility: crate::model::Visibility::Public,
+                                            signature: None,
+                                            container: Some(tname.clone()),
                                         });
                                         if let Some(body) = sub.child_by_field_name("body") {
                                             extract_calls_rust(
@@ -262,6 +344,10 @@ fn parse_rust(file: &str, root: &tree_sitter::Node<'_>, source: &[u8]) -> Parsed
         symbols,
         imports,
         calls,
+        definitions: Vec::new(),
+        references: Vec::new(),
+        exports: Vec::new(),
+        type_references: Vec::new(),
     }
 }
 
@@ -330,6 +416,13 @@ fn parse_python(file: &str, root: &tree_sitter::Node<'_>, source: &[u8]) -> Pars
                         qualified_name: qualified.clone(),
                         location: loc,
                         parent: parent_class.clone(),
+                        visibility: if name.starts_with('_') {
+                            crate::model::Visibility::Private
+                        } else {
+                            crate::model::Visibility::Public
+                        },
+                        signature: None,
+                        container: parent_class.clone(),
                     });
                     if let Some(body) = node.child_by_field_name("body") {
                         extract_calls_python(file, &body, source, &qualified, &mut calls);
@@ -347,6 +440,13 @@ fn parse_python(file: &str, root: &tree_sitter::Node<'_>, source: &[u8]) -> Pars
                         qualified_name: qualified,
                         location: loc,
                         parent: None,
+                        visibility: if name.starts_with('_') {
+                            crate::model::Visibility::Private
+                        } else {
+                            crate::model::Visibility::Public
+                        },
+                        signature: None,
+                        container: None,
                     });
                     if let Some(body) = node.child_by_field_name("body") {
                         for child in children_vec(&body).into_iter().rev() {
@@ -383,6 +483,10 @@ fn parse_python(file: &str, root: &tree_sitter::Node<'_>, source: &[u8]) -> Pars
         symbols,
         imports,
         calls,
+        definitions: Vec::new(),
+        references: Vec::new(),
+        exports: Vec::new(),
+        type_references: Vec::new(),
     }
 }
 

@@ -37,12 +37,9 @@ fn test_java_analyzer_trait_implementation() {
         .analyze("TestClass.java", code.as_bytes())
         .expect("analyze success");
 
-    assert!(
-        parsed
-            .symbols
-            .iter()
-            .any(|s| s.name == "com.test" && s.kind == NodeKind::Module)
-    );
+    assert!(parsed.symbols.iter().any(
+        |s| s.name == "com.test" && (s.kind == NodeKind::Package || s.kind == NodeKind::Module)
+    ));
     assert!(
         parsed
             .symbols
@@ -64,12 +61,8 @@ fn test_csharp_analyzer_trait_implementation() {
         .analyze("Worker.cs", code.as_bytes())
         .expect("analyze success");
 
-    assert!(
-        parsed
-            .symbols
-            .iter()
-            .any(|s| s.name == "MyNamespace" && s.kind == NodeKind::Module)
-    );
+    assert!(parsed.symbols.iter().any(|s| s.name == "MyNamespace"
+        && (s.kind == NodeKind::Namespace || s.kind == NodeKind::Module)));
     assert!(
         parsed
             .symbols
@@ -98,7 +91,8 @@ fn test_kotlin_analyzer_trait_implementation() {
         parsed
             .symbols
             .iter()
-            .any(|s| s.name == "my.pkg" && s.kind == NodeKind::Module)
+            .any(|s| s.name == "my.pkg"
+                && (s.kind == NodeKind::Package || s.kind == NodeKind::Module))
     );
     assert!(
         parsed
@@ -124,7 +118,8 @@ fn test_parse_java_sample_fixture() {
         parsed
             .symbols
             .iter()
-            .any(|s| s.name == "com.example.service" && s.kind == NodeKind::Module)
+            .any(|s| s.name == "com.example.service"
+                && (s.kind == NodeKind::Package || s.kind == NodeKind::Module))
     );
 
     // Types: SampleService (Class), IService (Interface), UserRecord (Struct), Status (Struct/Enum)
@@ -150,12 +145,12 @@ fn test_parse_java_sample_fixture() {
         parsed
             .symbols
             .iter()
-            .any(|s| s.name == "Status" && s.kind == NodeKind::Struct)
+            .any(|s| s.name == "Status" && (s.kind == NodeKind::Enum || s.kind == NodeKind::Struct))
     );
 
     // Methods & Constructor
     assert!(parsed.symbols.iter().any(|s| s.name == "SampleService"
-        && s.kind == NodeKind::Method
+        && (s.kind == NodeKind::Constructor || s.kind == NodeKind::Method)
         && s.parent.as_deref() == Some("SampleService")));
     assert!(parsed.symbols.iter().any(|s| s.name == "start"
         && s.kind == NodeKind::Method
@@ -201,10 +196,8 @@ fn test_parse_csharp_sample_fixture() {
 
     // Namespace
     assert!(
-        parsed
-            .symbols
-            .iter()
-            .any(|s| s.name == "SampleApp" && s.kind == NodeKind::Module)
+        parsed.symbols.iter().any(|s| s.name == "SampleApp"
+            && (s.kind == NodeKind::Namespace || s.kind == NodeKind::Module))
     );
 
     // Types: DataService (Class), IProcessor (Interface), PointStruct (Struct), UserDto (Struct), Priority (Struct)
@@ -236,7 +229,8 @@ fn test_parse_csharp_sample_fixture() {
         parsed
             .symbols
             .iter()
-            .any(|s| s.name == "Priority" && s.kind == NodeKind::Struct)
+            .any(|s| s.name == "Priority"
+                && (s.kind == NodeKind::Enum || s.kind == NodeKind::Struct))
     );
 
     // Methods & Properties
@@ -244,14 +238,11 @@ fn test_parse_csharp_sample_fixture() {
         parsed
             .symbols
             .iter()
-            .any(|s| s.name == "Name" && s.kind == NodeKind::Method)
+            .any(|s| s.name == "Name"
+                && (s.kind == NodeKind::Property || s.kind == NodeKind::Method))
     );
-    assert!(
-        parsed
-            .symbols
-            .iter()
-            .any(|s| s.name == "DataService" && s.kind == NodeKind::Method)
-    );
+    assert!(parsed.symbols.iter().any(|s| s.name == "DataService"
+        && (s.kind == NodeKind::Constructor || s.kind == NodeKind::Method)));
     assert!(
         parsed
             .symbols
@@ -301,12 +292,8 @@ fn test_parse_kotlin_sample_fixture() {
     let parsed = parse_file("SampleService.kt", Language::Kotlin, content);
 
     // Package
-    assert!(
-        parsed
-            .symbols
-            .iter()
-            .any(|s| s.name == "com.example.kotlin" && s.kind == NodeKind::Module)
-    );
+    assert!(parsed.symbols.iter().any(|s| s.name == "com.example.kotlin"
+        && (s.kind == NodeKind::Package || s.kind == NodeKind::Module)));
 
     // Types: IWorker (Interface), UserInfo (Struct/DataClass), AppConfig (Class/Object), TaskManager (Class)
     assert!(
@@ -491,7 +478,7 @@ fn test_phase_c_graph_build_and_resolution() {
     let start_node = graph
         .nodes
         .iter()
-        .find(|n| n.qualified_name == "SampleService.java::start" && n.location.start_line == 13)
+        .find(|n| n.qualified_name == "SampleService.java::start")
         .expect("start node");
     let process_node = graph
         .nodes

@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::process::Command;
 
@@ -35,14 +35,14 @@ pub fn analyze_git_history(repo_root: &Path, max_commits: Option<usize>) -> GitH
         .args([
             "log",
             &limit_arg,
-            "--name-only",
+            "--numstat",
             "--pretty=format:COMMIT:%H|%an|%at",
         ])
         .current_dir(repo_root)
         .output();
 
     let mut commits = Vec::new();
-    let mut file_map: HashMap<String, (usize, HashSet<String>)> = HashMap::new();
+    let mut file_map: HashMap<String, (usize, usize, usize, HashSet<String>)> = HashMap::new();
 
     if let Ok(out) = output {
         if out.status.success() {
@@ -71,11 +71,29 @@ pub fn analyze_git_history(repo_root: &Path, max_commits: Option<usize>) -> GitH
                         });
                     }
                 } else if let Some(ref mut c) = current_commit {
-                    let file_norm = trimmed.replace('\\', "/");
-                    c.files_changed.push(file_norm.clone());
-                    let entry = file_map.entry(file_norm).or_insert((0, HashSet::new()));
-                    entry.0 += 1;
-                    entry.1.insert(c.author.clone());
+                    let numstat_parts: Vec<&str> = trimmed.split_whitespace().collect();
+                    if numstat_parts.len() >= 3 {
+                        let adds = numstat_parts[0].parse::<usize>().unwrap_or(0);
+                        let dels = numstat_parts[1].parse::<usize>().unwrap_or(0);
+                        let file_path = numstat_parts[2..].join(" ");
+                        let file_norm = file_path.replace('\\', "/");
+                        c.files_changed.push(file_norm.clone());
+                        let entry = file_map
+                            .entry(file_norm)
+                            .or_insert((0, 0, 0, HashSet::new()));
+                        entry.0 += 1;
+                        entry.1 += adds;
+                        entry.2 += dels;
+                        entry.3.insert(c.author.clone());
+                    } else {
+                        let file_norm = trimmed.replace('\\', "/");
+                        c.files_changed.push(file_norm.clone());
+                        let entry = file_map
+                            .entry(file_norm)
+                            .or_insert((0, 0, 0, HashSet::new()));
+                        entry.0 += 1;
+                        entry.3.insert(c.author.clone());
+                    }
                 }
             }
             if let Some(c) = current_commit {
@@ -86,14 +104,14 @@ pub fn analyze_git_history(repo_root: &Path, max_commits: Option<usize>) -> GitH
 
     let mut files: Vec<FileChurn> = file_map
         .into_iter()
-        .map(|(file, (count, authors))| {
+        .map(|(file, (count, adds, dels, authors))| {
             let mut auth_vec: Vec<String> = authors.into_iter().collect();
             auth_vec.sort();
             FileChurn {
                 file,
                 commit_count: count,
-                additions: 0,
-                deletions: 0,
+                additions: adds,
+                deletions: dels,
                 authors: auth_vec,
             }
         })
@@ -113,5 +131,3 @@ pub fn analyze_git_history(repo_root: &Path, max_commits: Option<usize>) -> GitH
         commits,
     }
 }
-
-use std::collections::HashSet;

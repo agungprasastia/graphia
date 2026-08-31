@@ -25,12 +25,21 @@ impl ScopeKind {
         match kind {
             NodeKind::File => Self::File,
             NodeKind::Module => Self::Module,
+            NodeKind::Package => Self::Package,
+            NodeKind::Namespace => Self::Namespace,
             NodeKind::Function => Self::Function,
             NodeKind::Method => Self::Method,
+            NodeKind::Constructor => Self::Method,
             NodeKind::Class => Self::Class,
             NodeKind::Struct => Self::Struct,
             NodeKind::Trait => Self::Trait,
             NodeKind::Interface => Self::Interface,
+            NodeKind::Enum => Self::Class,
+            NodeKind::Variable
+            | NodeKind::Constant
+            | NodeKind::Field
+            | NodeKind::Property
+            | NodeKind::TypeAlias => Self::Block,
         }
     }
 }

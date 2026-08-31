@@ -257,6 +257,8 @@ pub enum Commands {
     },
     Mcp {
         repo: Option<PathBuf>,
+        #[arg(long)]
+        auto_index: bool,
     },
     Daemon {
         #[command(subcommand)]
@@ -1143,8 +1145,8 @@ pub fn run(cli: Cli) -> crate::error::Result<()> {
             }
             Ok(())
         }
-        Commands::Mcp { repo } => {
-            let mut server = crate::mcp::McpServer::new(repo);
+        Commands::Mcp { repo, auto_index } => {
+            let mut server = crate::mcp::McpServer::new_with_auto_index(repo, auto_index);
             let stdin = std::io::stdin().lock();
             let stdout = std::io::stdout().lock();
             server

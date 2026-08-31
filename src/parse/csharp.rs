@@ -55,6 +55,10 @@ impl LanguageAnalyzer for CSharpAnalyzer {
                 symbols: Vec::new(),
                 imports: Vec::new(),
                 calls: Vec::new(),
+                definitions: Vec::new(),
+                references: Vec::new(),
+                exports: Vec::new(),
+                type_references: Vec::new(),
             });
         };
         let root = tree.root_node();
@@ -97,11 +101,14 @@ pub fn parse_csharp(file: &str, root: &TsNode<'_>, source: &[u8]) -> ParsedFile 
                     let qualified = format!("{file}::{name}");
                     let loc = location_for_node(file, &node);
                     symbols.push(Symbol {
-                        kind: NodeKind::Module,
+                        kind: NodeKind::Namespace,
                         name: name.clone(),
                         qualified_name: qualified,
                         location: loc,
                         parent: parent_scope.clone(),
+                        visibility: crate::model::Visibility::Public,
+                        signature: None,
+                        container: parent_scope.clone(),
                     });
                     if let Some(body) = node.child_by_field_name("body") {
                         for child in children_vec(&body).into_iter().rev() {
@@ -139,6 +146,9 @@ pub fn parse_csharp(file: &str, root: &TsNode<'_>, source: &[u8]) -> ParsedFile 
                         qualified_name: qualified,
                         location: loc,
                         parent: parent_scope.clone(),
+                        visibility: crate::model::Visibility::Public,
+                        signature: None,
+                        container: parent_scope.clone(),
                     });
                     if let Some(body) = node.child_by_field_name("body") {
                         for child in children_vec(&body).into_iter().rev() {
@@ -148,7 +158,7 @@ pub fn parse_csharp(file: &str, root: &TsNode<'_>, source: &[u8]) -> ParsedFile 
                 }
                 continue;
             }
-            "struct_declaration" | "enum_declaration" => {
+            "struct_declaration" => {
                 if let Some(name_node) = node.child_by_field_name("name") {
                     let name = node_text(&name_node, source).to_string();
                     let qualified = format!("{file}::{name}");
@@ -159,6 +169,32 @@ pub fn parse_csharp(file: &str, root: &TsNode<'_>, source: &[u8]) -> ParsedFile 
                         qualified_name: qualified,
                         location: loc,
                         parent: parent_scope.clone(),
+                        visibility: crate::model::Visibility::Public,
+                        signature: None,
+                        container: parent_scope.clone(),
+                    });
+                    if let Some(body) = node.child_by_field_name("body") {
+                        for child in children_vec(&body).into_iter().rev() {
+                            stack.push((child, Some(name.clone())));
+                        }
+                    }
+                }
+                continue;
+            }
+            "enum_declaration" => {
+                if let Some(name_node) = node.child_by_field_name("name") {
+                    let name = node_text(&name_node, source).to_string();
+                    let qualified = format!("{file}::{name}");
+                    let loc = location_for_node(file, &node);
+                    symbols.push(Symbol {
+                        kind: NodeKind::Enum,
+                        name: name.clone(),
+                        qualified_name: qualified,
+                        location: loc,
+                        parent: parent_scope.clone(),
+                        visibility: crate::model::Visibility::Public,
+                        signature: None,
+                        container: parent_scope.clone(),
                     });
                     if let Some(body) = node.child_by_field_name("body") {
                         for child in children_vec(&body).into_iter().rev() {
@@ -179,6 +215,9 @@ pub fn parse_csharp(file: &str, root: &TsNode<'_>, source: &[u8]) -> ParsedFile 
                         qualified_name: qualified,
                         location: loc,
                         parent: parent_scope.clone(),
+                        visibility: crate::model::Visibility::Public,
+                        signature: None,
+                        container: parent_scope.clone(),
                     });
                     if let Some(body) = node.child_by_field_name("body") {
                         for child in children_vec(&body).into_iter().rev() {
@@ -199,6 +238,9 @@ pub fn parse_csharp(file: &str, root: &TsNode<'_>, source: &[u8]) -> ParsedFile 
                         qualified_name: qualified,
                         location: loc,
                         parent: parent_scope.clone(),
+                        visibility: crate::model::Visibility::Public,
+                        signature: None,
+                        container: parent_scope.clone(),
                     });
                     if let Some(body) = node.child_by_field_name("body") {
                         for child in children_vec(&body).into_iter().rev() {
@@ -224,6 +266,9 @@ pub fn parse_csharp(file: &str, root: &TsNode<'_>, source: &[u8]) -> ParsedFile 
                         qualified_name: qualified.clone(),
                         location: loc,
                         parent: parent_scope.clone(),
+                        visibility: crate::model::Visibility::Public,
+                        signature: None,
+                        container: parent_scope.clone(),
                     });
                     if let Some(body) = node.child_by_field_name("body") {
                         extract_calls_csharp(file, &body, source, &qualified, &mut calls);
@@ -231,7 +276,28 @@ pub fn parse_csharp(file: &str, root: &TsNode<'_>, source: &[u8]) -> ParsedFile 
                 }
                 continue;
             }
-            "constructor_declaration" | "destructor_declaration" => {
+            "constructor_declaration" => {
+                if let Some(name_node) = node.child_by_field_name("name") {
+                    let name = node_text(&name_node, source).to_string();
+                    let qualified = format!("{file}::{name}");
+                    let loc = location_for_node(file, &node);
+                    symbols.push(Symbol {
+                        kind: NodeKind::Constructor,
+                        name: name.clone(),
+                        qualified_name: qualified.clone(),
+                        location: loc,
+                        parent: parent_scope.clone(),
+                        visibility: crate::model::Visibility::Public,
+                        signature: None,
+                        container: parent_scope.clone(),
+                    });
+                    if let Some(body) = node.child_by_field_name("body") {
+                        extract_calls_csharp(file, &body, source, &qualified, &mut calls);
+                    }
+                }
+                continue;
+            }
+            "destructor_declaration" => {
                 if let Some(name_node) = node.child_by_field_name("name") {
                     let name = node_text(&name_node, source).to_string();
                     let qualified = format!("{file}::{name}");
@@ -242,6 +308,9 @@ pub fn parse_csharp(file: &str, root: &TsNode<'_>, source: &[u8]) -> ParsedFile 
                         qualified_name: qualified.clone(),
                         location: loc,
                         parent: parent_scope.clone(),
+                        visibility: crate::model::Visibility::Public,
+                        signature: None,
+                        container: parent_scope.clone(),
                     });
                     if let Some(body) = node.child_by_field_name("body") {
                         extract_calls_csharp(file, &body, source, &qualified, &mut calls);
@@ -255,13 +324,15 @@ pub fn parse_csharp(file: &str, root: &TsNode<'_>, source: &[u8]) -> ParsedFile 
                     let qualified = format!("{file}::{name}");
                     let loc = location_for_node(file, &node);
                     symbols.push(Symbol {
-                        kind: NodeKind::Method,
+                        kind: NodeKind::Property,
                         name: name.clone(),
                         qualified_name: qualified.clone(),
                         location: loc,
                         parent: parent_scope.clone(),
+                        visibility: crate::model::Visibility::Public,
+                        signature: None,
+                        container: parent_scope.clone(),
                     });
-                    // Extract calls inside accessors if any
                     extract_calls_csharp(file, &node, source, &qualified, &mut calls);
                 }
                 continue;
@@ -277,6 +348,9 @@ pub fn parse_csharp(file: &str, root: &TsNode<'_>, source: &[u8]) -> ParsedFile 
                         qualified_name: qualified.clone(),
                         location: loc,
                         parent: parent_scope.clone(),
+                        visibility: crate::model::Visibility::Private,
+                        signature: None,
+                        container: parent_scope.clone(),
                     });
                     if let Some(body) = node.child_by_field_name("body") {
                         extract_calls_csharp(file, &body, source, &qualified, &mut calls);
@@ -296,6 +370,10 @@ pub fn parse_csharp(file: &str, root: &TsNode<'_>, source: &[u8]) -> ParsedFile 
         symbols,
         imports,
         calls,
+        definitions: Vec::new(),
+        references: Vec::new(),
+        exports: Vec::new(),
+        type_references: Vec::new(),
     }
 }
 

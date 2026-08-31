@@ -28,6 +28,9 @@ fn build_mock_graph() -> Graph {
                 end_col: 2,
             },
             language: Some(graphia::model::Language::Rust),
+            visibility: graphia::model::Visibility::Public,
+            signature: None,
+            container: None,
         },
         Node {
             id: NodeId(2),
@@ -43,6 +46,9 @@ fn build_mock_graph() -> Graph {
                 end_col: 2,
             },
             language: Some(graphia::model::Language::Rust),
+            visibility: graphia::model::Visibility::Public,
+            signature: None,
+            container: None,
         },
         Node {
             id: NodeId(3),
@@ -58,6 +64,9 @@ fn build_mock_graph() -> Graph {
                 end_col: 2,
             },
             language: Some(graphia::model::Language::Rust),
+            visibility: graphia::model::Visibility::Public,
+            signature: None,
+            container: None,
         },
         Node {
             id: NodeId(4),
@@ -73,21 +82,27 @@ fn build_mock_graph() -> Graph {
                 end_col: 2,
             },
             language: Some(graphia::model::Language::Rust),
+            visibility: graphia::model::Visibility::Public,
+            signature: None,
+            container: None,
         },
         Node {
             id: NodeId(5),
             kind: NodeKind::Function,
             name: "test_calculate_total".to_string(),
-            qualified_name: "tests::test_calculate_total".to_string(),
-            file: "tests/billing_test.rs".to_string(),
+            qualified_name: "order_test::test_calculate_total".to_string(),
+            file: "tests/order_test.rs".to_string(),
             location: SourceLocation {
-                file: "tests/billing_test.rs".to_string(),
-                start_line: 4,
+                file: "tests/order_test.rs".to_string(),
+                start_line: 5,
                 start_col: 1,
                 end_line: 12,
                 end_col: 2,
             },
             language: Some(graphia::model::Language::Rust),
+            visibility: graphia::model::Visibility::Public,
+            signature: None,
+            container: None,
         },
     ];
 
@@ -519,6 +534,7 @@ fn test_cli_mcp_invocation() {
     let cli = Cli {
         command: Commands::Mcp {
             repo: Some(repo.path().to_path_buf()),
+            auto_index: true,
         },
     };
     assert!(matches!(cli.command, Commands::Mcp { .. }));

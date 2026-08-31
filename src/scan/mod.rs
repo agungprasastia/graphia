@@ -1,3 +1,4 @@
+use std::fs;
 use std::path::{Path, PathBuf};
 
 use walkdir::WalkDir;
@@ -5,7 +6,7 @@ use walkdir::WalkDir;
 use crate::error::{GraphiaError, Result};
 use crate::model::Language;
 
-const EXCLUDE_DIRS: &[&str] = &[
+pub const EXCLUDE_DIRS: &[&str] = &[
     ".git",
     ".graphia",
     "target",
@@ -25,6 +26,19 @@ const EXCLUDE_DIRS: &[&str] = &[
     ".eggs",
 ];
 
+pub fn is_excluded_path(path: &Path) -> bool {
+    for component in path.components() {
+        let name = component.as_os_str().to_string_lossy();
+        if EXCLUDE_DIRS.contains(&name.as_ref()) {
+            return true;
+        }
+        if name.starts_with(".tmp-") || name.ends_with(".swp") || name.ends_with('~') {
+            return true;
+        }
+    }
+    false
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ScannedFile {
     pub relative_path: String,
@@ -34,6 +48,11 @@ pub struct ScannedFile {
 
 #[must_use]
 pub fn detect_language(path: &Path) -> Option<Language> {
+    detect_language_with_content(path, None)
+}
+
+#[must_use]
+pub fn detect_language_with_content(path: &Path, content: Option<&[u8]>) -> Option<Language> {
     let ext = path.extension()?.to_str()?;
     match ext.to_ascii_lowercase().as_str() {
         "rs" => Some(Language::Rust),
@@ -44,7 +63,20 @@ pub fn detect_language(path: &Path) -> Option<Language> {
         "jsx" => Some(Language::Jsx),
         "go" => Some(Language::Go),
         "c" => Some(Language::C),
-        "h" => Some(Language::C),
+        "h" => {
+            if let Some(bytes) = content {
+                if is_cpp_header_content(bytes) {
+                    return Some(Language::Cpp);
+                }
+            } else if path.exists() {
+                if let Ok(file_bytes) = fs::read(path) {
+                    if is_cpp_header_content(&file_bytes) {
+                        return Some(Language::Cpp);
+                    }
+                }
+            }
+            Some(Language::C)
+        }
         "cpp" | "cc" | "cxx" | "hpp" | "hxx" | "hh" => Some(Language::Cpp),
         "java" => Some(Language::Java),
         "cs" => Some(Language::CSharp),
@@ -55,6 +87,28 @@ pub fn detect_language(path: &Path) -> Option<Language> {
         "swift" => Some(Language::Swift),
         _ => None,
     }
+}
+
+fn is_cpp_header_content(bytes: &[u8]) -> bool {
+    let inspect_len = bytes.len().min(4096);
+    if let Ok(text) = std::str::from_utf8(&bytes[..inspect_len]) {
+        if text.contains("class ")
+            || text.contains("namespace ")
+            || text.contains("template<")
+            || text.contains("template <")
+            || text.contains("public:")
+            || text.contains("private:")
+            || text.contains("protected:")
+            || text.contains("std::")
+            || text.contains("using namespace ")
+            || text.contains("#include <iostream>")
+            || text.contains("#include <vector>")
+            || text.contains("#include <string>")
+        {
+            return true;
+        }
+    }
+    false
 }
 
 fn is_excluded_dir(name: &str) -> bool {
@@ -69,11 +123,6 @@ fn normalize_relative(relative: &Path) -> String {
         .join("/")
 }
 
-/// Scan supported source files in repository.
-///
-/// # Errors
-///
-/// Returns an error when repository canonicalization fails.
 pub fn scan_repo(root: &Path) -> Result<Vec<ScannedFile>> {
     let canonical_root = root.canonicalize().map_err(|e| GraphiaError::Io {
         path: root.to_path_buf(),
@@ -118,7 +167,7 @@ pub fn scan_repo(root: &Path) -> Result<Vec<ScannedFile>> {
         if relative_path.is_empty() {
             continue;
         }
-        let language = detect_language(Path::new(&relative_path));
+        let language = detect_language(&abs);
         files.push(ScannedFile {
             relative_path,
             absolute_path: abs,

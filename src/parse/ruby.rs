@@ -55,6 +55,10 @@ impl LanguageAnalyzer for RubyAnalyzer {
                 symbols: Vec::new(),
                 imports: Vec::new(),
                 calls: Vec::new(),
+                definitions: Vec::new(),
+                references: Vec::new(),
+                exports: Vec::new(),
+                type_references: Vec::new(),
             });
         };
         let root = tree.root_node();
@@ -105,6 +109,9 @@ pub fn parse_ruby(file: &str, root: &TsNode<'_>, source: &[u8]) -> ParsedFile {
                         qualified_name: qualified,
                         location: loc,
                         parent: parent_scope.clone(),
+                        visibility: crate::model::Visibility::Public,
+                        signature: None,
+                        container: parent_scope.clone(),
                     });
 
                     if let Some(body) = node.child_by_field_name("body") {
@@ -129,6 +136,9 @@ pub fn parse_ruby(file: &str, root: &TsNode<'_>, source: &[u8]) -> ParsedFile {
                         qualified_name: qualified,
                         location: loc,
                         parent: parent_scope.clone(),
+                        visibility: crate::model::Visibility::Public,
+                        signature: None,
+                        container: parent_scope.clone(),
                     });
 
                     if let Some(body) = node.child_by_field_name("body") {
@@ -158,6 +168,9 @@ pub fn parse_ruby(file: &str, root: &TsNode<'_>, source: &[u8]) -> ParsedFile {
                         qualified_name: qualified.clone(),
                         location: loc,
                         parent: parent_scope.clone(),
+                        visibility: crate::model::Visibility::Public,
+                        signature: None,
+                        container: parent_scope.clone(),
                     });
 
                     if let Some(body) = node.child_by_field_name("body") {
@@ -200,6 +213,10 @@ pub fn parse_ruby(file: &str, root: &TsNode<'_>, source: &[u8]) -> ParsedFile {
         symbols,
         imports,
         calls,
+        definitions: Vec::new(),
+        references: Vec::new(),
+        exports: Vec::new(),
+        type_references: Vec::new(),
     }
 }
 

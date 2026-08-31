@@ -96,7 +96,9 @@ impl CandidateSelector {
         }
 
         // Group by highest priority (lowest priority number)
-        let min_priority = self.candidates.iter().map(|c| c.priority).min().unwrap();
+        let Some(min_priority) = self.candidates.iter().map(|c| c.priority).min() else {
+            return ResolutionState::Unresolved;
+        };
         let top_candidates: Vec<_> = self
             .candidates
             .iter()

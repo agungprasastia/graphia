@@ -55,6 +55,10 @@ impl LanguageAnalyzer for KotlinAnalyzer {
                 symbols: Vec::new(),
                 imports: Vec::new(),
                 calls: Vec::new(),
+                definitions: Vec::new(),
+                references: Vec::new(),
+                exports: Vec::new(),
+                type_references: Vec::new(),
             });
         };
         let root = tree.root_node();
@@ -99,11 +103,14 @@ pub fn parse_kotlin(file: &str, root: &TsNode<'_>, source: &[u8]) -> ParsedFile 
                         let qualified = format!("{file}::{name}");
                         let loc = location_for_node(file, &node);
                         symbols.push(Symbol {
-                            kind: NodeKind::Module,
+                            kind: NodeKind::Package,
                             name,
                             qualified_name: qualified,
                             location: loc,
                             parent: None,
+                            visibility: crate::model::Visibility::Public,
+                            signature: None,
+                            container: None,
                         });
                         break;
                     }
@@ -116,11 +123,14 @@ pub fn parse_kotlin(file: &str, root: &TsNode<'_>, source: &[u8]) -> ParsedFile 
                         let qualified = format!("{file}::{pkg}");
                         let loc = location_for_node(file, &node);
                         symbols.push(Symbol {
-                            kind: NodeKind::Module,
+                            kind: NodeKind::Package,
                             name: pkg,
                             qualified_name: qualified,
                             location: loc,
                             parent: None,
+                            visibility: crate::model::Visibility::Public,
+                            signature: None,
+                            container: None,
                         });
                     }
                 }
@@ -167,6 +177,9 @@ pub fn parse_kotlin(file: &str, root: &TsNode<'_>, source: &[u8]) -> ParsedFile 
                         qualified_name: qualified,
                         location: loc,
                         parent: parent_scope.clone(),
+                        visibility: crate::model::Visibility::Public,
+                        signature: None,
+                        container: parent_scope.clone(),
                     });
 
                     // Search for class_body
@@ -199,6 +212,9 @@ pub fn parse_kotlin(file: &str, root: &TsNode<'_>, source: &[u8]) -> ParsedFile 
                         qualified_name: qualified,
                         location: loc,
                         parent: parent_scope.clone(),
+                        visibility: crate::model::Visibility::Public,
+                        signature: None,
+                        container: parent_scope.clone(),
                     });
                     for child in children_vec(&node) {
                         if child.kind() == "class_body" {
@@ -233,6 +249,9 @@ pub fn parse_kotlin(file: &str, root: &TsNode<'_>, source: &[u8]) -> ParsedFile 
                         qualified_name: qualified.clone(),
                         location: loc,
                         parent: parent_scope.clone(),
+                        visibility: crate::model::Visibility::Public,
+                        signature: None,
+                        container: parent_scope.clone(),
                     });
                     for child in children_vec(&node) {
                         if child.kind() == "function_body" || child.kind() == "block" {
@@ -243,21 +262,18 @@ pub fn parse_kotlin(file: &str, root: &TsNode<'_>, source: &[u8]) -> ParsedFile 
                 continue;
             }
             "secondary_constructor" | "primary_constructor" => {
-                // constructor(...)
-                let is_method = parent_scope.is_some();
                 let name = parent_scope.clone().unwrap_or_else(|| "constructor".into());
                 let qualified = format!("{file}::{name}");
                 let loc = location_for_node(file, &node);
                 symbols.push(Symbol {
-                    kind: if is_method {
-                        NodeKind::Method
-                    } else {
-                        NodeKind::Function
-                    },
+                    kind: NodeKind::Constructor,
                     name,
                     qualified_name: qualified.clone(),
                     location: loc,
                     parent: parent_scope.clone(),
+                    visibility: crate::model::Visibility::Public,
+                    signature: None,
+                    container: parent_scope.clone(),
                 });
                 extract_calls_kotlin(file, &node, source, &qualified, &mut calls);
                 continue;
@@ -274,6 +290,10 @@ pub fn parse_kotlin(file: &str, root: &TsNode<'_>, source: &[u8]) -> ParsedFile 
         symbols,
         imports,
         calls,
+        definitions: Vec::new(),
+        references: Vec::new(),
+        exports: Vec::new(),
+        type_references: Vec::new(),
     }
 }
 

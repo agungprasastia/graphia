@@ -13,12 +13,12 @@ use crate::parser::parse_bytes;
 use crate::scan::{ScannedFile, scan_repo};
 
 const MAGIC: &[u8; 4] = b"GRPH";
-const VERSION: u32 = 2;
+const VERSION: u32 = 3;
 const ENDIAN_MARKER: u32 = 0x0102_0304;
 const HEADER_SIZE: usize = 96;
 const MIN_NODE_RECORD_SIZE: usize = 42;
 const MIN_EDGE_RECORD_SIZE: usize = 27;
-pub(crate) const FILE_SCHEMA_VERSION: u32 = 1;
+pub(crate) const FILE_SCHEMA_VERSION: u32 = 2;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct SerializedGraph {
@@ -517,9 +517,12 @@ fn write_node(buffer: &mut Vec<u8>, node: &Node) -> Result<()> {
     write_u64(buffer, node.id.0)?;
     buffer.push(node.kind.code());
     buffer.push(node.language.map_or(0, Language::code));
+    buffer.push(node.visibility.code());
     write_string(buffer, &node.name)?;
     write_string(buffer, &node.qualified_name)?;
     write_string(buffer, &node.file)?;
+    write_optional_string(buffer, node.signature.as_deref())?;
+    write_optional_string(buffer, node.container.as_deref())?;
     write_location(buffer, &node.location)
 }
 
@@ -644,14 +647,25 @@ fn read_node(cursor: &mut Cursor<&[u8]>) -> Result<Node> {
     } else {
         Some(Language::from_code(language_code).ok_or_else(|| storage_error("invalid language"))?)
     };
+    let visibility = crate::model::Visibility::from_code(read_byte(cursor)?)
+        .unwrap_or(crate::model::Visibility::Unknown);
+    let name = read_string(cursor)?;
+    let qualified_name = read_string(cursor)?;
+    let file = read_string(cursor)?;
+    let signature = read_optional_string(cursor)?;
+    let container = read_optional_string(cursor)?;
+    let location = read_location(cursor)?;
     Ok(Node {
         id,
         kind,
         language,
-        name: read_string(cursor)?,
-        qualified_name: read_string(cursor)?,
-        file: read_string(cursor)?,
-        location: read_location(cursor)?,
+        visibility,
+        name,
+        qualified_name,
+        file,
+        signature,
+        container,
+        location,
     })
 }
 
@@ -711,22 +725,21 @@ mod tests {
         Graph::new(
             vec![Node {
                 id: crate::graph::stable_node_id(&crate::model::NodeIdentity::new(
+                    Some(Language::Rust),
                     "lib.rs",
                     NodeKind::Function,
                     "lib.rs::run",
-                    &SourceLocation {
-                        file: "lib.rs".to_string(),
-                        start_line: 1,
-                        start_col: 1,
-                        end_line: 1,
-                        end_col: 4,
-                    },
+                    None,
+                    None,
                 )),
                 kind: NodeKind::Function,
                 language: Some(Language::Rust),
+                visibility: crate::model::Visibility::Public,
                 name: "run".to_string(),
                 qualified_name: "lib.rs::run".to_string(),
                 file: "lib.rs".to_string(),
+                signature: None,
+                container: None,
                 location: SourceLocation {
                     file: "lib.rs".to_string(),
                     start_line: 1,
@@ -749,7 +762,7 @@ mod tests {
         let dir = tempdir().expect("tempdir");
         let path = dir.path().join("index.bin");
         save_graph_binary(&Graph::new(Vec::new(), Vec::new()), &path).expect("write index");
-        for (offset, value) in [(4, 3_u32), (8, 0_u32), (12, 95_u32)] {
+        for (offset, value) in [(4, 999_u32), (8, 0_u32), (12, 95_u32)] {
             let mut bytes = fs::read(&path).expect("read index");
             bytes[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
             rewrite_checksum(&mut bytes);
@@ -801,7 +814,7 @@ mod tests {
         }
         save_graph_binary(&sample_graph(), &path).expect("rewrite index");
         let mut bytes = fs::read(&path).expect("read index");
-        bytes[110] = 255;
+        bytes[111] = 255;
         rewrite_checksum(&mut bytes);
         fs::write(&path, bytes).expect("corrupt utf8");
         assert!(matches!(

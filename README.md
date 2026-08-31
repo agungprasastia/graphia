@@ -74,20 +74,20 @@
 |---|---|---|---|
 | **Rust** | `.rs` | Structs, Enums, Traits, Functions, Impls, Modules | `use`, `mod`, `pub use` |
 | **Python** | `.py` | Classes, Functions, Methods, Modules | `import`, `from ... import` |
-| **TypeScript** | `.ts`, `.mts`, `.cts` | Interfaces, Classes, Functions, Methods, Types | `import`, `require`, `export` |
+| **TypeScript** | `.ts`, `.mts`, `.cts` | Interfaces, Classes, Functions, Methods, TypeAliases, Variables | `import`, `require`, `export` |
 | **JavaScript** | `.js`, `.mjs`, `.cjs` | Classes, Functions, Methods, Variables | `import`, `require`, `export` |
-| **TSX** | `.tsx` | React Components, Interfaces, Classes, Hooks | `import`, `export` |
+| **TSX** | `.tsx` | React Components, Interfaces, Classes, Functions | `import`, `export` |
 | **JSX** | `.jsx` | React Components, Classes, Functions | `import`, `export` |
-| **Go** | `.go` | Packages, Structs, Interfaces, Receiver Methods | `import` declarations |
-| **C** | `.c`, `.h` | Structs, Enums, Functions, Headers | `#include` directives |
-| **C++** | `.cpp`, `.cc`, `.cxx`, `.hpp`, `.hxx`, `.hh` | Namespaces, Classes, Structs, Methods | `#include` directives |
-| **Java** | `.java` | Packages, Classes, Interfaces, Records, Enums | `import` statements |
-| **C#** | `.cs` | Namespaces, Classes, Structs, Records, Interfaces | `using` directives |
-| **Kotlin** | `.kt`, `.kts` | Packages, Classes, Objects, Interfaces, Functions | `import` directives |
+| **Go** | `.go` | Packages, Structs, Interfaces, Receiver Methods, TypeAliases | `import` declarations |
+| **C** | `.c`, `.h` | Structs, Enums, Functions, TypeAliases, Headers | `#include` directives |
+| **C++** | `.cpp`, `.cc`, `.cxx`, `.hpp`, `.hxx`, `.hh`, `.h` | Namespaces, Classes, Structs, TypeAliases, Methods, Constructors, Destructors | `#include` directives |
+| **Java** | `.java` | Packages, Classes, Interfaces, Structs/Records, Enums, Constructors, Methods | `import` statements, `package` |
+| **C#** | `.cs` | Namespaces, Classes, Structs, Enums, Interfaces, Properties, Constructors | `using` directives, `namespace` |
+| **Kotlin** | `.kt`, `.kts` | Packages, Classes, Objects, Interfaces, Structs/DataClasses, Constructors, Functions | `import`, `package` |
 | **Zig** | `.zig` | Structs, Enums, Functions, Constants | `@import(...)` |
-| **PHP** | `.php`, `.phtml`, `.php3..7`, `.phps` | Namespaces, Classes, Traits, Interfaces | `use` declarations |
+| **PHP** | `.php`, `.phtml`, `.php3..7`, `.phps` | Namespaces, Classes, Traits, Interfaces, Enums, Functions, Methods | `use`, `namespace` |
 | **Ruby** | `.rb`, `.erb` | Modules, Classes, Methods, Singleton Methods | `require`, `require_relative` |
-| **Swift** | `.swift` | Protocols, Classes, Structs, Extensions, Enums | `import` statements |
+| **Swift** | `.swift` | Protocols, Classes, Structs, Enums, Initializers (`init`), Functions | `import` statements |
 
 ---
 
@@ -197,8 +197,11 @@ graphia context --changed
 Graphia includes a native, read-only MCP server over standard input/output (`stdio`):
 
 ```bash
-# Start MCP server
+# Start MCP server (errors if repository is not indexed yet)
 graphia mcp --repo .
+
+# Start MCP server with explicit auto-indexing enabled
+graphia mcp --repo . --auto-index
 ```
 
 #### MCP Tool Roster:
@@ -259,16 +262,16 @@ Measurements taken on representative multi-language repository fixtures (AMD Ryz
 
 | Benchmark Stage | Small (3 files, 12 nodes) | Medium (12 files, 48 nodes) | Large (48 files, 192 nodes) |
 |---|---|---|---|
-| **Scan Latency** | 0.38 ms | 0.27 ms | 1.99 ms |
-| **Parse & Extract (16 Langs)** | 3.56 ms | 23.07 ms | 46.84 ms |
-| **Graph Resolution** | 2.92 ms | 3.89 ms | 21.10 ms |
-| **Exact Query** | 4.35 µs | 1.14 µs | 3.69 µs |
-| **BFS Path Traversal** | 8.99 µs | 5.08 µs | 8.60 µs |
-| **Structural Search** | 51.72 µs | 138.34 µs | 1.24 ms |
-| **Impact Traversal** | 62.03 µs | 290.57 µs | 772.51 µs |
-| **AI Context Generation** | 196.73 µs | 407.02 µs | 950.54 µs |
-| **MCP Tool Invocation** | 67.11 µs | 143.20 µs | 546.89 µs |
-| **Daemon Incremental Sync** | 10.60 µs | 49.93 µs | 152.06 µs |
+| **Scan Latency** | 0.54 ms | 0.45 ms | 1.06 ms |
+| **Parse & Extract (16 Langs)** | 38.71 ms | 45.48 ms | 65.15 ms |
+| **Graph Resolution** | 1.46 ms | 0.89 ms | 1.19 ms |
+| **Exact Query** | 0.48 µs | 0.35 µs | 0.11 µs |
+| **BFS Path Traversal** | 1.46 µs | 0.78 µs | 0.59 µs |
+| **Structural Search** | 27.05 µs | 36.19 µs | 170.50 µs |
+| **Impact Traversal** | 26.00 µs | 34.27 µs | 128.23 µs |
+| **AI Context Generation** | 232.33 µs | 119.84 µs | 224.62 µs |
+| **MCP Tool Invocation** | 11.06 µs | 26.71 µs | 102.70 µs |
+| **Live Snapshot Publish** | 5.81 µs | 17.15 µs | 87.35 µs |
 
 ---
 

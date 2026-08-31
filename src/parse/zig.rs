@@ -55,6 +55,10 @@ impl LanguageAnalyzer for ZigAnalyzer {
                 symbols: Vec::new(),
                 imports: Vec::new(),
                 calls: Vec::new(),
+                definitions: Vec::new(),
+                references: Vec::new(),
+                exports: Vec::new(),
+                type_references: Vec::new(),
             });
         };
         let root = tree.root_node();
@@ -115,6 +119,9 @@ pub fn parse_zig(file: &str, root: &TsNode<'_>, source: &[u8]) -> ParsedFile {
                         qualified_name: qualified.clone(),
                         location: loc,
                         parent: parent_scope.clone(),
+                        visibility: crate::model::Visibility::Public,
+                        signature: None,
+                        container: parent_scope.clone(),
                     });
 
                     // Search for function body or block
@@ -175,12 +182,20 @@ pub fn parse_zig(file: &str, root: &TsNode<'_>, source: &[u8]) -> ParsedFile {
                     {
                         let qualified = format!("{file}::{name}");
                         let loc = location_for_node(file, &node);
+                        let kind = if full_text.contains("enum") {
+                            NodeKind::Enum
+                        } else {
+                            NodeKind::Struct
+                        };
                         symbols.push(Symbol {
-                            kind: NodeKind::Struct,
+                            kind,
                             name: name.clone(),
                             qualified_name: qualified,
                             location: loc,
                             parent: parent_scope.clone(),
+                            visibility: crate::model::Visibility::Public,
+                            signature: None,
+                            container: parent_scope.clone(),
                         });
 
                         // Push inner children with this struct name as parent
@@ -204,6 +219,10 @@ pub fn parse_zig(file: &str, root: &TsNode<'_>, source: &[u8]) -> ParsedFile {
         symbols,
         imports,
         calls,
+        definitions: Vec::new(),
+        references: Vec::new(),
+        exports: Vec::new(),
+        type_references: Vec::new(),
     }
 }
 

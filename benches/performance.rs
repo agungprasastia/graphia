@@ -353,7 +353,7 @@ fn measure_dataset(dataset: Dataset, fixture: &TempDir) {
         ("context_generation", context_gen),
         ("mcp_tool_call", mcp_tool_call),
         ("mcp_serialization", mcp_serde),
-        ("daemon_live_update", daemon_update),
+        ("snapshot_publish", daemon_update),
         ("flow_query", flow_query),
         ("boundary_check", boundary_check),
         ("graph_diff", graph_diff),

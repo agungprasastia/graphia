@@ -13,8 +13,53 @@ use crate::intelligence::{
 use crate::model::{Node, NodeKind};
 use crate::query::{QueryIndex, TraversalLimits};
 
-/// Return the definitions and JSON input schemas for all 11 MCP tools.
-#[must_use]
+pub const MAX_RESULTS: usize = 500;
+pub const MAX_DEPTH: usize = 20;
+pub const MAX_CONTEXT_BUDGET: usize = 100_000;
+
+fn parse_checked_limit(
+    args: &serde_json::Map<String, serde_json::Value>,
+    default: usize,
+) -> Result<usize> {
+    if let Some(val) = args.get("limit") {
+        let n = val.as_u64().ok_or_else(|| {
+            McpError::InvalidParams("Argument 'limit' must be an integer".to_string())
+        })?;
+        let n_usize = usize::try_from(n).map_err(|_| {
+            McpError::InvalidParams("Argument 'limit' exceeds platform limits".to_string())
+        })?;
+        if n_usize > MAX_RESULTS {
+            return Err(McpError::InvalidParams(format!(
+                "Argument 'limit' exceeds server maximum {MAX_RESULTS}"
+            )));
+        }
+        Ok(n_usize)
+    } else {
+        Ok(default)
+    }
+}
+
+fn parse_checked_depth(
+    args: &serde_json::Map<String, serde_json::Value>,
+    default: usize,
+) -> Result<usize> {
+    if let Some(val) = args.get("depth") {
+        let n = val.as_u64().ok_or_else(|| {
+            McpError::InvalidParams("Argument 'depth' must be an integer".to_string())
+        })?;
+        let n_usize = usize::try_from(n).map_err(|_| {
+            McpError::InvalidParams("Argument 'depth' exceeds platform limits".to_string())
+        })?;
+        if n_usize > MAX_DEPTH {
+            return Err(McpError::InvalidParams(format!(
+                "Argument 'depth' exceeds server maximum {MAX_DEPTH}"
+            )));
+        }
+        Ok(n_usize)
+    } else {
+        Ok(default)
+    }
+}
 pub fn get_tool_definitions() -> Vec<Tool> {
     vec![
         Tool {
@@ -309,10 +354,11 @@ fn tool_search_symbol(
         .and_then(|v| v.as_str())
         .map(ToString::to_string);
 
-    let limit = args
-        .get("limit")
-        .and_then(serde_json::Value::as_u64)
-        .map(|v| v as usize);
+    let limit = if args.contains_key("limit") {
+        Some(parse_checked_limit(args, 20)?)
+    } else {
+        None
+    };
 
     let options = SearchOptions {
         query: query.to_string(),
@@ -398,15 +444,8 @@ fn tool_find_callers(
         .and_then(|v| v.as_str())
         .ok_or_else(|| McpError::InvalidParams("Missing 'symbol' argument".to_string()))?;
 
-    let depth = args
-        .get("depth")
-        .and_then(serde_json::Value::as_u64)
-        .map_or(1, |v| v as usize);
-
-    let limit = args
-        .get("limit")
-        .and_then(serde_json::Value::as_u64)
-        .map_or(50, |v| v as usize);
+    let depth = parse_checked_depth(args, 1)?;
+    let limit = parse_checked_limit(args, 50)?;
 
     let options = NeighborhoodOptions {
         target: symbol.to_string(),
@@ -438,15 +477,8 @@ fn tool_find_callees(
         .and_then(|v| v.as_str())
         .ok_or_else(|| McpError::InvalidParams("Missing 'symbol' argument".to_string()))?;
 
-    let depth = args
-        .get("depth")
-        .and_then(serde_json::Value::as_u64)
-        .map_or(1, |v| v as usize);
-
-    let limit = args
-        .get("limit")
-        .and_then(serde_json::Value::as_u64)
-        .map_or(50, |v| v as usize);
+    let depth = parse_checked_depth(args, 1)?;
+    let limit = parse_checked_limit(args, 50)?;
 
     let options = NeighborhoodOptions {
         target: symbol.to_string(),
@@ -478,10 +510,7 @@ fn tool_find_references(
         .and_then(|v| v.as_str())
         .ok_or_else(|| McpError::InvalidParams("Missing 'symbol' argument".to_string()))?;
 
-    let limit = args
-        .get("limit")
-        .and_then(serde_json::Value::as_u64)
-        .map_or(50, |v| v as usize);
+    let limit = parse_checked_limit(args, 50)?;
 
     let options = NeighborhoodOptions {
         target: symbol.to_string(),
@@ -521,10 +550,7 @@ fn tool_dependency_path(
         .and_then(|v| v.as_str())
         .ok_or_else(|| McpError::InvalidParams("Missing 'to' argument".to_string()))?;
 
-    let max_depth = args
-        .get("max_depth")
-        .and_then(serde_json::Value::as_u64)
-        .map_or(50, |v| v as usize);
+    let max_depth = parse_checked_depth(args, 20)?;
 
     let index = QueryIndex::new(graph);
     let from_matches = index.find(graph, from);
@@ -592,15 +618,8 @@ fn tool_neighborhood(
         .and_then(|v| v.as_str())
         .ok_or_else(|| McpError::InvalidParams("Missing 'symbol' argument".to_string()))?;
 
-    let depth = args
-        .get("depth")
-        .and_then(serde_json::Value::as_u64)
-        .map_or(1, |v| v as usize);
-
-    let limit = args
-        .get("limit")
-        .and_then(serde_json::Value::as_u64)
-        .map_or(50, |v| v as usize);
+    let depth = parse_checked_depth(args, 1)?;
+    let limit = parse_checked_limit(args, 50)?;
 
     let options = NeighborhoodOptions {
         target: symbol.to_string(),
@@ -629,10 +648,7 @@ fn tool_impact(
         .and_then(|v| v.as_str())
         .ok_or_else(|| McpError::InvalidParams("Missing 'symbol' argument".to_string()))?;
 
-    let depth = args
-        .get("depth")
-        .and_then(serde_json::Value::as_u64)
-        .map_or(3, |v| v as usize);
+    let depth = parse_checked_depth(args, 3)?;
 
     let Some(impact) = analyze_impact(graph, symbol, depth) else {
         return Ok(CallToolResult::error(format!(
@@ -695,10 +711,21 @@ fn tool_context(
         .and_then(serde_json::Value::as_bool)
         .unwrap_or(false);
 
-    let budget = args
-        .get("token_budget")
-        .and_then(serde_json::Value::as_u64)
-        .map(|v| v as usize);
+    let budget = if let Some(val) = args.get("token_budget").or_else(|| args.get("budget")) {
+        let b = val
+            .as_u64()
+            .ok_or_else(|| McpError::InvalidParams("Budget must be an integer".to_string()))?;
+        let b_usize = usize::try_from(b)
+            .map_err(|_| McpError::InvalidParams("Budget exceeds platform limits".to_string()))?;
+        if b_usize > MAX_CONTEXT_BUDGET {
+            return Err(McpError::InvalidParams(format!(
+                "Budget exceeds server maximum {MAX_CONTEXT_BUDGET}"
+            )));
+        }
+        Some(b_usize)
+    } else {
+        None
+    };
 
     let budget_type = args.get("budget_type").and_then(|v| v.as_str()).map_or(
         BudgetValueType::ApproxTokens,
@@ -709,15 +736,8 @@ fn tool_context(
         },
     );
 
-    let max_depth = args
-        .get("depth")
-        .and_then(serde_json::Value::as_u64)
-        .map_or(3, |v| v as usize);
-
-    let max_candidates = args
-        .get("limit")
-        .and_then(serde_json::Value::as_u64)
-        .map_or(100, |v| v as usize);
+    let max_depth = parse_checked_depth(args, 3)?;
+    let max_candidates = parse_checked_limit(args, 100)?;
 
     let req = ContextRequest {
         symbol,
@@ -741,23 +761,26 @@ fn tool_context(
 mod tests {
     use super::super::protocol::Content;
     use super::*;
-    use crate::model::{Confidence, Edge, EdgeId, EdgeKind, NodeId, SourceLocation};
+    use crate::model::{Confidence, Edge, EdgeId, EdgeKind, NodeId};
 
     fn sample_node(id: u64, name: &str, kind: NodeKind) -> Node {
         Node {
-            id: NodeId(id),
+            id: crate::model::NodeId(id),
             kind,
             name: name.to_string(),
-            qualified_name: format!("pkg::{name}"),
-            file: "pkg/mod.rs".to_string(),
-            location: SourceLocation {
-                file: "pkg/mod.rs".to_string(),
-                start_line: 10,
+            qualified_name: name.to_string(),
+            file: "test.rs".to_string(),
+            location: crate::model::SourceLocation {
+                file: "test.rs".to_string(),
+                start_line: 1,
                 start_col: 1,
-                end_line: 20,
-                end_col: 2,
+                end_line: 5,
+                end_col: 1,
             },
             language: Some(crate::model::Language::Rust),
+            visibility: crate::model::Visibility::Public,
+            signature: None,
+            container: None,
         }
     }
 

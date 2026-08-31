@@ -55,6 +55,10 @@ impl LanguageAnalyzer for SwiftAnalyzer {
                 symbols: Vec::new(),
                 imports: Vec::new(),
                 calls: Vec::new(),
+                definitions: Vec::new(),
+                references: Vec::new(),
+                exports: Vec::new(),
+                type_references: Vec::new(),
             });
         };
         let root = tree.root_node();
@@ -105,12 +109,10 @@ pub fn parse_swift(file: &str, root: &TsNode<'_>, source: &[u8]) -> ParsedFile {
             }
             "class_declaration" | "struct_declaration" | "enum_declaration" => {
                 let text = node_text(&node, source);
-                let kind = if text.trim_start().starts_with("struct")
-                    || text.contains("struct ")
-                    || text.trim_start().starts_with("enum")
-                    || text.contains("enum ")
-                {
+                let kind = if text.trim_start().starts_with("struct") || text.contains("struct ") {
                     NodeKind::Struct
+                } else if text.trim_start().starts_with("enum") || text.contains("enum ") {
+                    NodeKind::Enum
                 } else {
                     NodeKind::Class
                 };
@@ -135,6 +137,9 @@ pub fn parse_swift(file: &str, root: &TsNode<'_>, source: &[u8]) -> ParsedFile {
                         qualified_name: qualified,
                         location: loc,
                         parent: parent_scope.clone(),
+                        visibility: crate::model::Visibility::Public,
+                        signature: None,
+                        container: parent_scope.clone(),
                     });
 
                     if let Some(body) = node.child_by_field_name("body") {
@@ -166,6 +171,9 @@ pub fn parse_swift(file: &str, root: &TsNode<'_>, source: &[u8]) -> ParsedFile {
                         qualified_name: qualified,
                         location: loc,
                         parent: parent_scope.clone(),
+                        visibility: crate::model::Visibility::Public,
+                        signature: None,
+                        container: parent_scope.clone(),
                     });
 
                     if let Some(body) = node.child_by_field_name("body") {
@@ -222,6 +230,9 @@ pub fn parse_swift(file: &str, root: &TsNode<'_>, source: &[u8]) -> ParsedFile {
                         qualified_name: qualified.clone(),
                         location: loc,
                         parent: parent_scope.clone(),
+                        visibility: crate::model::Visibility::Public,
+                        signature: None,
+                        container: parent_scope.clone(),
                     });
 
                     if let Some(body) = node.child_by_field_name("body") {
@@ -235,11 +246,14 @@ pub fn parse_swift(file: &str, root: &TsNode<'_>, source: &[u8]) -> ParsedFile {
                 let qualified = format!("{file}::{name}");
                 let loc = location_for_node(file, &node);
                 symbols.push(Symbol {
-                    kind: NodeKind::Method,
+                    kind: NodeKind::Constructor,
                     name,
                     qualified_name: qualified.clone(),
                     location: loc,
                     parent: parent_scope.clone(),
+                    visibility: crate::model::Visibility::Public,
+                    signature: None,
+                    container: parent_scope.clone(),
                 });
                 if let Some(body) = node.child_by_field_name("body") {
                     extract_calls_swift(file, &body, source, &qualified, &mut calls);
@@ -258,6 +272,10 @@ pub fn parse_swift(file: &str, root: &TsNode<'_>, source: &[u8]) -> ParsedFile {
         symbols,
         imports,
         calls,
+        definitions: Vec::new(),
+        references: Vec::new(),
+        exports: Vec::new(),
+        type_references: Vec::new(),
     }
 }
 

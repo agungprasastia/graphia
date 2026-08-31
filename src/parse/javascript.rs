@@ -54,6 +54,10 @@ impl LanguageAnalyzer for JavaScriptAnalyzer {
                 symbols: Vec::new(),
                 imports: Vec::new(),
                 calls: Vec::new(),
+                definitions: Vec::new(),
+                references: Vec::new(),
+                exports: Vec::new(),
+                type_references: Vec::new(),
             });
         };
         let root = tree.root_node();
@@ -101,6 +105,9 @@ pub fn parse_js_family(file: &str, root: &TsNode<'_>, source: &[u8]) -> ParsedFi
                         qualified_name: qualified.clone(),
                         location: loc,
                         parent: None,
+                        visibility: crate::model::Visibility::Public,
+                        signature: None,
+                        container: None,
                     });
                     if let Some(body) = node.child_by_field_name("body") {
                         extract_calls_js(file, &body, source, &qualified, &mut calls);
@@ -118,6 +125,9 @@ pub fn parse_js_family(file: &str, root: &TsNode<'_>, source: &[u8]) -> ParsedFi
                         qualified_name: qualified.clone(),
                         location: loc,
                         parent: parent_class.clone(),
+                        visibility: crate::model::Visibility::Public,
+                        signature: None,
+                        container: parent_class.clone(),
                     });
                     if let Some(body) = node.child_by_field_name("body") {
                         extract_calls_js(file, &body, source, &qualified, &mut calls);
@@ -135,6 +145,9 @@ pub fn parse_js_family(file: &str, root: &TsNode<'_>, source: &[u8]) -> ParsedFi
                         qualified_name: qualified,
                         location: loc,
                         parent: None,
+                        visibility: crate::model::Visibility::Public,
+                        signature: None,
+                        container: None,
                     });
                     if let Some(body) = node.child_by_field_name("body") {
                         for child in children_vec(&body).into_iter().rev() {
@@ -154,6 +167,9 @@ pub fn parse_js_family(file: &str, root: &TsNode<'_>, source: &[u8]) -> ParsedFi
                         qualified_name: qualified,
                         location: loc,
                         parent: None,
+                        visibility: crate::model::Visibility::Public,
+                        signature: None,
+                        container: None,
                     });
                 }
             }
@@ -172,6 +188,9 @@ pub fn parse_js_family(file: &str, root: &TsNode<'_>, source: &[u8]) -> ParsedFi
                                 qualified_name: qualified.clone(),
                                 location: loc,
                                 parent: None,
+                                visibility: crate::model::Visibility::Public,
+                                signature: None,
+                                container: None,
                             });
                             if let Some(body) = value_node.child_by_field_name("body") {
                                 extract_calls_js(file, &body, source, &qualified, &mut calls);
@@ -226,6 +245,10 @@ pub fn parse_js_family(file: &str, root: &TsNode<'_>, source: &[u8]) -> ParsedFi
         symbols,
         imports,
         calls,
+        definitions: Vec::new(),
+        references: Vec::new(),
+        exports: Vec::new(),
+        type_references: Vec::new(),
     }
 }
 

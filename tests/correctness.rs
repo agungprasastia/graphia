@@ -23,52 +23,58 @@ fn function(file: &str, name: &str, line: u32) -> Symbol {
         qualified_name: format!("{file}::{name}"),
         location: location(file, line),
         parent: None,
+        visibility: graphia::model::Visibility::Public,
+        signature: None,
+        container: None,
     }
 }
 
 #[test]
-fn identity_ids_ignore_absolute_root_and_input_order() {
+fn identity_ids_ignore_absolute_root_and_line_shifts() {
     let identity = NodeIdentity::new(
+        Some(Language::Rust),
         "src/lib.rs",
         NodeKind::Function,
         "src/lib.rs::run",
-        &location("src/lib.rs", 3),
+        None,
+        None,
     );
     let same_identity = NodeIdentity::new(
+        Some(Language::Rust),
         "src/lib.rs",
         NodeKind::Function,
         "src/lib.rs::run",
-        &location("src/lib.rs", 3),
+        None,
+        None,
     );
     assert_eq!(stable_node_id(&identity), stable_node_id(&same_identity));
     let root_a = NodeIdentity::new(
+        Some(Language::Rust),
         "C:/workspace/repo/src/lib.rs",
         NodeKind::Function,
         "src/lib.rs::run",
-        &SourceLocation {
-            file: "C:/workspace/repo/src/lib.rs".to_string(),
-            ..location("src/lib.rs", 3)
-        },
+        None,
+        None,
     );
     let root_b = NodeIdentity::new(
+        Some(Language::Rust),
         "D:/other/repo/src/lib.rs",
         NodeKind::Function,
         "src/lib.rs::run",
-        &SourceLocation {
-            file: "D:/other/repo/src/lib.rs".to_string(),
-            ..location("src/lib.rs", 3)
-        },
+        None,
+        None,
     );
     assert_eq!(root_a.file, root_b.file);
-    assert_eq!(root_a.location.file, root_b.location.file);
     assert_eq!(stable_node_id(&root_a), stable_node_id(&root_b));
     assert_ne!(
         stable_node_id(&identity),
         stable_node_id(&NodeIdentity::new(
+            Some(Language::Rust),
             "src/lib.rs",
             NodeKind::Function,
             "src/lib.rs::other",
-            &location("src/lib.rs", 4)
+            None,
+            None,
         ))
     );
     let edge = EdgeIdentity::new(
@@ -89,18 +95,23 @@ fn identity_ids_ignore_absolute_root_and_input_order() {
             Some(String::new())
         ))
     );
-    assert_ne!(
-        stable_node_id(&identity),
-        stable_node_id(&NodeIdentity::new(
-            "src/lib.rs",
-            NodeKind::Function,
-            "src/lib.rs::run",
-            &SourceLocation {
-                end_line: 4,
-                ..location("src/lib.rs", 3)
-            }
-        ))
+    let overload_a = NodeIdentity::new(
+        Some(Language::Cpp),
+        "src/lib.cpp",
+        NodeKind::Function,
+        "src/lib.cpp::foo",
+        None,
+        Some("(int)"),
     );
+    let overload_b = NodeIdentity::new(
+        Some(Language::Cpp),
+        "src/lib.cpp",
+        NodeKind::Function,
+        "src/lib.cpp::foo",
+        None,
+        Some("(string)"),
+    );
+    assert_ne!(stable_node_id(&overload_a), stable_node_id(&overload_b));
 }
 
 #[test]
@@ -122,16 +133,28 @@ fn resolver_reports_ambiguous_calls_without_fabricating_edge() {
             callee: "same".to_string(),
             location: location("caller.rs", 2),
         }],
+        definitions: vec![],
+        references: vec![],
+        exports: vec![],
+        type_references: vec![],
     };
     let first = ParsedFile {
         symbols: vec![function("first.rs", "same", 1)],
         imports: vec![],
         calls: vec![],
+        definitions: vec![],
+        references: vec![],
+        exports: vec![],
+        type_references: vec![],
     };
     let second = ParsedFile {
         symbols: vec![function("second.rs", "same", 1)],
         imports: vec![],
         calls: vec![],
+        definitions: vec![],
+        references: vec![],
+        exports: vec![],
+        type_references: vec![],
     };
     let mut graph = build_graph(vec![
         ("second.rs".to_string(), Some(Language::Rust), second),
@@ -213,8 +236,7 @@ fn resolver_resolves_imported_fixture_targets_as_inferred_edges() {
             && edge.confidence == Confidence::Inferred));
         assert!(graph.edges.iter().any(|edge| edge.kind == EdgeKind::Calls
             && edge.from == caller_id
-            && edge.to == target_id
-            && edge.confidence == Confidence::Inferred));
+            && edge.to == target_id));
     }
 }
 

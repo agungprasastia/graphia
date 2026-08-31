@@ -203,21 +203,25 @@ impl ResolutionEngine {
             let state = self.resolve_single_call(file, caller, &call.callee, existing_imports);
 
             match &state {
-                ResolutionState::Resolved { target, .. } => {
+                ResolutionState::Resolved { target, reason } => {
                     summary.resolved_calls += 1;
-                    let identity = EdgeIdentity::new(
-                        caller.id,
-                        *target,
-                        EdgeKind::Calls,
-                        Confidence::Inferred,
-                        None,
-                    );
+                    let conf = match reason {
+                        ResolutionReason::LexicalScope
+                        | ResolutionReason::SameFile
+                        | ResolutionReason::ExplicitImport
+                        | ResolutionReason::ExplicitAlias => Confidence::Resolved,
+                        ResolutionReason::ReceiverMethod
+                        | ResolutionReason::InheritedMethod
+                        | ResolutionReason::WildcardImport => Confidence::Inferred,
+                    };
+                    let identity =
+                        EdgeIdentity::new(caller.id, *target, EdgeKind::Calls, conf, None);
                     resolved_edges.push(Edge {
                         id: crate::graph::stable_edge_id(&identity),
                         kind: EdgeKind::Calls,
                         from: caller.id,
                         to: *target,
-                        confidence: Confidence::Inferred,
+                        confidence: conf,
                         label: None,
                     });
                 }

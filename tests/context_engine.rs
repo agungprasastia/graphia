@@ -57,10 +57,12 @@ fn make_node(
     };
     let qualified_name = format!("{file}::{name}");
     let id = graphia::graph::stable_node_id(&graphia::model::NodeIdentity::new(
+        lang,
         file,
         kind,
         &qualified_name,
-        &loc,
+        None,
+        None,
     ));
     Node {
         id,
@@ -70,6 +72,9 @@ fn make_node(
         file: file.to_string(),
         location: loc,
         language: lang,
+        visibility: graphia::model::Visibility::Public,
+        signature: None,
+        container: None,
     }
 }
 
