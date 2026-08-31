@@ -98,7 +98,7 @@
 
 ```bash
 # Clone and build
-git clone https://github.com/username/graphia.git
+git clone https://github.com/agungprasastia/graphia.git
 cd graphia
 cargo build --release
 
