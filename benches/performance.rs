@@ -57,10 +57,10 @@ fn main() {
         "incremental_burst_100",
         "daemon_idle",
         "daemon_idle_rss",
-        "daemon_action_to_generation_1",
-        "daemon_action_to_generation_10",
-        "daemon_action_to_generation_100",
-        "daemon_update_peak_rss_1",
+        "daemon_1_file_burst_to_stable",
+        "daemon_10_file_burst_to_stable",
+        "daemon_100_file_burst_to_stable",
+        "daemon_burst_peak_rss",
         "context_generation",
     ];
     if std::env::var("GRAPHIA_BENCH_IN_PROCESS").as_deref() == Ok("1") {
@@ -149,13 +149,19 @@ fn run_stage(scale: Scale, stage: &str) {
             emit(scale, metadata, "daemon_idle_rss", 0, measurement);
             stop_daemon(child);
         }
-        "daemon_action_to_generation_1"
-        | "daemon_action_to_generation_10"
-        | "daemon_action_to_generation_100"
-        | "daemon_update_peak_rss_1" => {
-            let count = stage.rsplit('_').next().unwrap().parse::<usize>().unwrap();
+        "daemon_1_file_burst_to_stable"
+        | "daemon_10_file_burst_to_stable"
+        | "daemon_100_file_burst_to_stable"
+        | "daemon_burst_peak_rss" => {
+            let count = [100, 10, 1]
+                .into_iter()
+                .find(|count| stage.contains(&format!("{count}_file")))
+                .unwrap_or(1);
             let (child, status_path) = start_daemon(root);
-            let before = wait_healthy(&status_path).generation;
+            let before_status = wait_healthy(&status_path);
+            let before = before_status.generation;
+            let before_reparsed = before_status.files_reparsed_total;
+            let before_affected = before_status.files_affected_total;
             let paths = source_paths(root, count);
             let start = Instant::now();
             for path in &paths {
@@ -166,7 +172,7 @@ fn run_stage(scale: Scale, stage: &str) {
                     .write_all(b"\n")
                     .expect("daemon benchmark write");
             }
-            let after = wait_generation(&status_path, before);
+            let after = wait_burst_stable(&status_path, before, before_reparsed, count);
             let persist_start = Instant::now();
             let persisted = wait_persisted(&status_path, after.generation);
             let persistence_latency = persist_start.elapsed().as_nanos();
@@ -181,8 +187,8 @@ fn run_stage(scale: Scale, stage: &str) {
                 measurement
                     .peak_rss_bytes
                     .map_or_else(|| "UNAVAILABLE".into(), |v| v.to_string()),
-                after.files_reparsed,
-                after.affected_files,
+                after.files_reparsed_total.saturating_sub(before_reparsed),
+                after.files_affected_total.saturating_sub(before_affected),
                 after.generation.0.saturating_sub(before.0),
                 persisted.last_persisted_generation.0,
                 persistence_latency,
@@ -270,18 +276,29 @@ fn wait_healthy(status: &std::path::Path) -> graphia::daemon::DaemonStatusInfo {
     )
 }
 
-fn wait_generation(
+fn wait_burst_stable(
     status: &std::path::Path,
     before: graphia::daemon::GraphGeneration,
+    before_reparsed: usize,
+    expected_files: usize,
 ) -> graphia::daemon::DaemonStatusInfo {
-    for _ in 0..400 {
+    let mut stable = 0u8;
+    for _ in 0..800 {
         let value = wait_healthy(status);
-        if value.generation > before {
-            return value;
+        if value.generation > before
+            && value.pending_events == 0
+            && value.files_reparsed_total.saturating_sub(before_reparsed) >= expected_files
+        {
+            stable = stable.saturating_add(1);
+            if stable >= 3 {
+                return value;
+            }
+        } else {
+            stable = 0;
         }
         thread::sleep(Duration::from_millis(25));
     }
-    panic!("daemon generation did not advance")
+    panic!("daemon burst did not reach stable completion for {expected_files} files")
 }
 
 fn wait_persisted(

@@ -216,24 +216,226 @@ impl Graph {
         &mut self,
         affected_files: &BTreeSet<String>,
     ) -> crate::error::Result<ResolutionReport> {
-        let authoritative = build_graph(self.parsed_files.clone());
         let touched = self
             .nodes
             .iter()
             .filter(|node| affected_files.contains(&node.file))
             .map(|node| node.id)
             .collect::<BTreeSet<_>>();
-        self.edges
-            .retain(|edge| !touched.contains(&edge.from) && !touched.contains(&edge.to));
-        self.edges.extend(
-            authoritative
-                .edges
-                .into_iter()
-                .filter(|edge| touched.contains(&edge.from) || touched.contains(&edge.to)),
-        );
+        self.edges.retain(|edge| {
+            edge.kind == EdgeKind::Contains
+                || (!touched.contains(&edge.from) && !touched.contains(&edge.to))
+        });
+        let entries = &self.parsed_files;
+        let file_entries = entries
+            .iter()
+            .map(|(path, language, parsed)| FileEntry {
+                path: path.clone(),
+                language: *language,
+                parsed: parsed.clone(),
+            })
+            .collect::<Vec<_>>();
+        let mut engine = ResolutionEngine::new();
+        engine.index_files(&self.nodes, entries);
+        let file_id = |path: &str| {
+            self.nodes
+                .iter()
+                .find(|node| node.kind == NodeKind::File && node.file == path)
+                .map(|node| node.id)
+        };
+        let symbol_id = |qualified: &str| {
+            self.nodes
+                .iter()
+                .find(|node| node.qualified_name == qualified && node.kind != NodeKind::File)
+                .map(|node| node.id)
+        };
+        let add = |edges: &mut Vec<Edge>,
+                   from: NodeId,
+                   to: NodeId,
+                   kind: EdgeKind,
+                   confidence: Confidence,
+                   label: Option<String>| {
+            let id = stable_edge_id(&EdgeIdentity::new(
+                from,
+                to,
+                kind,
+                confidence,
+                label.clone(),
+            ));
+            edges.push(Edge {
+                id,
+                kind,
+                from,
+                to,
+                confidence,
+                label,
+            });
+        };
+        let imports = entries
+            .iter()
+            .filter_map(|(path, _, parsed)| {
+                file_id(path).map(|id| {
+                    (
+                        id,
+                        parsed
+                            .imports
+                            .iter()
+                            .filter_map(|import| {
+                                resolve_import(path, &import.path, &file_entries)
+                                    .and_then(|target| file_id(&target))
+                            })
+                            .collect::<Vec<_>>(),
+                    )
+                })
+            })
+            .flat_map(|(from, targets)| targets.into_iter().map(move |to| (from, to)))
+            .collect::<Vec<_>>();
+        let (resolved_calls, call_summary) =
+            engine.resolve_calls(&self.resolution_calls, &self.nodes, &imports);
+        for edge in resolved_calls {
+            if touched.contains(&edge.from) || touched.contains(&edge.to) {
+                self.edges.push(edge);
+            }
+        }
+        for (path, _, parsed) in entries
+            .iter()
+            .filter(|(path, _, _)| affected_files.contains(path))
+        {
+            let Some(file) = file_id(path) else { continue };
+            for import in &parsed.imports {
+                if let Some(target) =
+                    resolve_import(path, &import.path, &file_entries).and_then(|p| file_id(&p))
+                {
+                    add(
+                        &mut self.edges,
+                        file,
+                        target,
+                        EdgeKind::Imports,
+                        Confidence::Inferred,
+                        Some(import.path.clone()),
+                    );
+                }
+            }
+            for export in &parsed.exports {
+                if export.target.is_some()
+                    && let Resolution::Resolved(target) =
+                        engine.resolve_reference(path, None, &export.name, EdgeKind::Exports, None)
+                {
+                    add(
+                        &mut self.edges,
+                        file,
+                        target,
+                        EdgeKind::Exports,
+                        Confidence::Resolved,
+                        Some(export.name.clone()),
+                    );
+                }
+            }
+            for reference in &parsed.references {
+                let from = reference
+                    .caller
+                    .as_deref()
+                    .and_then(symbol_id)
+                    .unwrap_or(file);
+                let caller = reference.caller.as_deref().and_then(symbol_id);
+                if let Resolution::Resolved(target) = engine.resolve_reference(
+                    path,
+                    caller,
+                    &reference.name,
+                    EdgeKind::References,
+                    None,
+                ) {
+                    add(
+                        &mut self.edges,
+                        from,
+                        target,
+                        EdgeKind::References,
+                        Confidence::Resolved,
+                        Some(reference.name.clone()),
+                    );
+                }
+            }
+            for reference in &parsed.type_references {
+                let from = reference
+                    .container
+                    .as_deref()
+                    .and_then(symbol_id)
+                    .unwrap_or(file);
+                if let Resolution::Resolved(target) =
+                    engine.resolve_type_reference(path, &reference.name)
+                {
+                    add(
+                        &mut self.edges,
+                        from,
+                        target,
+                        EdgeKind::TypeReferences,
+                        Confidence::Resolved,
+                        Some(reference.name.clone()),
+                    );
+                }
+            }
+            for item in &parsed.instantiations {
+                let from = item
+                    .caller
+                    .as_deref()
+                    .and_then(|caller| symbol_id(&format!("{path}::{caller}")))
+                    .unwrap_or(file);
+                if let Resolution::Resolved(target) = engine.resolve_instantiation(
+                    path,
+                    (from != file).then_some(from),
+                    &item.type_name,
+                ) {
+                    add(
+                        &mut self.edges,
+                        from,
+                        target,
+                        EdgeKind::Instantiates,
+                        Confidence::Resolved,
+                        Some(item.type_name.clone()),
+                    );
+                }
+            }
+            for item in &parsed.inheritances {
+                let from = symbol_id(&format!("{path}::{}", item.derived_type)).unwrap_or(file);
+                if let Resolution::Resolved(target) =
+                    engine.resolve_inheritance(path, &item.derived_type, &item.base_type)
+                {
+                    add(
+                        &mut self.edges,
+                        from,
+                        target,
+                        EdgeKind::Inherits,
+                        Confidence::Resolved,
+                        Some(item.base_type.clone()),
+                    );
+                }
+            }
+            for item in &parsed.implementations {
+                let from =
+                    symbol_id(&format!("{path}::{}", item.implementing_type)).unwrap_or(file);
+                if let Resolution::Resolved(target) = engine.resolve_implementation(
+                    path,
+                    &item.implementing_type,
+                    &item.trait_or_interface,
+                ) {
+                    add(
+                        &mut self.edges,
+                        from,
+                        target,
+                        EdgeKind::Implements,
+                        Confidence::Resolved,
+                        Some(item.trait_or_interface.clone()),
+                    );
+                }
+            }
+        }
         let mut edge_ids = HashSet::new();
         self.edges.retain(|edge| edge_ids.insert(edge.id));
-        self.resolution = authoritative.resolution;
+        self.resolution = ResolutionReport {
+            resolved_calls: call_summary.resolved_calls,
+            unresolved_calls: call_summary.unresolved_calls,
+            ambiguous_calls: call_summary.ambiguous_calls,
+        };
         self.canonicalize()?;
         Ok(self.resolution.clone())
     }

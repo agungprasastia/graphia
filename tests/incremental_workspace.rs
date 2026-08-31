@@ -3,6 +3,7 @@ use tempfile::tempdir;
 
 use graphia::daemon::debounce::SemanticAction;
 use graphia::incremental::IncrementalWorkspace;
+use graphia::model::EdgeKind;
 
 #[test]
 fn test_incremental_workspace_applies_deltas_matching_clean_rebuild() {
@@ -139,4 +140,101 @@ fn new_dependency_matches_clean_graph_without_full_rebuild() {
     assert!(!summary.affected_files.contains("c.rs"));
     let clean = IncrementalWorkspace::new(root.to_path_buf()).expect("clean workspace");
     assert_eq!(ws.graph, clean.graph);
+}
+
+#[test]
+fn new_semantic_dependencies_match_clean_without_fallback() {
+    let cases = [
+        (
+            "reference",
+            "a.rs",
+            "b.rs",
+            "pub fn process() { User; }",
+            EdgeKind::References,
+        ),
+        (
+            "type",
+            "a.rs",
+            "b.rs",
+            "use crate::b::User;\npub fn process(value: User) {\n    let _ = value;\n}",
+            EdgeKind::TypeReferences,
+        ),
+        (
+            "implements",
+            "a.rs",
+            "b.rs",
+            "struct Service; impl Repository for Service {}",
+            EdgeKind::Implements,
+        ),
+        (
+            "instantiates",
+            "a.rs",
+            "b.rs",
+            "pub fn process() { User::new(); }",
+            EdgeKind::Instantiates,
+        ),
+        (
+            "inherits",
+            "a.cs",
+            "b.cs",
+            "class Child : Parent {}",
+            EdgeKind::Inherits,
+        ),
+        (
+            "reexport",
+            "a.rs",
+            "b.rs",
+            "pub use crate::b::User;",
+            EdgeKind::Exports,
+        ),
+    ];
+    for (name, a_name, b_name, edited, expected_kind) in cases {
+        let temp = tempdir().expect("tempdir");
+        let root = temp.path();
+        let a = root.join(a_name);
+        let b = root.join(b_name);
+        let unrelated = root.join("unrelated.rs");
+        fs::write(
+            &a,
+            if a_name.ends_with(".cs") {
+                "class Child {}"
+            } else {
+                "pub fn process() {}"
+            },
+        )
+        .expect("write a");
+        fs::write(
+            &b,
+            if b_name.ends_with(".cs") {
+                "class Parent {}"
+            } else {
+                "pub struct User; pub trait Repository {}"
+            },
+        )
+        .expect("write b");
+        fs::write(&unrelated, "pub fn untouched() {}").expect("write unrelated");
+        let mut ws = IncrementalWorkspace::new(root.to_path_buf()).expect("workspace init");
+        fs::write(&a, edited).expect("edit a");
+        let summary = ws
+            .apply_changes_selective(&[SemanticAction::Modified(a)])
+            .expect("selective update");
+        assert!(!summary.full_rebuild, "{name} used full rebuild");
+        assert!(!summary.fallback_used, "{name} used fallback");
+        assert_eq!(summary.files_reparsed, 1, "{name} reparsed unrelated files");
+        assert!(
+            !summary.affected_files.contains("unrelated.rs"),
+            "{name} expanded unrelated file"
+        );
+        let clean = IncrementalWorkspace::new(root.to_path_buf()).expect("clean workspace");
+        assert_eq!(ws.graph, clean.graph, "{name} differs from clean graph");
+        assert_eq!(
+            ws.graph.edges.iter().any(|edge| edge.kind == expected_kind),
+            clean
+                .graph
+                .edges
+                .iter()
+                .any(|edge| edge.kind == expected_kind),
+            "{name} relation differs from clean graph"
+        );
+    }
 }

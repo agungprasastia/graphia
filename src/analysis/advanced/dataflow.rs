@@ -170,6 +170,58 @@ impl DataFlowGraph {
                     confidence: Confidence::Resolved,
                 });
             }
+            let Some((_, _, caller_return_id)) = flows.get(caller_id) else {
+                continue;
+            };
+            for ret in &flow.returns {
+                let Some(call) = graph.edges.iter().find(|edge| {
+                    edge.from == *caller_id
+                        && edge.kind == EdgeKind::Calls
+                        && graph
+                            .nodes
+                            .iter()
+                            .any(|node| node.id == edge.to && node.name == ret.source)
+                }) else {
+                    continue;
+                };
+                let Some((_, _, callee_return_id)) = flows.get(&call.to) else {
+                    continue;
+                };
+                result.edges.push(DataFlowEdge {
+                    from: *callee_return_id,
+                    to: *caller_return_id,
+                    kind: EdgeKind::References,
+                    confidence: Confidence::Resolved,
+                });
+            }
+            for argument in &flow.call_arguments {
+                if flow
+                    .assignments
+                    .iter()
+                    .any(|assignment| assignment.from == argument.call)
+                {
+                    continue;
+                }
+                let Some(call) = graph.edges.iter().find(|edge| {
+                    edge.from == *caller_id
+                        && edge.kind == EdgeKind::Calls
+                        && graph
+                            .nodes
+                            .iter()
+                            .any(|node| node.id == edge.to && node.name == argument.call)
+                }) else {
+                    continue;
+                };
+                let Some((_, _, callee_return_id)) = flows.get(&call.to) else {
+                    continue;
+                };
+                result.edges.push(DataFlowEdge {
+                    from: *callee_return_id,
+                    to: *caller_return_id,
+                    kind: EdgeKind::References,
+                    confidence: Confidence::Resolved,
+                });
+            }
         }
         result
             .edges

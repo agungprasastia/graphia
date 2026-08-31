@@ -301,6 +301,8 @@ impl DaemonServer {
             health: self.state_manager.health(),
             fallback_reconcile_count: self.state_manager.fallback_reconcile_count(),
             files_reparsed: update.as_ref().map_or(0, |summary| summary.files_reparsed),
+            files_reparsed_total: self.state_manager.files_reparsed_total(),
+            files_affected_total: self.state_manager.files_affected_total(),
             affected_files: update
                 .as_ref()
                 .map_or(0, |summary| summary.affected_files.len()),

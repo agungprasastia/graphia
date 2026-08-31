@@ -54,6 +54,10 @@ pub struct DaemonStatusInfo {
     pub health: DaemonHealth,
     pub fallback_reconcile_count: usize,
     pub files_reparsed: usize,
+    #[serde(default)]
+    pub files_reparsed_total: usize,
+    #[serde(default)]
+    pub files_affected_total: usize,
     pub affected_files: usize,
     pub fallback_used: bool,
     pub fallback_reason: Option<String>,
@@ -72,6 +76,8 @@ pub struct LiveStateManager {
     health: Arc<RwLock<DaemonHealth>>,
     last_update: Arc<RwLock<Option<IncrementalUpdateSummary>>>,
     last_error: Arc<RwLock<Option<String>>>,
+    files_reparsed_total: Arc<RwLock<usize>>,
+    files_affected_total: Arc<RwLock<usize>>,
 }
 
 impl LiveStateManager {
@@ -103,6 +109,8 @@ impl LiveStateManager {
             health: Arc::new(RwLock::new(DaemonHealth::Healthy)),
             last_update: Arc::new(RwLock::new(None)),
             last_error: Arc::new(RwLock::new(None)),
+            files_reparsed_total: Arc::new(RwLock::new(0)),
+            files_affected_total: Arc::new(RwLock::new(0)),
         })
     }
 
@@ -135,11 +143,21 @@ impl LiveStateManager {
         match candidate.apply_changes_selective(actions) {
             Ok(summary) => {
                 let dirty = !summary.affected_files.is_empty();
+                let reparsed = summary.files_reparsed;
+                let affected = summary.affected_files.len();
                 if dirty {
                     self.update_graph(candidate.graph.clone());
                     *ws = candidate;
                 }
                 *self.last_update.write().expect("last update lock") = Some(summary);
+                *self
+                    .files_reparsed_total
+                    .write()
+                    .expect("reparse total lock") += reparsed;
+                *self
+                    .files_affected_total
+                    .write()
+                    .expect("affected total lock") += affected;
                 self.set_health(DaemonHealth::Healthy);
                 *self.last_error.write().expect("last error lock") = None;
                 Ok(dirty)
@@ -223,5 +241,21 @@ impl LiveStateManager {
     #[must_use]
     pub fn last_error(&self) -> Option<String> {
         self.last_error.read().expect("last error lock").clone()
+    }
+
+    #[must_use]
+    pub fn files_reparsed_total(&self) -> usize {
+        *self
+            .files_reparsed_total
+            .read()
+            .expect("reparse total lock")
+    }
+
+    #[must_use]
+    pub fn files_affected_total(&self) -> usize {
+        *self
+            .files_affected_total
+            .read()
+            .expect("affected total lock")
     }
 }

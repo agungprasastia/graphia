@@ -187,13 +187,33 @@ fn collect_local_ast(
         node.kind(),
         "return_statement" | "return" | "return_expression"
     ) && let Some(value) = node.named_children(&mut node.walk()).next()
-        && let Some(name) = identifier_from_node(value, source)
     {
-        flow.returns.push(ReturnFlow {
-            source: name,
-            location: location.clone(),
-            scope_id,
+        let name = identifier_from_node(value, source).or_else(|| {
+            matches!(
+                value.kind(),
+                "call" | "call_expression" | "method_call_expression"
+            )
+            .then(|| {
+                let raw = value
+                    .child_by_field_name("function")
+                    .and_then(|callee| callee.utf8_text(source).ok())
+                    .or_else(|| {
+                        value
+                            .utf8_text(source)
+                            .ok()
+                            .map(|text| text.split('(').next().unwrap_or(text))
+                    })
+                    .unwrap_or("");
+                raw.rsplit(['.', ':']).next().unwrap_or("").to_string()
+            })
         });
+        if let Some(name) = name.filter(|name| !name.is_empty()) {
+            flow.returns.push(ReturnFlow {
+                source: name,
+                location: location.clone(),
+                scope_id,
+            });
+        }
     }
     if matches!(
         node.kind(),

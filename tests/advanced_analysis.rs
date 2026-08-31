@@ -375,6 +375,45 @@ fn runtime_dataflow_plain_calls_do_not_create_value_flow() {
 }
 
 #[test]
+fn runtime_dataflow_propagates_callee_return_to_caller_return_and_result() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    std::fs::write(
+        temp.path().join("returns.rs"),
+        "fn load(value: String) -> String { value }\nfn assigned(input: String) -> String { let result = load(input); result }\nfn direct(input: String) -> String { load(input) }\nfn explicit(input: String) -> String { return load(input); }\n",
+    )
+    .expect("write return-flow source");
+    let graph = graphia::storage::build_graph_from_repo(temp.path()).expect("build graph");
+    let dataflow = build_dataflow_graph(&graph);
+    let edge_names = dataflow
+        .edges
+        .iter()
+        .filter_map(|edge| {
+            let from = dataflow.nodes.iter().find(|node| node.id == edge.from)?;
+            let to = dataflow.nodes.iter().find(|node| node.id == edge.to)?;
+            Some((from.qualified_name.clone(), to.qualified_name.clone()))
+        })
+        .collect::<std::collections::BTreeSet<_>>();
+    assert!(
+        edge_names
+            .iter()
+            .any(|(from, to)| from.contains("load::#flow::return")
+                && to.contains("assigned::#flow::result"))
+    );
+    assert!(
+        edge_names
+            .iter()
+            .any(|(from, to)| from.contains("load::#flow::return")
+                && to.contains("direct::#flow::return"))
+    );
+    assert!(
+        edge_names
+            .iter()
+            .any(|(from, to)| from.contains("load::#flow::return")
+                && to.contains("explicit::#flow::return"))
+    );
+}
+
+#[test]
 fn test_advanced_boundaries_and_drift() {
     let nodes = vec![
         Node {
