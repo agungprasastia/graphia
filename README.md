@@ -8,6 +8,8 @@
 
 **Graphia** is a high-performance, deterministic, native code graph and repository intelligence engine built in Rust. It extracts, indexes, resolves, and analyzes semantic relationships across multi-language codebases in milliseconds—with zero external runtime dependencies (no Python, no SQLite, no cloud requirements, and no LLMs in the core pipeline).
 
+M4.1.2 foundation closure status: **PASS**. See [`docs/m4.1.2-final-closure-report.md`](docs/m4.1.2-final-closure-report.md) for implementation evidence and known limitations.
+
 ---
 
 ## Key Highlights
@@ -20,6 +22,7 @@
 - **Model Context Protocol (MCP) Server**: Built-in JSON-RPC 2.0 stdio transport exposing 11 read-only tools with strict `stdout` protocol isolation and sandbox security.
 - **Live Daemon**: Low-overhead recursive filesystem watcher with event debouncing/coalescing, bounded incremental update queues, and generation-tracked snapshot isolation.
 - **Advanced Static Analysis**: Refined virtual dispatch candidate sets, intra-procedural dataflow/typeflow paths, architecture layer boundary enforcement, git history co-change metrics, structural dead code candidate detection, and graph/API diffing.
+- **Typeflow support boundary**: AST-aware approximate typeflow covers Rust, TypeScript, JavaScript, TSX, JSX, and Python; other supported languages retain normalized extraction with conservative fallback analysis.
 
 ---
 
@@ -258,20 +261,15 @@ graphia api diff old_index.bin new_index.bin
 
 ## Benchmark & Performance
 
-Measurements taken on representative multi-language repository fixtures (AMD Ryzen 9 / Apple Silicon baseline):
+Benchmark closure uses deterministic 100-file, 1,000-file, and opt-in 5,000-file synthetic repositories. Peak RSS uses OS APIs where available; numeric captures are environment-specific and must not be inferred from this summary.
 
-| Benchmark Stage | Small (10 files, 40 nodes) | Medium (50 files, 200 nodes) | Large (150 files, 600 nodes) |
+| Benchmark Stage | Small (100 files) | Medium (1,000 files) | Large (5,000 files, opt-in) |
 |---|---|---|---|
-| **Scan Latency** | 2.40 ms | 0.91 ms | 0.93 ms |
-| **Parse & Extract (16 Langs)** | 25.16 ms | 28.56 ms | 87.30 ms |
-| **Graph Resolution** | 6.19 ms | 17.21 ms | 31.73 ms |
-| **Exact Query** | 5.30 µs | 1.54 µs | 1.20 µs |
-| **BFS Path Traversal** | 12.64 µs | 10.34 µs | 7.80 µs |
-| **Structural Search** | 198.11 µs | 1.02 ms | 3.17 ms |
-| **Impact Traversal** | 288.25 µs | 1.20 ms | 3.84 ms |
-| **AI Context Generation** | 398.24 µs | 1.35 ms | 3.88 ms |
-| **MCP Tool Invocation** | 236.00 µs | 1.11 ms | 3.74 ms |
-| **Live Snapshot Publish** | 72.89 µs | 484.30 µs | 1.14 ms |
+| **Measured stages** | CSV harness | CSV harness | CSV harness (`GRAPHIA_BENCH_LARGE=1`) |
+| **Peak RSS** | OS API / `UNAVAILABLE` | OS API / `UNAVAILABLE` | OS API / `UNAVAILABLE` |
+| **Incremental vs clean** | Regression-verified | Regression-verified | Harness path available |
+
+See [`docs/m4.1-benchmark-report.md`](docs/m4.1-benchmark-report.md) for methodology, output schema, and honest capture status.
 
 ---
 
@@ -281,7 +279,7 @@ Graphia enforces a strict zero-warning policy:
 - `compiler warnings = 0`
 - `clippy warnings = 0` (`cargo clippy --all-targets --all-features -- -D warnings`)
 - Format compliance: `cargo fmt --check`
-- 100% test pass rate across all 21 integration and unit test suites (160+ total automated tests).
+- Targeted closure suites pass; full Cargo commands should exclude the `harness = false` benchmark target when using `--all-targets` on this checkout.
 
 ```bash
 # Run all tests

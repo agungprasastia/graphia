@@ -1,5 +1,7 @@
 # Milestone 3 Report: Live Daemon & Real-Time Synchronization
 
+> Historical M3 report. Daemon reliability, bounded persistence, OS shutdown, and final health semantics are closed and verified in M4.1.2; see [`m4.1.2-final-closure-report.md`](m4.1.2-final-closure-report.md).
+
 ## Executive Summary
 Milestone 3 implements the `graphia daemon` service that continuously monitors repository filesystem events, debounces editor operations, batches semantic actions, and maintains an up-to-date in-memory graph index with strict snapshot isolation and atomic background persistence.
 

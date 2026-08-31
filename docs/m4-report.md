@@ -1,5 +1,7 @@
 # M4 Advanced Static Analysis Report
 
+> Historical M4 scope. All capabilities listed here are closed under M4.1.2 with precision fixes and known limitations documented in [`m4.1.2-final-closure-report.md`](m4.1.2-final-closure-report.md).
+
 ## Overview
 M4 introduces modular, on-demand advanced static analysis capabilities to the Graphia engine, enabling deep structural reasoning across codebases without heavy runtime overhead.
 
