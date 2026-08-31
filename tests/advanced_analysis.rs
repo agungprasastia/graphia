@@ -1,9 +1,10 @@
 use tempfile::tempdir;
 
 use graphia::analysis::advanced::{
-    ArchitectureRulesConfig, LayerDefinition, analyze_callgraph, check_architecture_boundaries,
-    compute_change_coupling, detect_dead_code_candidates, diff_graphs, diff_public_api,
-    extract_intraprocedural_typeflow, find_source_sink_flows,
+    ArchitectureRulesConfig, DataFlowQuery, LayerDefinition, analyze_callgraph,
+    build_dataflow_graph, check_architecture_boundaries, compute_change_coupling,
+    detect_dead_code_candidates, diff_graphs, diff_public_api, extract_intraprocedural_typeflow,
+    find_source_sink_flows,
 };
 use graphia::cli::{Cli, CliFormat, Commands, run};
 use graphia::graph::Graph;
@@ -208,6 +209,109 @@ fn test_advanced_typeflow_and_dataflow() {
     assert_eq!(
         flow_report.paths[0].overall_confidence,
         graphia::analysis::advanced::DispatchConfidence::Inferred
+    );
+}
+
+#[test]
+fn test_dataflow_cycles_are_cycle_safe_and_depth_bounded() {
+    let nodes = (1..=3)
+        .map(|id| Node {
+            id: NodeId(id),
+            kind: NodeKind::Function,
+            name: format!("f{id}"),
+            qualified_name: format!("f{id}"),
+            file: "cycle.rs".into(),
+            location: loc("cycle.rs", id as u32),
+            language: Some(Language::Rust),
+            visibility: graphia::model::Visibility::Private,
+            signature: None,
+            container: None,
+        })
+        .collect::<Vec<_>>();
+    let edges = [
+        (1, 2, Confidence::Extracted),
+        (2, 1, Confidence::Possible),
+        (2, 3, Confidence::Inferred),
+    ]
+    .into_iter()
+    .enumerate()
+    .map(|(index, (from, to, confidence))| Edge {
+        id: EdgeId(index as u64 + 1),
+        kind: graphia::model::EdgeKind::Calls,
+        from: NodeId(from),
+        to: NodeId(to),
+        confidence,
+        label: None,
+    })
+    .collect();
+    let graph = Graph::new(nodes, edges);
+    let dataflow = build_dataflow_graph(&graph);
+    let query = DataFlowQuery::new(&dataflow);
+
+    let paths = query.trace_flow(NodeId(1), NodeId(3), 3, 5);
+    assert_eq!(paths.len(), 1);
+    assert_eq!(
+        paths[0].iter().map(|(id, _)| *id).collect::<Vec<_>>(),
+        vec![NodeId(1), NodeId(2), NodeId(3)]
+    );
+    assert!(query.trace_flow(NodeId(1), NodeId(3), 1, 5).is_empty());
+}
+
+#[test]
+fn test_imports_and_contains_never_create_dataflow_paths() {
+    let nodes = vec![
+        Node {
+            id: NodeId(1),
+            kind: NodeKind::Function,
+            name: "source".into(),
+            qualified_name: "source".into(),
+            file: "a.rs".into(),
+            location: loc("a.rs", 1),
+            language: Some(Language::Rust),
+            visibility: graphia::model::Visibility::Private,
+            signature: None,
+            container: None,
+        },
+        Node {
+            id: NodeId(2),
+            kind: NodeKind::Function,
+            name: "sink".into(),
+            qualified_name: "sink".into(),
+            file: "b.rs".into(),
+            location: loc("b.rs", 1),
+            language: Some(Language::Rust),
+            visibility: graphia::model::Visibility::Private,
+            signature: None,
+            container: None,
+        },
+    ];
+    let edges = vec![
+        Edge {
+            id: EdgeId(1),
+            kind: graphia::model::EdgeKind::Imports,
+            from: NodeId(1),
+            to: NodeId(2),
+            confidence: Confidence::Extracted,
+            label: None,
+        },
+        Edge {
+            id: EdgeId(2),
+            kind: graphia::model::EdgeKind::Contains,
+            from: NodeId(1),
+            to: NodeId(2),
+            confidence: Confidence::Extracted,
+            label: None,
+        },
+    ];
+    let graph = Graph::new(nodes, edges);
+    let dataflow = build_dataflow_graph(&graph);
+    let query = DataFlowQuery::new(&dataflow);
+
+    assert!(query.trace_flow(NodeId(1), NodeId(2), 5, 5).is_empty());
+    assert!(
+        find_source_sink_flows(&graph, "source", "sink", Some(5))
+            .paths
+            .is_empty()
     );
 }
 

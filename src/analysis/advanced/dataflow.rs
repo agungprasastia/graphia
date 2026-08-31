@@ -1,10 +1,10 @@
-use std::collections::{HashSet, VecDeque};
+use std::collections::VecDeque;
 
 use serde::{Deserialize, Serialize};
 
 use super::callgraph::DispatchConfidence;
 use crate::graph::Graph;
-use crate::model::{EdgeKind, Node};
+use crate::model::{Confidence, EdgeKind, Node, NodeId};
 use crate::query::QueryIndex;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -32,6 +32,88 @@ pub struct FlowAnalysisReport {
     pub paths: Vec<SourceSinkFlowPath>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DataFlowEdge {
+    pub from: NodeId,
+    pub to: NodeId,
+    pub kind: EdgeKind,
+    pub confidence: Confidence,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DataFlowGraph {
+    pub edges: Vec<DataFlowEdge>,
+}
+
+impl DataFlowGraph {
+    #[must_use]
+    pub fn from_graph(graph: &Graph) -> Self {
+        Self {
+            edges: graph
+                .edges
+                .iter()
+                .filter(|edge| edge.kind == EdgeKind::Calls)
+                .map(|edge| DataFlowEdge {
+                    from: edge.from,
+                    to: edge.to,
+                    kind: edge.kind,
+                    confidence: edge.confidence,
+                })
+                .collect(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct DataFlowQuery<'a> {
+    graph: &'a DataFlowGraph,
+}
+
+impl<'a> DataFlowQuery<'a> {
+    #[must_use]
+    pub fn new(graph: &'a DataFlowGraph) -> Self {
+        Self { graph }
+    }
+
+    #[must_use]
+    pub fn trace_flow(
+        &self,
+        source: NodeId,
+        sink: NodeId,
+        max_depth: usize,
+        max_paths: usize,
+    ) -> Vec<Vec<(NodeId, Confidence)>> {
+        let mut paths = Vec::new();
+        let mut queue = VecDeque::from([(source, vec![(source, Confidence::Extracted)])]);
+        while let Some((current, path)) = queue.pop_front() {
+            if current == sink {
+                paths.push(path.clone());
+                if paths.len() >= max_paths {
+                    break;
+                }
+                continue;
+            }
+            if path.len().saturating_sub(1) >= max_depth {
+                continue;
+            }
+            for edge in self.graph.edges.iter().filter(|edge| edge.from == current) {
+                if path.iter().any(|(id, _)| *id == edge.to) {
+                    continue;
+                }
+                let mut next = path.clone();
+                next.push((edge.to, edge.confidence));
+                queue.push_back((edge.to, next));
+            }
+        }
+        paths
+    }
+}
+
+#[must_use]
+pub fn build_dataflow_graph(graph: &Graph) -> DataFlowGraph {
+    DataFlowGraph::from_graph(graph)
+}
+
 #[must_use]
 pub fn find_source_sink_flows(
     graph: &Graph,
@@ -51,8 +133,15 @@ pub fn find_source_sink_flows(
             if source.id == sink.id {
                 continue;
             }
-            if let Some(path) = bfs_flow_path(graph, source, sink) {
-                paths.push(path);
+            let dataflow = DataFlowGraph::from_graph(graph);
+            let query = DataFlowQuery::new(&dataflow);
+            for path in query.trace_flow(
+                source.id,
+                sink.id,
+                15,
+                max_paths.saturating_sub(paths.len()),
+            ) {
+                paths.push(flow_path(graph, source, sink, &path));
                 if paths.len() >= max_paths {
                     break;
                 }
@@ -74,79 +163,48 @@ pub fn find_source_sink_flows(
     }
 }
 
-fn bfs_flow_path(graph: &Graph, source: &Node, sink: &Node) -> Option<SourceSinkFlowPath> {
-    let mut queue = VecDeque::new();
-    let mut visited = HashSet::new();
-
-    // queue stores: (current_node_id, path_tuples: Vec<(node_id, edge_type, DispatchConfidence)>)
-    queue.push_back((
-        source.id,
-        vec![(
-            source.id,
-            "source".to_string(),
-            DispatchConfidence::Extracted,
-        )],
-    ));
-    visited.insert(source.id);
-
-    while let Some((curr_id, curr_path)) = queue.pop_front() {
-        if curr_id == sink.id {
-            let mut steps = Vec::new();
-            let mut overall = DispatchConfidence::Extracted;
-
-            for (idx, (nid, edge_type, conf)) in curr_path.into_iter().enumerate() {
-                if let Some(node) = graph.nodes.iter().find(|n| n.id == nid) {
-                    if conf == DispatchConfidence::Possible {
-                        overall = DispatchConfidence::Possible;
-                    } else if conf == DispatchConfidence::Inferred
-                        && overall != DispatchConfidence::Possible
-                    {
+fn flow_path(
+    graph: &Graph,
+    source: &Node,
+    sink: &Node,
+    path: &[(NodeId, Confidence)],
+) -> SourceSinkFlowPath {
+    let mut overall = DispatchConfidence::Extracted;
+    let steps = path
+        .iter()
+        .enumerate()
+        .filter_map(|(index, (id, confidence))| {
+            let node = graph.nodes.iter().find(|node| node.id == *id)?.clone();
+            let dispatch = match confidence {
+                Confidence::Possible => {
+                    overall = DispatchConfidence::Possible;
+                    DispatchConfidence::Possible
+                }
+                Confidence::Resolved | Confidence::Inferred => {
+                    if overall != DispatchConfidence::Possible {
                         overall = DispatchConfidence::Inferred;
                     }
-                    steps.push(FlowStep {
-                        node: node.clone(),
-                        step_index: idx,
-                        confidence: conf,
-                        edge_type,
-                    });
+                    DispatchConfidence::Inferred
                 }
-            }
-
-            return Some(SourceSinkFlowPath {
-                source: source.clone(),
-                sink: sink.clone(),
-                length: steps.len(),
-                steps,
-                overall_confidence: overall,
-            });
-        }
-
-        if curr_path.len() > 15 {
-            continue;
-        }
-
-        for edge in &graph.edges {
-            if edge.from == curr_id
-                && (edge.kind == EdgeKind::Calls
-                    || edge.kind == EdgeKind::Contains
-                    || edge.kind == EdgeKind::Imports)
-            {
-                let next_id = edge.to;
-                if visited.insert(next_id) {
-                    let mut next_path = curr_path.clone();
-                    let conf = match edge.confidence {
-                        crate::model::Confidence::Extracted => DispatchConfidence::Extracted,
-                        crate::model::Confidence::Resolved | crate::model::Confidence::Inferred => {
-                            DispatchConfidence::Inferred
-                        }
-                        crate::model::Confidence::Possible => DispatchConfidence::Possible,
-                    };
-                    next_path.push((next_id, edge.kind.as_str().to_string(), conf));
-                    queue.push_back((next_id, next_path));
-                }
-            }
-        }
+                Confidence::Extracted => DispatchConfidence::Extracted,
+            };
+            Some(FlowStep {
+                node,
+                step_index: index,
+                confidence: dispatch,
+                edge_type: if index == 0 {
+                    "source".into()
+                } else {
+                    "Calls".into()
+                },
+            })
+        })
+        .collect::<Vec<_>>();
+    SourceSinkFlowPath {
+        source: source.clone(),
+        sink: sink.clone(),
+        length: steps.len(),
+        steps,
+        overall_confidence: overall,
     }
-
-    None
 }

@@ -1216,7 +1216,7 @@ pub fn run(cli: Cli) -> crate::error::Result<()> {
                 }
                 CliFormat::Human => {
                     println!(
-                        "Flow Analysis from '{}' to '{}': {} path(s) found",
+                        "Potential data-flow paths from '{}' to '{}': {} path(s) found",
                         report.source_query, report.sink_query, report.paths_found
                     );
                     for (i, p) in report.paths.iter().enumerate() {

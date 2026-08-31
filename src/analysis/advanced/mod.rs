@@ -15,8 +15,14 @@ pub use callgraph::{
     CallSiteAnalysis, DispatchConfidence, DispatchTarget, RefinedCallGraph, analyze_callgraph,
 };
 pub use change_coupling::{ChangeCouplingReport, CoChangePair, compute_change_coupling};
-pub use dataflow::{FlowAnalysisReport, FlowStep, SourceSinkFlowPath, find_source_sink_flows};
+pub use dataflow::{
+    DataFlowGraph, DataFlowQuery, FlowAnalysisReport, FlowStep, SourceSinkFlowPath,
+    build_dataflow_graph, find_source_sink_flows,
+};
 pub use dead_code::{DeadCodeCandidate, DeadCodeReport, detect_dead_code_candidates};
 pub use diff::{ApiDiffSummary, GraphDiffSummary, NodeModification, diff_graphs, diff_public_api};
 pub use history::{FileChurn, GitCommitRecord, GitHistorySummary, analyze_git_history};
-pub use typeflow::{AssignmentEdge, ProceduralTypeFlow, extract_intraprocedural_typeflow};
+pub use typeflow::{
+    AssignmentEdge, AssignmentFlow, CallArgumentFlow, LocalBinding, LocalFlowGraph, ParameterFlow,
+    ProceduralTypeFlow, ReturnFlow, extract_intraprocedural_typeflow, extract_local_flow_graph,
+};

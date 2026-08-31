@@ -4,6 +4,50 @@ use tree_sitter::{Node, Parser};
 use crate::model::{Language, SourceLocation};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LocalBinding {
+    pub name: String,
+    pub type_name: Option<String>,
+    pub location: SourceLocation,
+    pub scope_id: usize,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ParameterFlow {
+    pub name: String,
+    pub type_name: Option<String>,
+    pub location: SourceLocation,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AssignmentFlow {
+    pub from: String,
+    pub to: String,
+    pub location: SourceLocation,
+    pub scope_id: usize,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReturnFlow {
+    pub source: String,
+    pub location: SourceLocation,
+    pub scope_id: usize,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CallArgumentFlow {
+    pub call: String,
+    pub argument: String,
+    pub index: usize,
+    pub location: SourceLocation,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct LocalFlowGraph {
+    pub procedure_name: String,
+    pub file: String,
+    pub bindings: Vec<LocalBinding>,
+    pub parameters: Vec<ParameterFlow>,
+    pub assignments: Vec<AssignmentFlow>,
+    pub returns: Vec<ReturnFlow>,
+    pub call_arguments: Vec<CallArgumentFlow>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AssignmentEdge {
     pub from_var: String,
     pub to_var: String,
@@ -20,78 +64,248 @@ pub struct ProceduralTypeFlow {
 }
 
 #[must_use]
+pub fn extract_local_flow_graph(
+    procedure_name: &str,
+    file: &str,
+    source: &str,
+    start_line: u32,
+) -> LocalFlowGraph {
+    let Some(language) = language_for_path(file) else {
+        return fallback_local_flow(procedure_name, file, source, start_line);
+    };
+    let mut parser = Parser::new();
+    if parser
+        .set_language(&crate::parser::ts_language(language))
+        .is_err()
+    {
+        return fallback_local_flow(procedure_name, file, source, start_line);
+    }
+    let Some(tree) = parser.parse(source, None) else {
+        return fallback_local_flow(procedure_name, file, source, start_line);
+    };
+    let mut flow = LocalFlowGraph {
+        procedure_name: procedure_name.into(),
+        file: file.into(),
+        ..Default::default()
+    };
+    collect_local_ast(
+        tree.root_node(),
+        source.as_bytes(),
+        file,
+        start_line,
+        &mut flow,
+        0,
+    );
+    flow
+}
+
+#[must_use]
 pub fn extract_intraprocedural_typeflow(
     procedure_name: &str,
     file: &str,
     body_src: &str,
     start_line: u32,
 ) -> ProceduralTypeFlow {
-    if let Some(ast_flow) = extract_ast_typeflow(procedure_name, file, body_src, start_line) {
-        return ast_flow;
-    }
-
-    // Explicit fallback for an unsupported file extension or malformed source.
-    let mut assignments = Vec::new();
-    let mut return_sources = Vec::new();
-    let mut parameter_flows = Vec::new();
-
-    if let Some(param_start) = body_src.find('(') {
-        if let Some(param_end) = body_src[param_start..].find(')') {
-            let params_text = &body_src[param_start + 1..param_start + param_end];
-            for p in params_text.split(',') {
-                let p_trim = p.trim();
-                if !p_trim.is_empty() {
-                    let param_name = p_trim.split([':', ' ']).next().unwrap_or("").trim();
-                    if !param_name.is_empty()
-                        && param_name != "self"
-                        && param_name != "&self"
-                        && param_name != "&mut self"
-                    {
-                        parameter_flows.push(param_name.to_string());
-                    }
-                }
-            }
-        }
-    }
-
-    for (line_idx, line) in body_src.lines().enumerate() {
-        let current_line = start_line + line_idx as u32;
-        let trimmed = line.trim();
-
-        if trimmed.starts_with("return ") || trimmed.starts_with("return;") {
-            let expr = trimmed
-                .trim_start_matches("return")
-                .trim()
-                .trim_end_matches(';');
-            if !expr.is_empty() {
-                return_sources.push(expr.to_string());
-            }
-        }
-
-        if let Some((left, right)) = parse_assignment_line(trimmed) {
-            assignments.push(AssignmentEdge {
-                from_var: right,
-                to_var: left,
-                location: SourceLocation {
-                    file: file.to_string(),
-                    start_line: current_line,
-                    start_col: 1,
-                    end_line: current_line,
-                    end_col: line.len() as u32,
-                },
-            });
-        }
-    }
-
+    let graph = extract_local_flow_graph(procedure_name, file, body_src, start_line);
     ProceduralTypeFlow {
-        procedure_name: procedure_name.to_string(),
-        file: file.to_string(),
-        assignments,
-        parameter_flows,
-        return_sources,
+        procedure_name: graph.procedure_name,
+        file: graph.file,
+        assignments: graph
+            .assignments
+            .iter()
+            .map(|a| AssignmentEdge {
+                from_var: a.from.clone(),
+                to_var: a.to.clone(),
+                location: a.location.clone(),
+            })
+            .collect(),
+        parameter_flows: graph.parameters.iter().map(|p| p.name.clone()).collect(),
+        return_sources: graph.returns.iter().map(|r| r.source.clone()).collect(),
     }
 }
 
+fn collect_local_ast(
+    node: Node<'_>,
+    source: &[u8],
+    file: &str,
+    start_line: u32,
+    flow: &mut LocalFlowGraph,
+    scope_id: usize,
+) {
+    let location = ast_location(file, &node, start_line);
+    if matches!(
+        node.kind(),
+        "parameters" | "formal_parameters" | "parameter_list"
+    ) {
+        let mut cursor = node.walk();
+        for child in node.named_children(&mut cursor) {
+            if let Some(name) =
+                identifier_from_node(child.child_by_field_name("name").unwrap_or(child), source)
+            {
+                let type_name = child
+                    .child_by_field_name("type")
+                    .and_then(|n| n.utf8_text(source).ok())
+                    .map(str::to_string);
+                flow.parameters.push(ParameterFlow {
+                    name,
+                    type_name,
+                    location: ast_location(file, &child, start_line),
+                });
+            }
+        }
+    }
+    if matches!(node.kind(), "let_declaration" | "variable_declarator")
+        && let Some(name_node) = node
+            .child_by_field_name("name")
+            .or_else(|| node.child_by_field_name("pattern"))
+        && let Some(name) = identifier_from_node(name_node, source)
+    {
+        let type_name = node
+            .child_by_field_name("type")
+            .and_then(|n| n.utf8_text(source).ok())
+            .map(str::to_string);
+        flow.bindings.push(LocalBinding {
+            name: name.clone(),
+            type_name,
+            location: location.clone(),
+            scope_id,
+        });
+        if let Some(value) = node.child_by_field_name("value") {
+            add_local_assignment(value, &name, &location, scope_id, source, flow);
+        }
+    }
+    if matches!(node.kind(), "assignment_expression" | "assignment")
+        && let (Some(left), Some(right)) = (
+            node.child_by_field_name("left"),
+            node.child_by_field_name("right"),
+        )
+        && let Some(to) = identifier_from_node(left, source)
+    {
+        add_local_assignment(right, &to, &location, scope_id, source, flow);
+    }
+    if matches!(
+        node.kind(),
+        "return_statement" | "return" | "return_expression"
+    ) && let Some(value) = node.named_children(&mut node.walk()).next()
+        && let Some(name) = identifier_from_node(value, source)
+    {
+        flow.returns.push(ReturnFlow {
+            source: name,
+            location: location.clone(),
+            scope_id,
+        });
+    }
+    if matches!(
+        node.kind(),
+        "call" | "call_expression" | "method_call_expression"
+    ) && let Some(arguments) = node.child_by_field_name("arguments")
+    {
+        let call = node
+            .child_by_field_name("function")
+            .and_then(|n| n.utf8_text(source).ok())
+            .unwrap_or("")
+            .rsplit(['.', ':'])
+            .next()
+            .unwrap_or("")
+            .to_string();
+        let mut cursor = arguments.walk();
+        for (index, argument) in arguments.named_children(&mut cursor).enumerate() {
+            if let Some(value) = identifier_from_node(argument, source) {
+                flow.call_arguments.push(CallArgumentFlow {
+                    call: call.clone(),
+                    argument: value,
+                    index,
+                    location: ast_location(file, &argument, start_line),
+                });
+            }
+        }
+    }
+    let next_scope = if matches!(
+        node.kind(),
+        "block" | "statement_block" | "compound_statement"
+    ) {
+        scope_id + 1
+    } else {
+        scope_id
+    };
+    let mut cursor = node.walk();
+    for child in node.named_children(&mut cursor) {
+        collect_local_ast(child, source, file, start_line, flow, next_scope);
+    }
+}
+
+fn add_local_assignment(
+    value: Node<'_>,
+    to: &str,
+    location: &SourceLocation,
+    scope_id: usize,
+    source: &[u8],
+    flow: &mut LocalFlowGraph,
+) {
+    if let Some(from) = identifier_from_node(value, source)
+        .or_else(|| value.utf8_text(source).ok().map(str::to_string))
+    {
+        flow.assignments.push(AssignmentFlow {
+            from,
+            to: to.into(),
+            location: location.clone(),
+            scope_id,
+        });
+    }
+}
+fn identifier_from_node(node: Node<'_>, source: &[u8]) -> Option<String> {
+    if matches!(
+        node.kind(),
+        "identifier"
+            | "field_identifier"
+            | "type_identifier"
+            | "shorthand_property_identifier_pattern"
+    ) {
+        return node.utf8_text(source).ok().map(str::to_string);
+    }
+    let mut cursor = node.walk();
+    node.named_children(&mut cursor)
+        .find_map(|child| identifier_from_node(child, source))
+}
+
+fn fallback_local_flow(
+    procedure_name: &str,
+    file: &str,
+    source: &str,
+    start_line: u32,
+) -> LocalFlowGraph {
+    let mut flow = LocalFlowGraph {
+        procedure_name: procedure_name.into(),
+        file: file.into(),
+        ..Default::default()
+    };
+    for (offset, line) in source.lines().enumerate() {
+        let trimmed = line.trim();
+        let location = SourceLocation {
+            file: file.into(),
+            start_line: start_line + offset as u32,
+            start_col: 1,
+            end_line: start_line + offset as u32,
+            end_col: line.len() as u32,
+        };
+        if let Some((to, from)) = trimmed.split_once('=') {
+            flow.assignments.push(AssignmentFlow {
+                from: from.trim().trim_end_matches(';').into(),
+                to: to
+                    .trim()
+                    .trim_start_matches("let ")
+                    .trim_start_matches("var ")
+                    .trim_start_matches("const ")
+                    .into(),
+                location,
+                scope_id: 0,
+            });
+        }
+    }
+    flow
+}
+
+#[allow(dead_code)]
 fn extract_ast_typeflow(
     procedure_name: &str,
     file: &str,
@@ -125,6 +339,7 @@ fn extract_ast_typeflow(
     })
 }
 
+#[allow(dead_code)]
 fn collect_ast_flow(
     node: Node<'_>,
     source: &[u8],
@@ -214,6 +429,7 @@ fn collect_ast_flow(
     }
 }
 
+#[allow(dead_code)]
 fn first_identifier(node: Node<'_>) -> Option<Node<'_>> {
     if matches!(
         node.kind(),
@@ -225,6 +441,7 @@ fn first_identifier(node: Node<'_>) -> Option<Node<'_>> {
     node.named_children(&mut cursor).find_map(first_identifier)
 }
 
+#[allow(dead_code)]
 fn identifier_text(node: Node<'_>, source: &[u8]) -> Option<String> {
     let node = first_identifier(node)?;
     let text = node.utf8_text(source).ok()?.trim();
@@ -264,38 +481,4 @@ fn language_for_path(path: &str) -> Option<Language> {
         "swift" => Some(Language::Swift),
         _ => None,
     }
-}
-
-fn parse_assignment_line(line: &str) -> Option<(String, String)> {
-    let stripped = line
-        .trim_start_matches("let ")
-        .trim_start_matches("mut ")
-        .trim_start_matches("var ")
-        .trim_start_matches("val ")
-        .trim_start_matches("const ");
-
-    if let Some((left_raw, right_raw)) = stripped.split_once(":=") {
-        let left = left_raw.trim().to_string();
-        let right = right_raw.trim().trim_end_matches(';').to_string();
-        if !left.is_empty() && !right.is_empty() {
-            return Some((left, right));
-        }
-    }
-
-    if let Some((left_raw, right_raw)) = stripped.split_once('=') {
-        if !left_raw.ends_with('!')
-            && !left_raw.ends_with('<')
-            && !left_raw.ends_with('>')
-            && !left_raw.ends_with('=')
-            && !right_raw.starts_with('=')
-        {
-            let left_part = left_raw.split(':').next().unwrap_or(left_raw).trim();
-            let right_part = right_raw.trim().trim_end_matches(';').trim();
-            if !left_part.is_empty() && !right_part.is_empty() && !left_part.contains(' ') {
-                return Some((left_part.to_string(), right_part.to_string()));
-            }
-        }
-    }
-
-    None
 }
