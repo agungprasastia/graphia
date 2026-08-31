@@ -1,11 +1,12 @@
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::fs;
 
 use serde::{Deserialize, Serialize};
 
 use super::callgraph::DispatchConfidence;
+use super::typeflow::extract_local_flow_graph;
 use crate::graph::Graph;
-use crate::model::{Confidence, EdgeKind, Node, NodeId};
-use crate::query::QueryIndex;
+use crate::model::{Confidence, EdgeKind, Node, NodeId, NodeIdentity, NodeKind};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct FlowStep {
@@ -42,25 +43,159 @@ pub struct DataFlowEdge {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DataFlowGraph {
+    pub nodes: Vec<Node>,
     pub edges: Vec<DataFlowEdge>,
 }
 
 impl DataFlowGraph {
     #[must_use]
     pub fn from_graph(graph: &Graph) -> Self {
-        Self {
-            edges: graph
-                .edges
-                .iter()
-                .filter(|edge| edge.kind == EdgeKind::Calls)
-                .map(|edge| DataFlowEdge {
-                    from: edge.from,
-                    to: edge.to,
-                    kind: edge.kind,
-                    confidence: edge.confidence,
-                })
-                .collect(),
+        let mut result = Self {
+            nodes: graph.nodes.clone(),
+            edges: Vec::new(),
+        };
+        let Some(root) = graph.source_root() else {
+            return result;
+        };
+        let mut flows = BTreeMap::new();
+        for function in graph.nodes.iter().filter(|node| {
+            matches!(
+                node.kind,
+                NodeKind::Function | NodeKind::Method | NodeKind::Constructor
+            )
+        }) {
+            let Ok(source) = fs::read_to_string(root.join(&function.file)) else {
+                continue;
+            };
+            let flow = extract_local_flow_graph(&function.name, &function.file, &source, 1);
+            let mut names = BTreeSet::new();
+            for parameter in &flow.parameters {
+                names.insert(parameter.name.clone());
+            }
+            for binding in &flow.bindings {
+                names.insert(binding.name.clone());
+            }
+            let mut ids = BTreeMap::new();
+            for name in names {
+                let id = flow_node(function, &name);
+                ids.insert(name.clone(), id);
+                result.nodes.push(flow_node_record(id, &name, function));
+            }
+            let return_id = flow_node(function, "return");
+            result
+                .nodes
+                .push(flow_node_record(return_id, "return", function));
+            for assignment in &flow.assignments {
+                if let (Some(&from), Some(&to)) =
+                    (ids.get(&assignment.from), ids.get(&assignment.to))
+                {
+                    result.edges.push(DataFlowEdge {
+                        from,
+                        to,
+                        kind: EdgeKind::References,
+                        confidence: Confidence::Extracted,
+                    });
+                }
+            }
+            for ret in &flow.returns {
+                if let Some(&from) = ids.get(&ret.source) {
+                    result.edges.push(DataFlowEdge {
+                        from,
+                        to: return_id,
+                        kind: EdgeKind::References,
+                        confidence: Confidence::Extracted,
+                    });
+                }
+            }
+            flows.insert(function.id, (flow, ids, return_id));
         }
+        for (caller_id, (flow, ids, _)) in &flows {
+            for argument in &flow.call_arguments {
+                let Some(&from) = ids.get(&argument.argument) else {
+                    continue;
+                };
+                let Some(call) = graph.edges.iter().find(|edge| {
+                    edge.from == *caller_id
+                        && edge.kind == EdgeKind::Calls
+                        && graph
+                            .nodes
+                            .iter()
+                            .any(|node| node.id == edge.to && node.name == argument.call)
+                }) else {
+                    continue;
+                };
+                let Some((callee_flow, callee_ids, _)) = flows.get(&call.to) else {
+                    continue;
+                };
+                let Some(parameter) = callee_flow.parameters.get(argument.index) else {
+                    continue;
+                };
+                let Some(&to) = callee_ids.get(&parameter.name) else {
+                    continue;
+                };
+                result.edges.push(DataFlowEdge {
+                    from,
+                    to,
+                    kind: EdgeKind::References,
+                    confidence: Confidence::Resolved,
+                });
+            }
+            for assignment in &flow.assignments {
+                let Some(&to) = ids.get(&assignment.to) else {
+                    continue;
+                };
+                let Some(call) = graph.edges.iter().find(|edge| {
+                    edge.from == *caller_id
+                        && edge.kind == EdgeKind::Calls
+                        && graph
+                            .nodes
+                            .iter()
+                            .any(|node| node.id == edge.to && node.name == assignment.from)
+                }) else {
+                    continue;
+                };
+                let Some((_, _, return_id)) = flows.get(&call.to) else {
+                    continue;
+                };
+                result.edges.push(DataFlowEdge {
+                    from: *return_id,
+                    to,
+                    kind: EdgeKind::References,
+                    confidence: Confidence::Resolved,
+                });
+            }
+        }
+        result
+            .edges
+            .sort_by_key(|edge| (edge.from, edge.to, edge.kind.code(), edge.confidence.code()));
+        result.edges.dedup();
+        result
+    }
+}
+
+fn flow_node(function: &Node, name: &str) -> NodeId {
+    crate::graph::stable_node_id(&NodeIdentity::new(
+        function.language,
+        &function.file,
+        NodeKind::Variable,
+        &format!("{}::#flow::{}", function.qualified_name, name),
+        Some(&function.qualified_name),
+        None,
+    ))
+}
+
+fn flow_node_record(id: NodeId, name: &str, function: &Node) -> Node {
+    Node {
+        id,
+        kind: NodeKind::Variable,
+        name: name.into(),
+        qualified_name: format!("{}::#flow::{}", function.qualified_name, name),
+        file: function.file.clone(),
+        location: function.location.clone(),
+        language: function.language,
+        visibility: crate::model::Visibility::Private,
+        signature: None,
+        container: Some(function.qualified_name.clone()),
     }
 }
 
@@ -121,9 +256,21 @@ pub fn find_source_sink_flows(
     sink_query: &str,
     limit: Option<usize>,
 ) -> FlowAnalysisReport {
-    let index = QueryIndex::new(graph);
-    let sources = index.find(graph, source_query);
-    let sinks = index.find(graph, sink_query);
+    let dataflow = DataFlowGraph::from_graph(graph);
+    let sources = dataflow
+        .nodes
+        .iter()
+        .filter(|node| {
+            node.name.contains(source_query) || node.qualified_name.contains(source_query)
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    let sinks = dataflow
+        .nodes
+        .iter()
+        .filter(|node| node.name.contains(sink_query) || node.qualified_name.contains(sink_query))
+        .cloned()
+        .collect::<Vec<_>>();
 
     let mut paths = Vec::new();
     let max_paths = limit.unwrap_or(10);
@@ -133,7 +280,6 @@ pub fn find_source_sink_flows(
             if source.id == sink.id {
                 continue;
             }
-            let dataflow = DataFlowGraph::from_graph(graph);
             let query = DataFlowQuery::new(&dataflow);
             for path in query.trace_flow(
                 source.id,
@@ -141,7 +287,7 @@ pub fn find_source_sink_flows(
                 15,
                 max_paths.saturating_sub(paths.len()),
             ) {
-                paths.push(flow_path(graph, source, sink, &path));
+                paths.push(flow_path(&dataflow, source, sink, &path));
                 if paths.len() >= max_paths {
                     break;
                 }
@@ -164,7 +310,7 @@ pub fn find_source_sink_flows(
 }
 
 fn flow_path(
-    graph: &Graph,
+    dataflow: &DataFlowGraph,
     source: &Node,
     sink: &Node,
     path: &[(NodeId, Confidence)],
@@ -174,7 +320,7 @@ fn flow_path(
         .iter()
         .enumerate()
         .filter_map(|(index, (id, confidence))| {
-            let node = graph.nodes.iter().find(|node| node.id == *id)?.clone();
+            let node = dataflow.nodes.iter().find(|node| node.id == *id)?.clone();
             let dispatch = match confidence {
                 Confidence::Possible => {
                     overall = DispatchConfidence::Possible;
@@ -195,7 +341,11 @@ fn flow_path(
                 edge_type: if index == 0 {
                     "source".into()
                 } else {
-                    "Calls".into()
+                    dataflow
+                        .edges
+                        .iter()
+                        .find(|edge| edge.to == *id)
+                        .map_or_else(|| "References".into(), |edge| edge.kind.as_str().into())
                 },
             })
         })

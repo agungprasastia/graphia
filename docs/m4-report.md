@@ -48,3 +48,4 @@ M4 introduces modular, on-demand advanced static analysis capabilities to the Gr
   - Boundary check: ~37 µs (small), ~122 µs (medium), ~1.79 ms (large).
   - Graph diff: ~24 µs (small), ~123 µs (medium), ~739 µs (large).
   - Change coupling: ~5 µs (small), ~14 µs (medium), ~14 µs (large).
+> **Status note:** this historical report is superseded by the M4.1.3 blocker audit.

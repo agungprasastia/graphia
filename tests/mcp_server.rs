@@ -496,6 +496,33 @@ fn test_stdio_isolation_and_stream_roundtrip() {
 }
 
 #[test]
+fn test_stdio_cancel_notification_does_not_kill_server() {
+    let input = concat!(
+        r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"graphia_dependency_path","arguments":{"from":"checkout","to":"apply_discount","max_depth":10000}}}"#,
+        "\n",
+        r#"{"jsonrpc":"2.0","method":"$/cancelRequest","params":{"id":1}}"#,
+        "\n",
+        r#"{"jsonrpc":"2.0","id":2,"method":"ping"}"#,
+        "\n",
+    );
+    let mut output = Vec::new();
+    McpServer::new(None)
+        .with_graph(build_mock_graph())
+        .run_stream(Cursor::new(input.as_bytes()), &mut output)
+        .expect("stdio cancellation");
+    let output = String::from_utf8(output).expect("utf8 output");
+    let responses = output
+        .lines()
+        .map(|line| serde_json::from_str::<JsonRpcResponse>(line).expect("json response"))
+        .collect::<Vec<_>>();
+    assert!(
+        responses
+            .iter()
+            .any(|response| response.id == RequestId::Number(2))
+    );
+}
+
+#[test]
 fn test_path_traversal_sandboxing() {
     let mut server = McpServer::new(None).with_graph(build_mock_graph());
 

@@ -225,8 +225,8 @@ graphia mcp --repo . --auto-index
 Run Graphia as a live synchronization daemon that updates the native graph incrementally in real time:
 
 ```bash
-# Start foreground synchronization daemon
-graphia daemon --repo . --debounce-ms 100 --foreground
+# Start synchronization daemon
+graphia daemon --repo . --debounce-ms 100
 
 # Check daemon health and tracked generation
 graphia daemon status --repo . --format json

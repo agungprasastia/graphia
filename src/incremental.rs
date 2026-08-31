@@ -57,7 +57,9 @@ pub struct IncrementalWorkspace {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IncrementalUpdateSummary {
     pub files_reparsed: usize,
+    pub files_parsed: usize,
     pub affected_files: BTreeSet<String>,
+    pub files_affected: usize,
     pub nodes_mutated: usize,
     pub nodes_added: usize,
     pub nodes_removed: usize,
@@ -124,6 +126,8 @@ impl IncrementalWorkspace {
         }
 
         let mut graph = build_graph(parsed_entries);
+        graph.set_source_root(self.repo_root.clone());
+        graph.resolve_cross_file()?;
         graph.canonicalize()?;
         self.graph = graph;
         self.rebuild_indexes();
@@ -165,7 +169,9 @@ impl IncrementalWorkspace {
         if actions.is_empty() {
             return Ok(IncrementalUpdateSummary {
                 files_reparsed: 0,
+                files_parsed: 0,
                 affected_files: BTreeSet::new(),
+                files_affected: 0,
                 nodes_mutated: 0,
                 nodes_added: 0,
                 nodes_removed: 0,
@@ -280,7 +286,9 @@ impl IncrementalWorkspace {
             self.reconcile_full()?;
             return Ok(IncrementalUpdateSummary {
                 files_reparsed,
+                files_parsed: files_reparsed,
                 affected_files: changed_files,
+                files_affected: self.files.len(),
                 nodes_mutated: self.graph.nodes.len(),
                 nodes_added: self.graph.nodes.len(),
                 nodes_removed: 0,
@@ -295,7 +303,9 @@ impl IncrementalWorkspace {
         if changed_files.is_empty() {
             return Ok(IncrementalUpdateSummary {
                 files_reparsed,
+                files_parsed: files_reparsed,
                 affected_files: BTreeSet::new(),
+                files_affected: 0,
                 nodes_mutated: 0,
                 nodes_added: 0,
                 nodes_removed: 0,
@@ -357,12 +367,15 @@ impl IncrementalWorkspace {
                 .map(|(path, (language, parsed))| (path.clone(), *language, parsed.clone()))
                 .collect(),
         );
-        self.graph.resolve_cross_file()?;
+        self.graph.set_source_root(self.repo_root.clone());
+        self.graph.resolve_cross_file_affected(&component_files)?;
         self.rebuild_indexes();
         self.fallback_reason = None;
         Ok(IncrementalUpdateSummary {
             files_reparsed,
+            files_parsed: files_reparsed,
             affected_files,
+            files_affected: component_files.len(),
             nodes_mutated: old_nodes.abs_diff(self.graph.nodes.len()),
             nodes_added: self.graph.nodes.len().saturating_sub(old_nodes) + old_component_nodes,
             nodes_removed: old_nodes.saturating_sub(self.graph.nodes.len()) + old_component_nodes,
@@ -569,6 +582,8 @@ pub fn update_repository(root: &Path) -> Result<Graph> {
         });
     }
     let mut graph = build_graph(parsed);
+    graph.set_source_root(root.to_path_buf());
+    graph.resolve_cross_file()?;
     graph.canonicalize()?;
     let cache = Cache {
         schema_version: CACHE_SCHEMA_VERSION,

@@ -40,3 +40,4 @@ Milestone 3 implements the `graphia daemon` service that continuously monitors r
 - Performance Benchmark (`benches/performance.rs`):
   - Daemon live update latency: ~10 µs (small), ~89 µs (medium), ~493 µs (large).
   - Atomic generational snapshot swapping with sub-millisecond overhead.
+> **Status note:** historical M3 results are superseded by the M4.1.3 final closure report.

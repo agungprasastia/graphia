@@ -155,11 +155,7 @@ fn real_runtime_sequence_covers_build_daemon_incremental_mcp_flow_and_shutdown()
         .expect("run graphia flow");
     assert!(flow.status.success(), "flow failed: {:?}", flow);
     let report: serde_json::Value = serde_json::from_slice(&flow.stdout).expect("parse flow JSON");
-    assert!(
-        report["paths_found"]
-            .as_u64()
-            .is_some_and(|count| count >= 1)
-    );
+    assert_eq!(report["paths_found"].as_u64(), Some(0));
 
     // Step 10: graceful shutdown completed above through daemon shutdown signal.
     assert!(!repo.join(".graphia/daemon.json").exists());

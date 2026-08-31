@@ -48,7 +48,7 @@ The `graphia daemon` provides event-driven, real-time synchronization between fi
 
 - Start daemon:
   ```bash
-  graphia daemon --repo /path/to/repo [--debounce-ms 100] [--foreground]
+  graphia daemon --repo /path/to/repo [--debounce-ms 100]
   ```
 - Inspect status:
   ```bash

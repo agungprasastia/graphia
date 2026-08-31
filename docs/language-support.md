@@ -29,3 +29,4 @@ This matrix documents actual semantic extraction, AST-aware typeflow, and resolu
 | **Swift** | `.swift` | FULL | FALLBACK | Normalized extraction and structural resolution |
 
 AST-aware typeflow is intentionally approximate. It preserves `Known`, `Partial`, and `Unknown` uncertainty rather than presenting heuristic paths as compiler-verified facts. Dataflow is separate from structural BFS and does not treat `Imports` or `Contains` edges as value flow. All languages retain baseline normalized extraction; fallback does not mean unsupported.
+> **Data-flow coverage:** AST-aware value flow is runtime-backed for Rust, TypeScript/JavaScript, and Python when source root is available; other languages remain partial/unsupported for value-flow claims.

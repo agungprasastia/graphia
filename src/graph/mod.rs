@@ -1,4 +1,5 @@
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::path::PathBuf;
 
 use sha2::{Digest, Sha256};
 
@@ -16,6 +17,7 @@ pub struct Graph {
     resolution: ResolutionReport,
     resolution_calls: Vec<(String, Call)>,
     parsed_files: Vec<(String, Option<Language>, ParsedFile)>,
+    source_root: Option<PathBuf>,
 }
 
 impl PartialEq for Graph {
@@ -153,7 +155,16 @@ impl Graph {
             resolution: ResolutionReport::default(),
             resolution_calls: Vec::new(),
             parsed_files: Vec::new(),
+            source_root: None,
         }
+    }
+
+    pub(crate) fn set_source_root(&mut self, root: PathBuf) {
+        self.source_root = Some(root);
+    }
+
+    pub(crate) fn source_root(&self) -> Option<&PathBuf> {
+        self.source_root.as_ref()
     }
 
     pub fn resolve_cross_file(&mut self) -> crate::error::Result<ResolutionReport> {
@@ -196,6 +207,52 @@ impl Graph {
             resolved_calls: summary.resolved_calls,
             unresolved_calls: summary.unresolved_calls,
             ambiguous_calls: summary.ambiguous_calls,
+        };
+        self.canonicalize()?;
+        Ok(self.resolution.clone())
+    }
+
+    pub(crate) fn resolve_cross_file_affected(
+        &mut self,
+        affected_files: &BTreeSet<String>,
+    ) -> crate::error::Result<ResolutionReport> {
+        let affected_calls = self
+            .resolution_calls
+            .iter()
+            .filter(|(file, _)| affected_files.contains(file))
+            .cloned()
+            .collect::<Vec<_>>();
+        let affected_count = affected_calls.len();
+        let previous = self.resolution.clone();
+        self.edges.retain(|edge| {
+            if edge.kind != EdgeKind::Calls {
+                return true;
+            }
+            self.nodes
+                .iter()
+                .find(|node| node.id == edge.from)
+                .is_none_or(|node| !affected_files.contains(&node.file))
+        });
+        let imports = self
+            .edges
+            .iter()
+            .filter(|edge| edge.kind == EdgeKind::Imports)
+            .map(|edge| (edge.from, edge.to))
+            .collect::<Vec<_>>();
+        let mut engine = ResolutionEngine::new();
+        engine.index_files(&self.nodes, &self.parsed_files);
+        let (resolved_edges, summary) =
+            engine.resolve_calls(&affected_calls, &self.nodes, &imports);
+        self.edges.extend(resolved_edges);
+        let mut edge_ids = HashSet::new();
+        self.edges.retain(|edge| edge_ids.insert(edge.id));
+        self.resolution = ResolutionReport {
+            resolved_calls: summary.resolved_calls
+                + previous.resolved_calls.saturating_sub(affected_count),
+            unresolved_calls: summary.unresolved_calls
+                + previous.unresolved_calls.saturating_sub(affected_count),
+            ambiguous_calls: summary.ambiguous_calls
+                + previous.ambiguous_calls.saturating_sub(affected_count),
         };
         self.canonicalize()?;
         Ok(self.resolution.clone())
@@ -730,6 +787,7 @@ pub fn build_graph(files: Vec<(String, Option<Language>, ParsedFile)>) -> Graph 
             .into_iter()
             .map(|e| (e.path, e.language, e.parsed))
             .collect(),
+        source_root: None,
     };
     graph.nodes.sort_by(|a, b| {
         a.qualified_name
