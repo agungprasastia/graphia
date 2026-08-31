@@ -18,7 +18,7 @@ Graphia is built as a high-performance, deterministic repository intelligence en
 
 2. **Clone & Test**:
    ```bash
-   git clone https://github.com/username/graphia.git
+   git clone https://github.com/agungprasastia/graphia.git
    cd graphia
 
    # Run test suite
