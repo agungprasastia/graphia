@@ -29,7 +29,7 @@ Graphia is built as a high-performance, deterministic repository intelligence en
    cargo clippy --all-targets --all-features -- -D warnings
    ```
 
-3. **M4.1.3 verification gates**:
+3. **Release verification gates**:
    - No `#[allow(...)]` warning suppressions in production, tests, or benchmarks.
    - Selective incremental updates must preserve canonical clean-build equivalence.
    - `graphia flow` must use value-flow edges; structural `Calls`, `Contains`, and `Imports` alone are not data flow.
