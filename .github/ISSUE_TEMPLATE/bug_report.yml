@@ -1,0 +1,77 @@
+name: Bug report
+description: Create a report to help us improve Graphia
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to fill out this bug report!
+  - type: input
+    id: version
+    attributes:
+      label: Graphia Version / Commit
+      description: What version or commit of Graphia are you running?
+      placeholder: e.g. 0.1.0 or git commit hash
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating System
+      options:
+        - Linux
+        - macOS (Apple Silicon)
+        - macOS (Intel)
+        - Windows
+        - Other
+    validations:
+      required: true
+  - type: dropdown
+    id: language
+    attributes:
+      label: Programming Language (if applicable)
+      options:
+        - Rust
+        - Python
+        - TypeScript
+        - JavaScript
+        - TSX
+        - JSX
+        - Go
+        - C
+        - C++
+        - Java
+        - C#
+        - Kotlin
+        - Zig
+        - PHP
+        - Ruby
+        - Swift
+        - Multi-language / General
+    validations:
+      required: false
+  - type: textarea
+    id: description
+    attributes:
+      label: Bug Description
+      description: A clear and concise description of what the bug is.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps to Reproduce
+      description: Steps or minimal fixture code to reproduce the behavior.
+      placeholder: |
+        1. Run 'graphia build .'
+        2. Execute 'graphia impact MySymbol'
+        3. See error ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected Behavior
+      description: A clear description of what you expected to happen.
+    validations:
+      required: true
