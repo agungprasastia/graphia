@@ -45,6 +45,7 @@ pub struct LocalFlowGraph {
     pub assignments: Vec<AssignmentFlow>,
     pub returns: Vec<ReturnFlow>,
     pub call_arguments: Vec<CallArgumentFlow>,
+    pub call_returns: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -208,11 +209,41 @@ fn collect_local_ast(
             })
         });
         if let Some(name) = name.filter(|name| !name.is_empty()) {
+            if matches!(
+                value.kind(),
+                "call" | "call_expression" | "method_call_expression"
+            ) {
+                flow.call_returns.push(name.clone());
+            }
             flow.returns.push(ReturnFlow {
                 source: name,
                 location: location.clone(),
                 scope_id,
             });
+        }
+    }
+    if matches!(
+        node.kind(),
+        "block" | "statement_block" | "compound_statement"
+    ) {
+        let children = node.named_children(&mut node.walk()).collect::<Vec<_>>();
+        if let Some(value) = children.last()
+            && matches!(
+                value.kind(),
+                "call" | "call_expression" | "method_call_expression"
+            )
+            && let Some(raw) = value.utf8_text(source).ok()
+        {
+            let name = raw
+                .split('(')
+                .next()
+                .unwrap_or(raw)
+                .rsplit(['.', ':'])
+                .next()
+                .unwrap_or("");
+            if !name.is_empty() {
+                flow.call_returns.push(name.to_string());
+            }
         }
     }
     if matches!(

@@ -316,11 +316,23 @@ impl IncrementalWorkspace {
                 fallback_reason: None,
             });
         }
+        let dependency_hints = self.new_dependency_hints(&changed_files);
+        let reverse_unresolved = self.reverse_unresolved_hints(&changed_files);
         let mut dependency_seeds = changed_files.clone();
-        dependency_seeds.extend(self.new_dependency_hints(&changed_files));
+        dependency_seeds.extend(dependency_hints.iter().cloned());
+        dependency_seeds.extend(reverse_unresolved.iter().cloned());
         let affected_files =
             self.compute_affected_closure(&dependency_seeds.iter().cloned().collect::<Vec<_>>());
         let component_files = self.expand_graph_component(&affected_files);
+        let component_files = component_files
+            .difference(&dependency_hints)
+            .cloned()
+            .collect::<BTreeSet<_>>();
+        let component_files = component_files
+            .difference(&reverse_unresolved)
+            .cloned()
+            .chain(changed_files.iter().cloned())
+            .collect::<BTreeSet<_>>();
         let old_nodes = self.graph.nodes.len();
         let old_edges = self.graph.edges.len();
         let old_component_nodes = self
@@ -487,6 +499,70 @@ impl IncrementalWorkspace {
             }
         }
         hints
+    }
+
+    fn reverse_unresolved_hints(&self, changed_files: &BTreeSet<String>) -> BTreeSet<String> {
+        let names = changed_files
+            .iter()
+            .filter_map(|file| self.files.get(file))
+            .flat_map(|(_, parsed)| parsed.symbols.iter().map(|symbol| symbol.name.as_str()))
+            .collect::<BTreeSet<_>>();
+        self.files
+            .iter()
+            .filter(|(file, _)| !changed_files.contains(*file))
+            .filter(|(_, (_, parsed))| {
+                parsed
+                    .references
+                    .iter()
+                    .any(|reference| names.contains(reference.name.as_str()))
+                    || parsed
+                        .type_references
+                        .iter()
+                        .any(|reference| names.contains(reference.name.as_str()))
+                    || parsed.calls.iter().any(|call| {
+                        names.contains(
+                            call.callee
+                                .rsplit([':', '.'])
+                                .next()
+                                .unwrap_or(call.callee.as_str()),
+                        )
+                    })
+                    || parsed.instantiations.iter().any(|item| {
+                        names.contains(
+                            item.type_name
+                                .trim_end_matches(';')
+                                .rsplit([':', '.'])
+                                .next()
+                                .unwrap_or(item.type_name.as_str()),
+                        )
+                    })
+                    || parsed.inheritances.iter().any(|item| {
+                        names.contains(
+                            item.base_type
+                                .rsplit([':', '.'])
+                                .next()
+                                .unwrap_or(item.base_type.as_str()),
+                        )
+                    })
+                    || parsed.implementations.iter().any(|item| {
+                        names.contains(
+                            item.trait_or_interface
+                                .rsplit([':', '.'])
+                                .next()
+                                .unwrap_or(item.trait_or_interface.as_str()),
+                        )
+                    })
+                    || parsed
+                        .imports
+                        .iter()
+                        .any(|item| names.iter().any(|name| item.path.contains(name)))
+                    || parsed
+                        .exports
+                        .iter()
+                        .any(|item| names.contains(item.name.as_str()))
+            })
+            .map(|(file, _)| file.clone())
+            .collect()
     }
 
     fn normalize_path(&self, path: &Path) -> (PathBuf, String) {

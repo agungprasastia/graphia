@@ -379,7 +379,7 @@ fn runtime_dataflow_propagates_callee_return_to_caller_return_and_result() {
     let temp = tempfile::tempdir().expect("tempdir");
     std::fs::write(
         temp.path().join("returns.rs"),
-        "fn load(value: String) -> String { value }\nfn assigned(input: String) -> String { let result = load(input); result }\nfn direct(input: String) -> String { load(input) }\nfn explicit(input: String) -> String { return load(input); }\n",
+        "fn load(value: String) -> String { value }\nfn log(value: String) {}\nfn assigned(input: String) -> String { let result = load(input); result }\nfn direct(input: String) -> String { load(input) }\nfn explicit(input: String) -> String { return load(input); }\nfn normal(input: String) -> String { log(input.clone()); input }\n",
     )
     .expect("write return-flow source");
     let graph = graphia::storage::build_graph_from_repo(temp.path()).expect("build graph");
@@ -411,6 +411,9 @@ fn runtime_dataflow_propagates_callee_return_to_caller_return_and_result() {
             .any(|(from, to)| from.contains("load::#flow::return")
                 && to.contains("explicit::#flow::return"))
     );
+    assert!(!edge_names.iter().any(|(from, to)| {
+        from.contains("log::#flow::return") && to.contains("normal::#flow::return")
+    }));
 }
 
 #[test]
