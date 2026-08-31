@@ -59,6 +59,11 @@ pub struct IncrementalUpdateSummary {
     pub files_reparsed: usize,
     pub affected_files: BTreeSet<String>,
     pub nodes_mutated: usize,
+    pub nodes_added: usize,
+    pub nodes_removed: usize,
+    pub edges_added: usize,
+    pub edges_removed: usize,
+    pub full_rebuild: bool,
     pub fallback_used: bool,
     pub fallback_reason: Option<String>,
 }
@@ -162,6 +167,11 @@ impl IncrementalWorkspace {
                 files_reparsed: 0,
                 affected_files: BTreeSet::new(),
                 nodes_mutated: 0,
+                nodes_added: 0,
+                nodes_removed: 0,
+                edges_added: 0,
+                edges_removed: 0,
+                full_rebuild: false,
                 fallback_used: false,
                 fallback_reason: None,
             });
@@ -272,6 +282,11 @@ impl IncrementalWorkspace {
                 files_reparsed,
                 affected_files: changed_files,
                 nodes_mutated: self.graph.nodes.len(),
+                nodes_added: self.graph.nodes.len(),
+                nodes_removed: 0,
+                edges_added: self.graph.edges.len(),
+                edges_removed: 0,
+                full_rebuild: true,
                 fallback_used: true,
                 fallback_reason: Some(reason),
             });
@@ -282,30 +297,108 @@ impl IncrementalWorkspace {
                 files_reparsed,
                 affected_files: BTreeSet::new(),
                 nodes_mutated: 0,
+                nodes_added: 0,
+                nodes_removed: 0,
+                edges_added: 0,
+                edges_removed: 0,
+                full_rebuild: false,
                 fallback_used: false,
                 fallback_reason: None,
             });
         }
         let affected_files =
             self.compute_affected_closure(&changed_files.iter().cloned().collect::<Vec<_>>());
+        let component_files = self.expand_graph_component(&affected_files);
         let old_nodes = self.graph.nodes.len();
+        let old_edges = self.graph.edges.len();
+        let old_component_nodes = self
+            .graph
+            .nodes
+            .iter()
+            .filter(|node| component_files.contains(&node.file))
+            .count();
+        let old_component_edges = self
+            .graph
+            .edges
+            .iter()
+            .filter(|edge| {
+                self.graph
+                    .nodes
+                    .iter()
+                    .find(|node| node.id == edge.from)
+                    .is_some_and(|node| component_files.contains(&node.file))
+            })
+            .count();
         let parsed_entries = self
             .files
             .iter()
+            .filter(|(path, _)| component_files.contains(*path))
             .map(|(p, (lang, parsed))| (p.clone(), *lang, parsed.clone()))
             .collect();
-        let mut graph = build_graph(parsed_entries);
-        graph.canonicalize()?;
-        self.graph = graph;
+        let fragment = build_graph(parsed_entries);
+        let removed_node_ids = self
+            .graph
+            .nodes
+            .iter()
+            .filter(|node| component_files.contains(&node.file))
+            .map(|node| node.id)
+            .collect::<BTreeSet<_>>();
+        self.graph
+            .nodes
+            .retain(|node| !component_files.contains(&node.file));
+        self.graph.edges.retain(|edge| {
+            !removed_node_ids.contains(&edge.from) && !removed_node_ids.contains(&edge.to)
+        });
+        self.graph.nodes.extend(fragment.nodes);
+        self.graph.edges.extend(fragment.edges);
+        self.graph.set_resolution_context(
+            self.files
+                .iter()
+                .map(|(path, (language, parsed))| (path.clone(), *language, parsed.clone()))
+                .collect(),
+        );
+        self.graph.resolve_cross_file()?;
         self.rebuild_indexes();
         self.fallback_reason = None;
         Ok(IncrementalUpdateSummary {
             files_reparsed,
             affected_files,
             nodes_mutated: old_nodes.abs_diff(self.graph.nodes.len()),
+            nodes_added: self.graph.nodes.len().saturating_sub(old_nodes) + old_component_nodes,
+            nodes_removed: old_nodes.saturating_sub(self.graph.nodes.len()) + old_component_nodes,
+            edges_added: self.graph.edges.len().saturating_sub(old_edges) + old_component_edges,
+            edges_removed: old_edges.saturating_sub(self.graph.edges.len()) + old_component_edges,
+            full_rebuild: false,
             fallback_used: false,
             fallback_reason: None,
         })
+    }
+
+    fn expand_graph_component(&self, seed: &BTreeSet<String>) -> BTreeSet<String> {
+        let mut files = seed.clone();
+        let mut pending = seed.iter().cloned().collect::<Vec<_>>();
+        while let Some(file) = pending.pop() {
+            let node_ids = self
+                .graph
+                .nodes
+                .iter()
+                .filter(|node| node.file == file)
+                .map(|node| node.id)
+                .collect::<BTreeSet<_>>();
+            for edge in &self.graph.edges {
+                if !node_ids.contains(&edge.from) && !node_ids.contains(&edge.to) {
+                    continue;
+                }
+                for id in [edge.from, edge.to] {
+                    if let Some(node) = self.graph.nodes.iter().find(|node| node.id == id)
+                        && files.insert(node.file.clone())
+                    {
+                        pending.push(node.file.clone());
+                    }
+                }
+            }
+        }
+        files
     }
 
     fn normalize_path(&self, path: &Path) -> (PathBuf, String) {

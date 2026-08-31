@@ -1145,7 +1145,7 @@ pub fn run(cli: Cli) -> crate::error::Result<()> {
         }
         Commands::Mcp { repo, auto_index } => {
             let mut server = crate::mcp::McpServer::new_with_auto_index(repo, auto_index);
-            let stdin = std::io::stdin().lock();
+            let stdin = std::io::stdin();
             let stdout = std::io::stdout().lock();
             server
                 .run_stream(stdin, stdout)

@@ -1,7 +1,8 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, mpsc};
+use std::time::Duration;
 
 use super::error::{McpError, Result};
 use super::protocol::{
@@ -18,6 +19,7 @@ use crate::storage::{compare_metadata, load_metadata, metadata_for_files};
 pub const MCP_PROTOCOL_VERSION: &str = "2024-11-05";
 pub const SERVER_NAME: &str = "graphia-mcp";
 pub const SERVER_VERSION: &str = env!("CARGO_PKG_VERSION");
+const MAX_IN_FLIGHT_REQUESTS: usize = 4;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum IndexState {
@@ -34,13 +36,32 @@ pub enum IndexState {
     },
 }
 
+enum StreamEvent {
+    Request(JsonRpcRequest),
+    Cancel(RequestId),
+    Parse(String),
+    Fatal(McpError),
+    Eof,
+}
+
+struct StreamJob {
+    request: JsonRpcRequest,
+    id: RequestId,
+    repo_root: PathBuf,
+    graph: Option<Arc<Graph>>,
+    initialized: bool,
+    cancellations: Arc<Mutex<BTreeMap<RequestId, CancellationToken>>>,
+    token: Option<CancellationToken>,
+}
+
 /// MCP Server handling JSON-RPC requests, session state, and tool execution.
 pub struct McpServer {
     repo_root: PathBuf,
-    graph: Option<Graph>,
+    graph: Option<Arc<Graph>>,
     initialized: bool,
     auto_index: bool,
     cancellations: Arc<Mutex<BTreeMap<RequestId, CancellationToken>>>,
+    request_token: Option<CancellationToken>,
 }
 
 impl McpServer {
@@ -60,6 +81,7 @@ impl McpServer {
             initialized: false,
             auto_index,
             cancellations: Arc::new(Mutex::new(BTreeMap::new())),
+            request_token: None,
         }
     }
 
@@ -131,7 +153,7 @@ impl McpServer {
                 }
             };
 
-            self.graph = Some(graph);
+            self.graph = Some(Arc::new(graph));
         }
 
         Ok(())
@@ -141,47 +163,180 @@ impl McpServer {
     pub fn load_graph(&mut self) -> Result<&Graph> {
         self.ensure_graph_loaded()?;
         self.graph
-            .as_ref()
+            .as_deref()
             .ok_or_else(|| McpError::Internal("Graph not initialized".to_string()))
     }
 
     /// Set an explicit pre-built graph (useful for tests and in-memory execution).
     pub fn with_graph(mut self, graph: Graph) -> Self {
-        self.graph = Some(graph);
+        self.graph = Some(Arc::new(graph));
         self
     }
 
     /// Run the server on the provided input and output streams.
     /// Standard error can be used for server logging without contaminating stdout.
-    pub fn run_stream<R: Read, W: Write>(&mut self, input: R, output: W) -> Result<()> {
-        let mut reader = StdioReader::new(input);
+    pub fn run_stream<R: Read + Send, W: Write>(&mut self, input: R, output: W) -> Result<()> {
         let mut writer = StdioWriter::new(output);
+        let (event_tx, event_rx) = mpsc::channel();
+        let (job_tx, job_rx) = mpsc::sync_channel::<StreamJob>(MAX_IN_FLIGHT_REQUESTS);
+        let (response_tx, response_rx) = mpsc::channel();
 
-        loop {
-            let request = match reader.read_message() {
-                Ok(Some(request)) => request,
-                Ok(None) => break,
-                Err(McpError::Parse(message)) => {
-                    writer.write_response(&JsonRpcResponse::error(
-                        RequestId::Null,
-                        McpError::Parse(message).to_jsonrpc_error(),
-                    ))?;
-                    continue;
+        std::thread::scope(|scope| {
+            scope.spawn(move || {
+                let mut reader = StdioReader::new(input);
+                loop {
+                    match reader.read_message() {
+                        Ok(Some(request)) if request.is_notification() => {
+                            if matches!(
+                                request.method.as_str(),
+                                "$/cancelRequest" | "notifications/cancelled"
+                            ) && let Some(params) = request.params
+                                && let Ok(params) = serde_json::from_value::<
+                                    super::protocol::CancelRequestParams,
+                                >(params)
+                                && event_tx.send(StreamEvent::Cancel(params.id)).is_err()
+                            {
+                                return;
+                            }
+                        }
+                        Ok(Some(request)) => {
+                            if event_tx.send(StreamEvent::Request(request)).is_err() {
+                                return;
+                            }
+                        }
+                        Ok(None) => {
+                            let _ = event_tx.send(StreamEvent::Eof);
+                            return;
+                        }
+                        Err(McpError::Parse(message)) => {
+                            if event_tx.send(StreamEvent::Parse(message)).is_err() {
+                                return;
+                            }
+                        }
+                        Err(error) => {
+                            let _ = event_tx.send(StreamEvent::Fatal(error));
+                            return;
+                        }
+                    }
                 }
-                Err(error) => return Err(error),
-            };
-            if request.is_notification() {
-                self.handle_notification(&request)?;
-            } else {
-                let id = request
-                    .id
-                    .clone()
-                    .unwrap_or(RequestId::String("null".to_string()));
-                let response = self.handle_request(request, id);
-                writer.write_response(&response)?;
-            }
-        }
+            });
 
+            let job_rx = Arc::new(Mutex::new(job_rx));
+            for _ in 0..MAX_IN_FLIGHT_REQUESTS {
+                let job_rx = Arc::clone(&job_rx);
+                let response_tx = response_tx.clone();
+                scope.spawn(move || {
+                    loop {
+                        let job = match job_rx.lock().ok().and_then(|rx| rx.recv().ok()) {
+                            Some(job) => job,
+                            None => return,
+                        };
+                        let mut server = McpServer {
+                            repo_root: job.repo_root,
+                            graph: job.graph,
+                            initialized: job.initialized,
+                            auto_index: false,
+                            cancellations: Arc::clone(&job.cancellations),
+                            request_token: job.token,
+                        };
+                        let response = server.handle_request(job.request, job.id);
+                        let _ = response_tx.send(response);
+                    }
+                });
+            }
+            drop(response_tx);
+
+            let mut eof = false;
+            let mut pending = 0usize;
+            let mut response_order = VecDeque::new();
+            let mut completed = BTreeMap::new();
+            loop {
+                while let Ok(response) = response_rx.try_recv() {
+                    completed.insert(response.id.clone(), response);
+                }
+                while let Some(id) = response_order.front() {
+                    let Some(response) = completed.remove(id) else {
+                        break;
+                    };
+                    response_order.pop_front();
+                    pending = pending.saturating_sub(1);
+                    if writer.write_response(&response).is_err() {
+                        return;
+                    }
+                }
+                if eof && pending == 0 {
+                    break;
+                }
+                match event_rx.recv_timeout(Duration::from_millis(10)) {
+                    Ok(StreamEvent::Request(request)) => {
+                        let id = request.id.clone().unwrap_or(RequestId::Null);
+                        let graph = if request.method == "tools/call" {
+                            match self.ensure_graph_loaded() {
+                                Ok(()) => self.graph.clone(),
+                                Err(error) => {
+                                    let _ = writer.write_response(&JsonRpcResponse::error(
+                                        id,
+                                        error.to_jsonrpc_error(),
+                                    ));
+                                    continue;
+                                }
+                            }
+                        } else {
+                            self.graph.clone()
+                        };
+                        let token = (request.method == "tools/call").then(CancellationToken::new);
+                        if let Some(token) = &token
+                            && let Ok(mut registry) = self.cancellations.lock()
+                        {
+                            registry.insert(id.clone(), token.clone());
+                        }
+                        let job = StreamJob {
+                            request,
+                            id: id.clone(),
+                            repo_root: self.repo_root.clone(),
+                            graph,
+                            initialized: self.initialized,
+                            cancellations: Arc::clone(&self.cancellations),
+                            token,
+                        };
+                        match job_tx.try_send(job) {
+                            Ok(()) => {
+                                response_order.push_back(id);
+                                pending += 1;
+                            }
+                            Err(mpsc::TrySendError::Full(_)) => {
+                                if let Ok(mut registry) = self.cancellations.lock() {
+                                    registry.remove(&id);
+                                }
+                                let _ = writer.write_response(&JsonRpcResponse::error(
+                                    id,
+                                    McpError::Internal("MCP request capacity reached".into())
+                                        .to_jsonrpc_error(),
+                                ));
+                            }
+                            Err(mpsc::TrySendError::Disconnected(_)) => break,
+                        }
+                    }
+                    Ok(StreamEvent::Cancel(id)) => self.cancel_request(&id),
+                    Ok(StreamEvent::Parse(message)) => {
+                        let _ = writer.write_response(&JsonRpcResponse::error(
+                            RequestId::Null,
+                            McpError::Parse(message).to_jsonrpc_error(),
+                        ));
+                    }
+                    Ok(StreamEvent::Fatal(error)) => {
+                        let _ = writer.write_response(&JsonRpcResponse::error(
+                            RequestId::Null,
+                            error.to_jsonrpc_error(),
+                        ));
+                        eof = true;
+                    }
+                    Ok(StreamEvent::Eof) | Err(mpsc::RecvTimeoutError::Disconnected) => eof = true,
+                    Err(mpsc::RecvTimeoutError::Timeout) => {}
+                }
+            }
+            drop(job_tx);
+        });
         Ok(())
     }
 
@@ -341,7 +496,7 @@ impl McpServer {
             );
         };
         let root_ref = Some(self.repo_root.as_path());
-        let token = CancellationToken::new();
+        let token = self.request_token.take().unwrap_or_default();
         if let Ok(mut registry) = self.cancellations.lock() {
             registry.insert(id.clone(), token.clone());
         }

@@ -7,7 +7,6 @@ use tempfile::{TempDir, tempdir};
 
 pub const SEED: u64 = 0x4752_4150_4849_4134;
 
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Scale {
     Small,

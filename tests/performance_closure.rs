@@ -20,6 +20,8 @@ fn multi_scale_generator_is_deterministic() {
     assert_eq!(first.metadata.files, 100);
     assert_eq!(first.metadata.languages.values().sum::<usize>(), 100);
     assert_eq!(first.metadata.seed, SEED);
+    assert_eq!(Scale::Medium.file_count(), 1_000);
+    assert_eq!(Scale::Large.file_count(), 5_000);
 }
 
 #[test]

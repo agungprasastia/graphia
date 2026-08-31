@@ -36,6 +36,23 @@ pub struct ResolutionReport {
 }
 
 impl Graph {
+    pub(crate) fn set_resolution_context(
+        &mut self,
+        parsed_files: Vec<(String, Option<Language>, ParsedFile)>,
+    ) {
+        self.resolution_calls = parsed_files
+            .iter()
+            .flat_map(|(path, _, parsed)| {
+                parsed
+                    .calls
+                    .iter()
+                    .cloned()
+                    .map(|call| (path.clone(), call))
+            })
+            .collect();
+        self.parsed_files = parsed_files;
+    }
+
     pub fn canonicalize(&mut self) -> crate::error::Result<()> {
         self.nodes.sort_by(|a, b| {
             a.qualified_name

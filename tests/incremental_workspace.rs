@@ -57,6 +57,40 @@ fn selective_update_reparses_only_modified_file() {
 }
 
 #[test]
+fn selective_update_leaves_unrelated_module_outside_component() {
+    let temp = tempdir().expect("tempdir");
+    let root = temp.path();
+    let auth = root.join("auth.rs");
+    let user = root.join("user.rs");
+    let logger = root.join("logger.rs");
+    fs::write(&auth, "pub fn authenticate() {}").expect("write auth");
+    fs::write(
+        &user,
+        "use crate::auth::authenticate;\npub fn current_user() { authenticate(); }",
+    )
+    .expect("write user");
+    fs::write(&logger, "pub fn log() {}").expect("write logger");
+    let mut ws = IncrementalWorkspace::new(root.to_path_buf()).expect("workspace init");
+
+    fs::write(&auth, "pub fn authenticate_v2() {}").expect("modify auth");
+    let summary = ws
+        .apply_changes_selective(&[SemanticAction::Modified(auth)])
+        .expect("selective update");
+
+    assert_eq!(summary.files_reparsed, 1);
+    assert!(!summary.full_rebuild);
+    assert!(!summary.fallback_used);
+    assert!(!summary.affected_files.contains("logger.rs"));
+    assert!(ws.file_nodes.contains_key("logger.rs"));
+    assert_eq!(
+        ws.graph,
+        IncrementalWorkspace::new(root.to_path_buf())
+            .expect("clean")
+            .graph
+    );
+}
+
+#[test]
 fn unknown_rename_records_explicit_fallback_reason() {
     let temp = tempdir().expect("tempdir");
     let root = temp.path();
