@@ -380,3 +380,587 @@ fn test_unimported_foreign_symbol_remains_unresolved() {
     assert_eq!(report.resolved_calls, 0);
     assert!(graph.edges.iter().all(|e| e.kind != EdgeKind::Calls));
 }
+
+fn class_sym(file: &str, name: &str, line: u32) -> Symbol {
+    Symbol {
+        kind: NodeKind::Class,
+        name: name.to_string(),
+        qualified_name: format!("{file}::{name}"),
+        location: loc(file, line),
+        parent: None,
+        visibility: graphia::model::Visibility::Public,
+        signature: None,
+        container: None,
+    }
+}
+
+fn trait_sym(file: &str, name: &str, line: u32) -> Symbol {
+    Symbol {
+        kind: NodeKind::Trait,
+        name: name.to_string(),
+        qualified_name: format!("{file}::{name}"),
+        location: loc(file, line),
+        parent: None,
+        visibility: graphia::model::Visibility::Public,
+        signature: None,
+        container: None,
+    }
+}
+
+fn func_with_sig(file: &str, name: &str, sig: &str, line: u32) -> Symbol {
+    Symbol {
+        kind: NodeKind::Function,
+        name: name.to_string(),
+        qualified_name: format!("{file}::{name}"),
+        location: loc(file, line),
+        parent: None,
+        visibility: graphia::model::Visibility::Public,
+        signature: Some(sig.to_string()),
+        container: None,
+    }
+}
+
+#[test]
+fn test_engine_same_name_different_modules() {
+    let mod_a = ParsedFile {
+        symbols: vec![func("mod_a.rs", "compute", 1)],
+        imports: vec![],
+        calls: vec![],
+        definitions: vec![],
+        references: vec![],
+        exports: vec![],
+        type_references: vec![],
+    };
+    let mod_b = ParsedFile {
+        symbols: vec![func("mod_b.rs", "compute", 1)],
+        imports: vec![],
+        calls: vec![],
+        definitions: vec![],
+        references: vec![],
+        exports: vec![],
+        type_references: vec![],
+    };
+    let app = ParsedFile {
+        symbols: vec![func("app.rs", "main", 1)],
+        imports: vec![Import {
+            path: "use mod_a::compute;".to_string(),
+            location: loc("app.rs", 1),
+        }],
+        calls: vec![],
+        definitions: vec![],
+        references: vec![],
+        exports: vec![],
+        type_references: vec![],
+    };
+
+    let files = vec![
+        ("mod_a.rs".to_string(), Some(Language::Rust), mod_a),
+        ("mod_b.rs".to_string(), Some(Language::Rust), mod_b),
+        ("app.rs".to_string(), Some(Language::Rust), app),
+    ];
+    let graph = build_graph(files.clone());
+    let mut engine = graphia::resolve::ResolutionEngine::new();
+    engine.index_files(&graph.nodes, &files);
+
+    let res = engine.resolve_reference("app.rs", None, "compute", EdgeKind::Calls, None);
+    let target_a = graph
+        .nodes
+        .iter()
+        .find(|n| n.qualified_name == "mod_a.rs::compute")
+        .unwrap()
+        .id;
+    assert_eq!(res, graphia::resolve::Resolution::Resolved(target_a));
+}
+
+#[test]
+fn test_engine_same_name_different_containers() {
+    let service = ParsedFile {
+        symbols: vec![
+            class_sym("service.ts", "Alpha", 1),
+            method("service.ts", "Alpha", "run", 2),
+            class_sym("service.ts", "Beta", 3),
+            method("service.ts", "Beta", "run", 4),
+        ],
+        imports: vec![],
+        calls: vec![],
+        definitions: vec![],
+        references: vec![],
+        exports: vec![],
+        type_references: vec![],
+    };
+
+    let files = vec![("service.ts".to_string(), Some(Language::TypeScript), service)];
+    let graph = build_graph(files.clone());
+    let mut engine = graphia::resolve::ResolutionEngine::new();
+    engine.index_files(&graph.nodes, &files);
+
+    let alpha_run_id = graph
+        .nodes
+        .iter()
+        .find(|n| n.qualified_name == "service.ts::Alpha::run")
+        .unwrap()
+        .id;
+
+    let res = engine.resolve_reference("service.ts", Some(alpha_run_id), "run", EdgeKind::Calls, None);
+    assert_eq!(res, graphia::resolve::Resolution::Resolved(alpha_run_id));
+}
+
+#[test]
+fn test_engine_overload_resolution_by_param_count() {
+    let math = ParsedFile {
+        symbols: vec![
+            func_with_sig("math.cpp", "add", "add(int,int)", 1),
+            func_with_sig("math.cpp", "add", "add(int,int,int)", 2),
+        ],
+        imports: vec![],
+        calls: vec![],
+        definitions: vec![],
+        references: vec![],
+        exports: vec![],
+        type_references: vec![],
+    };
+
+    let files = vec![("math.cpp".to_string(), Some(Language::Cpp), math)];
+    let graph = build_graph(files.clone());
+    let mut engine = graphia::resolve::ResolutionEngine::new();
+    engine.index_files(&graph.nodes, &files);
+
+    let add2_id = graph
+        .nodes
+        .iter()
+        .find(|n| n.signature.as_deref() == Some("add(int,int)"))
+        .unwrap()
+        .id;
+    let add3_id = graph
+        .nodes
+        .iter()
+        .find(|n| n.signature.as_deref() == Some("add(int,int,int)"))
+        .unwrap()
+        .id;
+
+    let res2 = engine.resolve_reference("math.cpp", None, "add", EdgeKind::Calls, Some(2));
+    assert_eq!(res2, graphia::resolve::Resolution::Resolved(add2_id));
+
+    let res3 = engine.resolve_reference("math.cpp", None, "add", EdgeKind::Calls, Some(3));
+    assert_eq!(res3, graphia::resolve::Resolution::Resolved(add3_id));
+
+    let res_ambig = engine.resolve_reference("math.cpp", None, "add", EdgeKind::Calls, None);
+    assert!(res_ambig.is_ambiguous());
+}
+
+#[test]
+fn test_engine_import_alias() {
+    let lib = ParsedFile {
+        symbols: vec![func("lib.py", "original_handler", 1)],
+        imports: vec![],
+        calls: vec![],
+        definitions: vec![],
+        references: vec![],
+        exports: vec![],
+        type_references: vec![],
+    };
+    let app = ParsedFile {
+        symbols: vec![func("app.py", "start", 1)],
+        imports: vec![Import {
+            path: "from lib import original_handler as aliased_handler".to_string(),
+            location: loc("app.py", 1),
+        }],
+        calls: vec![],
+        definitions: vec![],
+        references: vec![],
+        exports: vec![],
+        type_references: vec![],
+    };
+
+    let files = vec![
+        ("lib.py".to_string(), Some(Language::Python), lib),
+        ("app.py".to_string(), Some(Language::Python), app),
+    ];
+    let graph = build_graph(files.clone());
+    let mut engine = graphia::resolve::ResolutionEngine::new();
+    engine.index_files(&graph.nodes, &files);
+
+    let target_id = graph
+        .nodes
+        .iter()
+        .find(|n| n.qualified_name == "lib.py::original_handler")
+        .unwrap()
+        .id;
+
+    let res = engine.resolve_reference("app.py", None, "aliased_handler", EdgeKind::Calls, None);
+    assert_eq!(res, graphia::resolve::Resolution::Resolved(target_id));
+}
+
+#[test]
+fn test_engine_multi_hop_reexport() {
+    let file_a = ParsedFile {
+        symbols: vec![class_sym("a.ts", "Foo", 1)],
+        imports: vec![],
+        calls: vec![],
+        definitions: vec![],
+        references: vec![],
+        exports: vec![graphia::parser::Export {
+            name: "Foo".to_string(),
+            location: loc("a.ts", 1),
+            target: Some("a.ts::Foo".to_string()),
+        }],
+        type_references: vec![],
+    };
+    let file_b = ParsedFile {
+        symbols: vec![],
+        imports: vec![Import {
+            path: "import { Foo } from './a'".to_string(),
+            location: loc("b.ts", 1),
+        }],
+        calls: vec![],
+        definitions: vec![],
+        references: vec![],
+        exports: vec![graphia::parser::Export {
+            name: "Foo".to_string(),
+            location: loc("b.ts", 2),
+            target: Some("a.ts::Foo".to_string()),
+        }],
+        type_references: vec![],
+    };
+    let file_c = ParsedFile {
+        symbols: vec![func("c.ts", "main", 1)],
+        imports: vec![Import {
+            path: "import { Foo } from './b'".to_string(),
+            location: loc("c.ts", 1),
+        }],
+        calls: vec![],
+        definitions: vec![],
+        references: vec![],
+        exports: vec![],
+        type_references: vec![],
+    };
+
+    let files = vec![
+        ("a.ts".to_string(), Some(Language::TypeScript), file_a),
+        ("b.ts".to_string(), Some(Language::TypeScript), file_b),
+        ("c.ts".to_string(), Some(Language::TypeScript), file_c),
+    ];
+    let graph = build_graph(files.clone());
+    let mut engine = graphia::resolve::ResolutionEngine::new();
+    engine.index_files(&graph.nodes, &files);
+
+    let foo_a_id = graph
+        .nodes
+        .iter()
+        .find(|n| n.qualified_name == "a.ts::Foo")
+        .unwrap()
+        .id;
+
+    let res = engine.resolve_type_reference("c.ts", "Foo");
+    assert_eq!(res, graphia::resolve::Resolution::Resolved(foo_a_id));
+}
+
+#[test]
+fn test_engine_receiver_method() {
+    let service = ParsedFile {
+        symbols: vec![
+            class_sym("service.ts", "AuthService", 1),
+            method("service.ts", "AuthService", "verify", 2),
+        ],
+        imports: vec![],
+        calls: vec![],
+        definitions: vec![],
+        references: vec![],
+        exports: vec![],
+        type_references: vec![],
+    };
+    let client = ParsedFile {
+        symbols: vec![func("client.ts", "login", 1)],
+        imports: vec![Import {
+            path: "import { AuthService } from './service'".to_string(),
+            location: loc("client.ts", 1),
+        }],
+        calls: vec![],
+        definitions: vec![],
+        references: vec![],
+        exports: vec![],
+        type_references: vec![],
+    };
+
+    let files = vec![
+        ("service.ts".to_string(), Some(Language::TypeScript), service),
+        ("client.ts".to_string(), Some(Language::TypeScript), client),
+    ];
+    let graph = build_graph(files.clone());
+    let mut engine = graphia::resolve::ResolutionEngine::new();
+    engine.index_files(&graph.nodes, &files);
+
+    let verify_id = graph
+        .nodes
+        .iter()
+        .find(|n| n.qualified_name == "service.ts::AuthService::verify")
+        .unwrap()
+        .id;
+
+    let client_login_id = graph
+        .nodes
+        .iter()
+        .find(|n| n.qualified_name == "client.ts::login")
+        .unwrap()
+        .id;
+
+    let res = engine.resolve_reference(
+        "client.ts",
+        Some(client_login_id),
+        "verify",
+        EdgeKind::Calls,
+        None,
+    );
+    assert_eq!(res, graphia::resolve::Resolution::Resolved(verify_id));
+}
+
+#[test]
+fn test_engine_type_reference() {
+    let model = ParsedFile {
+        symbols: vec![class_sym("model.rs", "UserRecord", 1)],
+        imports: vec![],
+        calls: vec![],
+        definitions: vec![],
+        references: vec![],
+        exports: vec![],
+        type_references: vec![],
+    };
+    let handler = ParsedFile {
+        symbols: vec![func("handler.rs", "handle_request", 1)],
+        imports: vec![Import {
+            path: "use model::UserRecord;".to_string(),
+            location: loc("handler.rs", 1),
+        }],
+        calls: vec![],
+        definitions: vec![],
+        references: vec![],
+        exports: vec![],
+        type_references: vec![],
+    };
+
+    let files = vec![
+        ("model.rs".to_string(), Some(Language::Rust), model),
+        ("handler.rs".to_string(), Some(Language::Rust), handler),
+    ];
+    let graph = build_graph(files.clone());
+    let mut engine = graphia::resolve::ResolutionEngine::new();
+    engine.index_files(&graph.nodes, &files);
+
+    let user_record_id = graph
+        .nodes
+        .iter()
+        .find(|n| n.qualified_name == "model.rs::UserRecord")
+        .unwrap()
+        .id;
+
+    let res = engine.resolve_type_reference("handler.rs", "UserRecord");
+    assert_eq!(res, graphia::resolve::Resolution::Resolved(user_record_id));
+}
+
+#[test]
+fn test_engine_instantiation() {
+    let db = ParsedFile {
+        symbols: vec![class_sym("db.py", "ConnectionPool", 1)],
+        imports: vec![],
+        calls: vec![],
+        definitions: vec![],
+        references: vec![],
+        exports: vec![],
+        type_references: vec![],
+    };
+    let app = ParsedFile {
+        symbols: vec![func("app.py", "init_db", 1)],
+        imports: vec![Import {
+            path: "from db import ConnectionPool".to_string(),
+            location: loc("app.py", 1),
+        }],
+        calls: vec![],
+        definitions: vec![],
+        references: vec![],
+        exports: vec![],
+        type_references: vec![],
+    };
+
+    let files = vec![
+        ("db.py".to_string(), Some(Language::Python), db),
+        ("app.py".to_string(), Some(Language::Python), app),
+    ];
+    let graph = build_graph(files.clone());
+    let mut engine = graphia::resolve::ResolutionEngine::new();
+    engine.index_files(&graph.nodes, &files);
+
+    let pool_id = graph
+        .nodes
+        .iter()
+        .find(|n| n.qualified_name == "db.py::ConnectionPool")
+        .unwrap()
+        .id;
+
+    let res = engine.resolve_instantiation("app.py", None, "ConnectionPool");
+    assert_eq!(res, graphia::resolve::Resolution::Resolved(pool_id));
+}
+
+#[test]
+fn test_engine_inheritance() {
+    let base = ParsedFile {
+        symbols: vec![class_sym("base.py", "BaseController", 1)],
+        imports: vec![],
+        calls: vec![],
+        definitions: vec![],
+        references: vec![],
+        exports: vec![],
+        type_references: vec![],
+    };
+    let derived = ParsedFile {
+        symbols: vec![class_sym("user_ctrl.py", "UserController", 1)],
+        imports: vec![Import {
+            path: "from base import BaseController".to_string(),
+            location: loc("user_ctrl.py", 1),
+        }],
+        calls: vec![],
+        definitions: vec![],
+        references: vec![],
+        exports: vec![],
+        type_references: vec![],
+    };
+
+    let files = vec![
+        ("base.py".to_string(), Some(Language::Python), base),
+        ("user_ctrl.py".to_string(), Some(Language::Python), derived),
+    ];
+    let graph = build_graph(files.clone());
+    let mut engine = graphia::resolve::ResolutionEngine::new();
+    engine.index_files(&graph.nodes, &files);
+
+    let base_id = graph
+        .nodes
+        .iter()
+        .find(|n| n.qualified_name == "base.py::BaseController")
+        .unwrap()
+        .id;
+
+    let res = engine.resolve_inheritance("user_ctrl.py", "UserController", "BaseController");
+    assert_eq!(res, graphia::resolve::Resolution::Resolved(base_id));
+}
+
+#[test]
+fn test_engine_implementation() {
+    let proto = ParsedFile {
+        symbols: vec![trait_sym("repo.rs", "Repository", 1)],
+        imports: vec![],
+        calls: vec![],
+        definitions: vec![],
+        references: vec![],
+        exports: vec![],
+        type_references: vec![],
+    };
+    let impl_file = ParsedFile {
+        symbols: vec![class_sym("pg_repo.rs", "PostgresRepository", 1)],
+        imports: vec![Import {
+            path: "use repo::Repository;".to_string(),
+            location: loc("pg_repo.rs", 1),
+        }],
+        calls: vec![],
+        definitions: vec![],
+        references: vec![],
+        exports: vec![],
+        type_references: vec![],
+    };
+
+    let files = vec![
+        ("repo.rs".to_string(), Some(Language::Rust), proto),
+        ("pg_repo.rs".to_string(), Some(Language::Rust), impl_file),
+    ];
+    let graph = build_graph(files.clone());
+    let mut engine = graphia::resolve::ResolutionEngine::new();
+    engine.index_files(&graph.nodes, &files);
+
+    let repo_id = graph
+        .nodes
+        .iter()
+        .find(|n| n.qualified_name == "repo.rs::Repository")
+        .unwrap()
+        .id;
+
+    let res = engine.resolve_implementation("pg_repo.rs", "PostgresRepository", "Repository");
+    assert_eq!(res, graphia::resolve::Resolution::Resolved(repo_id));
+}
+
+#[test]
+fn test_engine_ambiguous_reference() {
+    let mod_a = ParsedFile {
+        symbols: vec![func("mod_a.rs", "duplicate_fn", 1)],
+        imports: vec![],
+        calls: vec![],
+        definitions: vec![],
+        references: vec![],
+        exports: vec![],
+        type_references: vec![],
+    };
+    let mod_b = ParsedFile {
+        symbols: vec![func("mod_b.rs", "duplicate_fn", 1)],
+        imports: vec![],
+        calls: vec![],
+        definitions: vec![],
+        references: vec![],
+        exports: vec![],
+        type_references: vec![],
+    };
+    let caller = ParsedFile {
+        symbols: vec![func("caller.rs", "main", 1)],
+        imports: vec![
+            Import {
+                path: "use mod_a::duplicate_fn;".to_string(),
+                location: loc("caller.rs", 1),
+            },
+            Import {
+                path: "use mod_b::duplicate_fn;".to_string(),
+                location: loc("caller.rs", 2),
+            },
+        ],
+        calls: vec![],
+        definitions: vec![],
+        references: vec![],
+        exports: vec![],
+        type_references: vec![],
+    };
+
+    let files = vec![
+        ("mod_a.rs".to_string(), Some(Language::Rust), mod_a),
+        ("mod_b.rs".to_string(), Some(Language::Rust), mod_b),
+        ("caller.rs".to_string(), Some(Language::Rust), caller),
+    ];
+    let graph = build_graph(files.clone());
+    let mut engine = graphia::resolve::ResolutionEngine::new();
+    engine.index_files(&graph.nodes, &files);
+
+    let res = engine.resolve_reference("caller.rs", None, "duplicate_fn", EdgeKind::Calls, None);
+    assert!(res.is_ambiguous());
+    if let graphia::resolve::Resolution::Ambiguous(candidates) = res {
+        assert_eq!(candidates.len(), 2);
+    } else {
+        panic!("Expected Ambiguous resolution");
+    }
+}
+
+#[test]
+fn test_engine_unresolved_reference() {
+    let caller = ParsedFile {
+        symbols: vec![func("caller.rs", "main", 1)],
+        imports: vec![],
+        calls: vec![],
+        definitions: vec![],
+        references: vec![],
+        exports: vec![],
+        type_references: vec![],
+    };
+
+    let files = vec![("caller.rs".to_string(), Some(Language::Rust), caller)];
+    let graph = build_graph(files.clone());
+    let mut engine = graphia::resolve::ResolutionEngine::new();
+    engine.index_files(&graph.nodes, &files);
+
+    let res = engine.resolve_reference("caller.rs", None, "non_existent_symbol", EdgeKind::Calls, None);
+    assert_eq!(res, graphia::resolve::Resolution::Unresolved);
+}
+

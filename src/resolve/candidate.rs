@@ -2,8 +2,44 @@ use std::collections::BTreeSet;
 
 use crate::model::NodeId;
 
-/// Maximum number of candidates retained in an ambiguous candidate set.
-pub const MAX_AMBIGUOUS_CANDIDATES: usize = 8;
+/// Maximum number of candidates retained in an ambiguous candidate set or candidate selector.
+pub const MAX_AMBIGUOUS_CANDIDATES: usize = 16;
+
+/// Unified semantic resolution result.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Resolution {
+    /// Exactly one candidate resolved unambiguously
+    Resolved(NodeId),
+    /// Multiple equally plausible candidates (bounded set)
+    Ambiguous(Vec<NodeId>),
+    /// No matching candidate found
+    Unresolved,
+}
+
+impl Resolution {
+    #[must_use]
+    pub fn is_resolved(&self) -> bool {
+        matches!(self, Self::Resolved(_))
+    }
+
+    #[must_use]
+    pub fn is_ambiguous(&self) -> bool {
+        matches!(self, Self::Ambiguous(_))
+    }
+
+    #[must_use]
+    pub fn is_unresolved(&self) -> bool {
+        matches!(self, Self::Unresolved)
+    }
+
+    #[must_use]
+    pub fn node_id(&self) -> Option<NodeId> {
+        match self {
+            Self::Resolved(id) => Some(*id),
+            _ => None,
+        }
+    }
+}
 
 /// Reason for resolution.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -38,6 +74,16 @@ pub enum ResolutionState {
     Unresolved,
 }
 
+impl From<ResolutionState> for Resolution {
+    fn from(state: ResolutionState) -> Self {
+        match state {
+            ResolutionState::Resolved { target, .. } => Resolution::Resolved(target),
+            ResolutionState::Ambiguous { candidates } => Resolution::Ambiguous(candidates),
+            ResolutionState::Unresolved => Resolution::Unresolved,
+        }
+    }
+}
+
 /// Candidate symbol match with score and reason.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Candidate {
@@ -60,7 +106,7 @@ impl PartialOrd for Candidate {
     }
 }
 
-/// Helper to accumulate and select candidates.
+/// Helper to accumulate and select candidates (bounded to at most 16 candidates).
 #[derive(Debug, Clone, Default)]
 pub struct CandidateSelector {
     candidates: BTreeSet<Candidate>,
@@ -81,6 +127,22 @@ impl CandidateSelector {
     /// 5: ReceiverMethod / InheritedMethod
     /// 6: WildcardImport
     pub fn add(&mut self, node_id: NodeId, priority: u32, reason: ResolutionReason) {
+        if self.candidates.len() >= MAX_AMBIGUOUS_CANDIDATES {
+            // Bounded candidate storage: if capacity reached, only keep if higher priority
+            if let Some(max_cand) = self.candidates.iter().next_back().cloned() {
+                if priority < max_cand.priority
+                    || (priority == max_cand.priority && node_id.0 < max_cand.node_id.0)
+                {
+                    self.candidates.remove(&max_cand);
+                    self.candidates.insert(Candidate {
+                        node_id,
+                        priority,
+                        reason,
+                    });
+                }
+            }
+            return;
+        }
         self.candidates.insert(Candidate {
             node_id,
             priority,
@@ -119,5 +181,11 @@ impl CandidateSelector {
                 .collect();
             ResolutionState::Ambiguous { candidates }
         }
+    }
+
+    /// Select as unified Resolution enum.
+    #[must_use]
+    pub fn resolve_unified(self) -> Resolution {
+        self.resolve().into()
     }
 }

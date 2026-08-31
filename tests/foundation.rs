@@ -198,6 +198,22 @@ fn graph_has_file_containment_and_stable_ids() {
         assert!(first.edges.iter().any(|edge| {
             edge.kind == EdgeKind::Imports && edge.from == file_id && edge.to == helper_file_id
         }));
+        let res = first.edges.iter().any(|edge| {
+            edge.kind == EdgeKind::Calls && edge.from == caller_id && edge.to == helper_id
+        });
+        if !res {
+            println!("TEST FOUNDATION FAILURE for {file}, caller_id: {caller_id:?}, helper_id: {helper_id:?}");
+            for n in &first.nodes {
+                if n.id == caller_id || n.id == helper_id {
+                    println!("  NODE: {n:?}");
+                }
+            }
+            for e in &first.edges {
+                if e.from == caller_id {
+                    println!("  OUTBOUND EDGE: {e:?}");
+                }
+            }
+        }
         assert!(first.edges.iter().any(|edge| {
             edge.kind == EdgeKind::Calls && edge.from == caller_id && edge.to == helper_id
         }));

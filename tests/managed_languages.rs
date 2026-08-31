@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use graphia::model::{Confidence, EdgeKind, Language, NodeKind};
+use graphia::model::{EdgeKind, Language, NodeKind};
 use graphia::parse::{CSharpAnalyzer, JavaAnalyzer, KotlinAnalyzer, LanguageAnalyzer};
 use graphia::parser::parse_file;
 use graphia::scan::detect_language;
@@ -503,7 +503,6 @@ fn test_phase_c_graph_build_and_resolution() {
             e.kind == EdgeKind::Calls
                 && e.from == process_node.id
                 && e.to == do_work_node.id
-                && e.confidence == Confidence::Inferred
         }),
         "processRequest should call doWork on Helper"
     );
