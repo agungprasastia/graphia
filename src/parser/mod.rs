@@ -37,6 +37,20 @@ fn ts_language(lang: GraphiaLanguage) -> Language {
         GraphiaLanguage::Rust => tree_sitter_rust::LANGUAGE.into(),
         GraphiaLanguage::Python => tree_sitter_python::LANGUAGE.into(),
         GraphiaLanguage::TypeScript => tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into(),
+        GraphiaLanguage::Tsx => tree_sitter_typescript::LANGUAGE_TSX.into(),
+        GraphiaLanguage::JavaScript | GraphiaLanguage::Jsx => {
+            tree_sitter_javascript::LANGUAGE.into()
+        }
+        GraphiaLanguage::Go => tree_sitter_go::LANGUAGE.into(),
+        GraphiaLanguage::C => tree_sitter_c::LANGUAGE.into(),
+        GraphiaLanguage::Cpp => tree_sitter_cpp::LANGUAGE.into(),
+        GraphiaLanguage::Java => tree_sitter_java::LANGUAGE.into(),
+        GraphiaLanguage::CSharp => tree_sitter_c_sharp::LANGUAGE.into(),
+        GraphiaLanguage::Kotlin => tree_sitter_kotlin::LANGUAGE.into(),
+        GraphiaLanguage::Zig => tree_sitter_zig::LANGUAGE.into(),
+        GraphiaLanguage::Php => tree_sitter_php::LANGUAGE_PHP.into(),
+        GraphiaLanguage::Ruby => tree_sitter_ruby::LANGUAGE.into(),
+        GraphiaLanguage::Swift => tree_sitter_swift::LANGUAGE.into(),
     }
 }
 
@@ -93,7 +107,21 @@ pub fn parse_bytes(
     Ok(match lang {
         GraphiaLanguage::Rust => parse_rust(path, &root, source),
         GraphiaLanguage::Python => parse_python(path, &root, source),
-        GraphiaLanguage::TypeScript => parse_typescript(path, &root, source),
+        GraphiaLanguage::TypeScript
+        | GraphiaLanguage::Tsx
+        | GraphiaLanguage::JavaScript
+        | GraphiaLanguage::Jsx => crate::parse::javascript::parse_js_family(path, &root, source),
+        GraphiaLanguage::Go => crate::parse::golang::parse_go(path, &root, source),
+        GraphiaLanguage::C | GraphiaLanguage::Cpp => {
+            crate::parse::c_cpp::parse_c_cpp(path, &root, source)
+        }
+        GraphiaLanguage::Java => crate::parse::java::parse_java(path, &root, source),
+        GraphiaLanguage::CSharp => crate::parse::csharp::parse_csharp(path, &root, source),
+        GraphiaLanguage::Kotlin => crate::parse::kotlin::parse_kotlin(path, &root, source),
+        GraphiaLanguage::Zig => crate::parse::zig::parse_zig(path, &root, source),
+        GraphiaLanguage::Php => crate::parse::php::parse_php(path, &root, source),
+        GraphiaLanguage::Ruby => crate::parse::ruby::parse_ruby(path, &root, source),
+        GraphiaLanguage::Swift => crate::parse::swift::parse_swift(path, &root, source),
     })
 }
 
@@ -368,143 +396,6 @@ fn extract_calls_python(
     let mut stack = vec![*node];
     while let Some(n) = stack.pop() {
         if n.kind() == "call" {
-            if let Some(func) = n.child_by_field_name("function") {
-                let callee_raw = node_text(&func, source).trim().to_string();
-                let simple = callee_raw
-                    .rsplit('.')
-                    .next()
-                    .unwrap_or(&callee_raw)
-                    .to_string();
-                if !simple.is_empty() {
-                    let loc = location_for_node(file, &n);
-                    calls.push(Call {
-                        caller: caller.to_string(),
-                        callee: simple,
-                        location: loc,
-                    });
-                }
-            }
-        }
-        for child in children_vec(&n).into_iter().rev() {
-            stack.push(child);
-        }
-    }
-}
-
-fn parse_typescript(file: &str, root: &tree_sitter::Node<'_>, source: &[u8]) -> ParsedFile {
-    let mut symbols = Vec::new();
-    let mut imports = Vec::new();
-    let mut calls = Vec::new();
-    let mut stack: Vec<(tree_sitter::Node<'_>, Option<String>)> = vec![(*root, None)];
-
-    while let Some((node, parent_class)) = stack.pop() {
-        match node.kind() {
-            "function_declaration" | "function" | "generator_function_declaration" => {
-                if let Some(name_node) = node.child_by_field_name("name") {
-                    let name = node_text(&name_node, source).to_string();
-                    let qualified = format!("{file}::{name}");
-                    let loc = location_for_node(file, &node);
-                    symbols.push(Symbol {
-                        kind: NodeKind::Function,
-                        name: name.clone(),
-                        qualified_name: qualified.clone(),
-                        location: loc,
-                        parent: None,
-                    });
-                    if let Some(body) = node.child_by_field_name("body") {
-                        extract_calls_ts(file, &body, source, &qualified, &mut calls);
-                    }
-                }
-            }
-            "method_definition" => {
-                if let Some(name_node) = node.child_by_field_name("name") {
-                    let name = node_text(&name_node, source).to_string();
-                    let qualified = format!("{file}::{name}");
-                    let loc = location_for_node(file, &node);
-                    symbols.push(Symbol {
-                        kind: NodeKind::Method,
-                        name,
-                        qualified_name: qualified.clone(),
-                        location: loc,
-                        parent: parent_class.clone(),
-                    });
-                    if let Some(body) = node.child_by_field_name("body") {
-                        extract_calls_ts(file, &body, source, &qualified, &mut calls);
-                    }
-                }
-            }
-            "class_declaration" => {
-                if let Some(name_node) = node.child_by_field_name("name") {
-                    let name = node_text(&name_node, source).to_string();
-                    let qualified = format!("{file}::{name}");
-                    let loc = location_for_node(file, &node);
-                    symbols.push(Symbol {
-                        kind: NodeKind::Class,
-                        name: name.clone(),
-                        qualified_name: qualified,
-                        location: loc,
-                        parent: None,
-                    });
-                    if let Some(body) = node.child_by_field_name("body") {
-                        for child in children_vec(&body).into_iter().rev() {
-                            stack.push((child, Some(name.clone())));
-                        }
-                        continue;
-                    }
-                }
-            }
-            "interface_declaration" => {
-                if let Some(name_node) = node.child_by_field_name("name") {
-                    let name = node_text(&name_node, source).to_string();
-                    let qualified = format!("{file}::{name}");
-                    let loc = location_for_node(file, &node);
-                    symbols.push(Symbol {
-                        kind: NodeKind::Interface,
-                        name,
-                        qualified_name: qualified,
-                        location: loc,
-                        parent: None,
-                    });
-                }
-            }
-            "import_statement" => {
-                let text = node_text(&node, source)
-                    .trim()
-                    .trim_end_matches(';')
-                    .to_string();
-                let loc = location_for_node(file, &node);
-                imports.push(Import {
-                    path: text,
-                    location: loc,
-                });
-            }
-            _ => {}
-        }
-        if node.kind() == "class_declaration" || node.kind() == "class_body" {
-            continue;
-        }
-        for child in children_vec(&node).into_iter().rev() {
-            stack.push((child, parent_class.clone()));
-        }
-    }
-
-    ParsedFile {
-        symbols,
-        imports,
-        calls,
-    }
-}
-
-fn extract_calls_ts(
-    file: &str,
-    node: &tree_sitter::Node<'_>,
-    source: &[u8],
-    caller: &str,
-    calls: &mut Vec<Call>,
-) {
-    let mut stack = vec![*node];
-    while let Some(n) = stack.pop() {
-        if n.kind() == "call_expression" {
             if let Some(func) = n.child_by_field_name("function") {
                 let callee_raw = node_text(&func, source).trim().to_string();
                 let simple = callee_raw

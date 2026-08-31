@@ -38,7 +38,21 @@ pub fn detect_language(path: &Path) -> Option<Language> {
     match ext.to_ascii_lowercase().as_str() {
         "rs" => Some(Language::Rust),
         "py" => Some(Language::Python),
-        "ts" | "tsx" | "mts" | "cts" => Some(Language::TypeScript),
+        "ts" | "mts" | "cts" => Some(Language::TypeScript),
+        "tsx" => Some(Language::Tsx),
+        "js" | "mjs" | "cjs" => Some(Language::JavaScript),
+        "jsx" => Some(Language::Jsx),
+        "go" => Some(Language::Go),
+        "c" => Some(Language::C),
+        "h" => Some(Language::C),
+        "cpp" | "cc" | "cxx" | "hpp" | "hxx" | "hh" => Some(Language::Cpp),
+        "java" => Some(Language::Java),
+        "cs" => Some(Language::CSharp),
+        "kt" | "kts" => Some(Language::Kotlin),
+        "zig" => Some(Language::Zig),
+        "php" | "phtml" | "php3" | "php4" | "php5" | "php7" | "phps" => Some(Language::Php),
+        "rb" | "erb" => Some(Language::Ruby),
+        "swift" => Some(Language::Swift),
         _ => None,
     }
 }
@@ -130,10 +144,37 @@ mod tests {
             detect_language(Path::new("a.ts")),
             Some(Language::TypeScript)
         );
+        assert_eq!(detect_language(Path::new("a.tsx")), Some(Language::Tsx));
         assert_eq!(
-            detect_language(Path::new("a.tsx")),
-            Some(Language::TypeScript)
+            detect_language(Path::new("a.js")),
+            Some(Language::JavaScript)
         );
+        assert_eq!(
+            detect_language(Path::new("a.mjs")),
+            Some(Language::JavaScript)
+        );
+        assert_eq!(
+            detect_language(Path::new("a.cjs")),
+            Some(Language::JavaScript)
+        );
+        assert_eq!(detect_language(Path::new("a.jsx")), Some(Language::Jsx));
+        assert_eq!(detect_language(Path::new("a.go")), Some(Language::Go));
+        assert_eq!(detect_language(Path::new("a.c")), Some(Language::C));
+        assert_eq!(detect_language(Path::new("a.h")), Some(Language::C));
+        assert_eq!(detect_language(Path::new("a.cpp")), Some(Language::Cpp));
+        assert_eq!(detect_language(Path::new("a.cc")), Some(Language::Cpp));
+        assert_eq!(detect_language(Path::new("a.cxx")), Some(Language::Cpp));
+        assert_eq!(detect_language(Path::new("a.hpp")), Some(Language::Cpp));
+        assert_eq!(detect_language(Path::new("a.hxx")), Some(Language::Cpp));
+        assert_eq!(detect_language(Path::new("a.hh")), Some(Language::Cpp));
+        assert_eq!(detect_language(Path::new("a.java")), Some(Language::Java));
+        assert_eq!(detect_language(Path::new("a.cs")), Some(Language::CSharp));
+        assert_eq!(detect_language(Path::new("a.kt")), Some(Language::Kotlin));
+        assert_eq!(detect_language(Path::new("a.kts")), Some(Language::Kotlin));
+        assert_eq!(detect_language(Path::new("a.zig")), Some(Language::Zig));
+        assert_eq!(detect_language(Path::new("a.php")), Some(Language::Php));
+        assert_eq!(detect_language(Path::new("a.rb")), Some(Language::Ruby));
+        assert_eq!(detect_language(Path::new("a.swift")), Some(Language::Swift));
         assert_eq!(detect_language(Path::new("a.txt")), None);
     }
 

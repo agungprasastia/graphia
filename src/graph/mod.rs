@@ -7,14 +7,26 @@ use crate::model::{
     NodeKind, SourceLocation,
 };
 use crate::parser::{Call, ParsedFile, Symbol};
+use crate::resolve::ResolutionEngine;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub struct Graph {
     pub nodes: Vec<Node>,
     pub edges: Vec<Edge>,
     resolution: ResolutionReport,
     resolution_calls: Vec<(String, Call)>,
+    parsed_files: Vec<(String, Option<Language>, ParsedFile)>,
 }
+
+impl PartialEq for Graph {
+    fn eq(&self, other: &Self) -> bool {
+        self.nodes == other.nodes
+            && self.edges == other.edges
+            && self.resolution == other.resolution
+    }
+}
+
+impl Eq for Graph {}
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ResolutionReport {
@@ -123,6 +135,7 @@ impl Graph {
             edges,
             resolution: ResolutionReport::default(),
             resolution_calls: Vec::new(),
+            parsed_files: Vec::new(),
         }
     }
 
@@ -144,73 +157,28 @@ impl Graph {
         self.edges.retain(|edge| {
             !(edge.kind == EdgeKind::Calls && edge.confidence == Confidence::Inferred)
         });
+
         let imports: Vec<(NodeId, NodeId)> = self
             .edges
             .iter()
             .filter(|edge| edge.kind == EdgeKind::Imports)
             .map(|edge| (edge.from, edge.to))
             .collect();
-        let mut report = ResolutionReport::default();
-        let mut resolved = Vec::new();
-        for (file, call) in &self.resolution_calls {
-            let Some(caller) = self
-                .nodes
-                .iter()
-                .find(|node| node.qualified_name == call.caller)
-            else {
-                report.unresolved_calls += 1;
-                continue;
-            };
-            let imported_files: Vec<NodeId> = imports
-                .iter()
-                .filter_map(|(from, to)| (*from == self.file_node_id(file)).then_some(*to))
-                .collect();
-            let candidates: Vec<&Node> = self
-                .nodes
-                .iter()
-                .filter(|node| {
-                    node.name == call.callee
-                        && node.kind != NodeKind::File
-                        && imported_files.contains(&self.file_node_id(&node.file))
-                })
-                .collect();
-            if candidates.len() != 1 {
-                if candidates.len() > 1 {
-                    report.ambiguous_calls += 1;
-                } else {
-                    report.unresolved_calls += 1;
-                }
-                continue;
-            }
-            let target = candidates[0];
-            let identity = EdgeIdentity::new(
-                caller.id,
-                target.id,
-                EdgeKind::Calls,
-                Confidence::Inferred,
-                None,
-            );
-            resolved.push(Edge {
-                id: stable_edge_id(&identity),
-                kind: EdgeKind::Calls,
-                from: caller.id,
-                to: target.id,
-                confidence: Confidence::Inferred,
-                label: None,
-            });
-            report.resolved_calls += 1;
-        }
-        self.edges.extend(resolved);
-        self.resolution = report;
+
+        let mut engine = ResolutionEngine::new();
+        engine.index_files(&self.nodes, &self.parsed_files);
+
+        let (resolved_edges, summary) =
+            engine.resolve_calls(&self.resolution_calls, &self.nodes, &imports);
+
+        self.edges.extend(resolved_edges);
+        self.resolution = ResolutionReport {
+            resolved_calls: summary.resolved_calls,
+            unresolved_calls: summary.unresolved_calls,
+            ambiguous_calls: summary.ambiguous_calls,
+        };
         self.canonicalize()?;
         Ok(self.resolution.clone())
-    }
-
-    fn file_node_id(&self, file: &str) -> NodeId {
-        self.nodes
-            .iter()
-            .find(|node| node.kind == NodeKind::File && node.file == file)
-            .map_or(NodeId(0), |node| node.id)
     }
 
     #[must_use]
@@ -447,7 +415,44 @@ pub fn build_graph(files: Vec<(String, Option<Language>, ParsedFile)>) -> Graph 
                 .filter(|(_, _, file)| match entry.language {
                     Some(Language::Rust) => file.ends_with(".rs"),
                     Some(Language::Python) => file.ends_with(".py"),
-                    Some(Language::TypeScript) => file.ends_with(".ts") || file.ends_with(".tsx"),
+                    Some(
+                        Language::TypeScript | Language::Tsx | Language::JavaScript | Language::Jsx,
+                    ) => {
+                        file.ends_with(".ts")
+                            || file.ends_with(".tsx")
+                            || file.ends_with(".mts")
+                            || file.ends_with(".cts")
+                            || file.ends_with(".js")
+                            || file.ends_with(".mjs")
+                            || file.ends_with(".cjs")
+                            || file.ends_with(".jsx")
+                    }
+                    Some(Language::Go) => file.ends_with(".go"),
+                    Some(Language::C) => file.ends_with(".c") || file.ends_with(".h"),
+                    Some(Language::Cpp) => {
+                        file.ends_with(".cpp")
+                            || file.ends_with(".cc")
+                            || file.ends_with(".cxx")
+                            || file.ends_with(".hpp")
+                            || file.ends_with(".hxx")
+                            || file.ends_with(".hh")
+                            || file.ends_with(".h")
+                    }
+                    Some(Language::Java) => file.ends_with(".java"),
+                    Some(Language::CSharp) => file.ends_with(".cs"),
+                    Some(Language::Kotlin) => file.ends_with(".kt") || file.ends_with(".kts"),
+                    Some(Language::Zig) => file.ends_with(".zig"),
+                    Some(Language::Php) => {
+                        file.ends_with(".php")
+                            || file.ends_with(".phtml")
+                            || file.ends_with(".php3")
+                            || file.ends_with(".php4")
+                            || file.ends_with(".php5")
+                            || file.ends_with(".php7")
+                            || file.ends_with(".phps")
+                    }
+                    Some(Language::Ruby) => file.ends_with(".rb") || file.ends_with(".erb"),
+                    Some(Language::Swift) => file.ends_with(".swift"),
                     None => true,
                 })
                 .collect();
@@ -522,6 +527,10 @@ pub fn build_graph(files: Vec<(String, Option<Language>, ParsedFile)>) -> Graph 
         edges,
         resolution,
         resolution_calls,
+        parsed_files: entries
+            .into_iter()
+            .map(|e| (e.path, e.language, e.parsed))
+            .collect(),
     };
     graph.nodes.sort_by(|a, b| {
         a.qualified_name
@@ -561,19 +570,31 @@ fn resolve_import(
         path.trim_end_matches(';')
             .trim_start_matches("crate::")
             .replace("::", "/")
+    } else if let Some(value) = text.strip_prefix("from ") {
+        value
+            .split_whitespace()
+            .next()
+            .unwrap_or("")
+            .replace('.', "/")
     } else if text.contains("::") {
         text.trim_end_matches(';').replace("::", "/")
+    } else if text.ends_with(".rs")
+        || text.ends_with(".py")
+        || text.ends_with(".ts")
+        || text.ends_with(".js")
+        || text.ends_with(".c")
+        || text.ends_with(".h")
+        || text.ends_with(".cpp")
+        || text.ends_with(".zig")
+        || text.ends_with(".php")
+        || text.ends_with(".rb")
+        || text.ends_with(".swift")
+    {
+        text.to_string()
+    } else if text.contains('.') {
+        text.trim_end_matches(';').replace('.', "/")
     } else {
-        text.strip_prefix("from ").map_or_else(
-            || text.to_string(),
-            |value| {
-                value
-                    .split_whitespace()
-                    .next()
-                    .unwrap_or("")
-                    .replace('.', "/")
-            },
-        )
+        text.to_string()
     };
     if candidate.is_empty() {
         return None;
@@ -588,13 +609,69 @@ fn resolve_import(
                 .or_else(|| entry.path.strip_suffix(".py"))
                 .or_else(|| entry.path.strip_suffix(".ts"))
                 .or_else(|| entry.path.strip_suffix(".tsx"))
+                .or_else(|| entry.path.strip_suffix(".mts"))
+                .or_else(|| entry.path.strip_suffix(".cts"))
+                .or_else(|| entry.path.strip_suffix(".js"))
+                .or_else(|| entry.path.strip_suffix(".mjs"))
+                .or_else(|| entry.path.strip_suffix(".cjs"))
+                .or_else(|| entry.path.strip_suffix(".jsx"))
+                .or_else(|| entry.path.strip_suffix(".go"))
+                .or_else(|| entry.path.strip_suffix(".cpp"))
+                .or_else(|| entry.path.strip_suffix(".cc"))
+                .or_else(|| entry.path.strip_suffix(".cxx"))
+                .or_else(|| entry.path.strip_suffix(".hpp"))
+                .or_else(|| entry.path.strip_suffix(".hxx"))
+                .or_else(|| entry.path.strip_suffix(".hh"))
+                .or_else(|| entry.path.strip_suffix(".c"))
+                .or_else(|| entry.path.strip_suffix(".h"))
+                .or_else(|| entry.path.strip_suffix(".java"))
+                .or_else(|| entry.path.strip_suffix(".cs"))
+                .or_else(|| entry.path.strip_suffix(".kt"))
+                .or_else(|| entry.path.strip_suffix(".kts"))
+                .or_else(|| entry.path.strip_suffix(".zig"))
+                .or_else(|| entry.path.strip_suffix(".php"))
+                .or_else(|| entry.path.strip_suffix(".rb"))
+                .or_else(|| entry.path.strip_suffix(".swift"))
                 .unwrap_or(&entry.path);
             candidate == *stem
                 || candidate == entry.path
+                || candidate.ends_with(&format!("/{stem}"))
+                || candidate.ends_with(&format!("/{}", entry.path))
+                || format!("{candidate}.java") == entry.path
+                || format!("{candidate}.kt") == entry.path
+                || format!("{candidate}.kts") == entry.path
+                || format!("{candidate}.cs") == entry.path
+                || format!("{candidate}.zig") == entry.path
+                || format!("{candidate}.php") == entry.path
+                || format!("{candidate}.rb") == entry.path
+                || format!("{candidate}.swift") == entry.path
                 || candidate == format!("{stem}.rs")
                 || candidate == format!("{stem}.py")
                 || candidate == format!("{stem}.ts")
                 || candidate == format!("{stem}.tsx")
+                || candidate == format!("{stem}.mts")
+                || candidate == format!("{stem}.cts")
+                || candidate == format!("{stem}.js")
+                || candidate == format!("{stem}.mjs")
+                || candidate == format!("{stem}.cjs")
+                || candidate == format!("{stem}.jsx")
+                || candidate == format!("{stem}.go")
+                || candidate == format!("{stem}.c")
+                || candidate == format!("{stem}.h")
+                || candidate == format!("{stem}.cpp")
+                || candidate == format!("{stem}.cc")
+                || candidate == format!("{stem}.cxx")
+                || candidate == format!("{stem}.hpp")
+                || candidate == format!("{stem}.hxx")
+                || candidate == format!("{stem}.hh")
+                || candidate == format!("{stem}.java")
+                || candidate == format!("{stem}.cs")
+                || candidate == format!("{stem}.kt")
+                || candidate == format!("{stem}.zig")
+                || candidate == format!("{stem}.php")
+                || candidate == format!("{stem}.rb")
+                || candidate == format!("{stem}.swift")
+                || candidate == format!("{stem}.kts")
                 || candidate == format!("{stem}/mod")
                 || candidate == format!("{stem}/index")
         })

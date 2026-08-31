@@ -1,9 +1,12 @@
+pub mod analysis;
 pub mod cli;
 pub mod error;
 pub mod graph;
 pub mod incremental;
 pub mod model;
+pub mod parse;
 pub mod parser;
 pub mod query;
+pub mod resolve;
 pub mod scan;
 pub mod storage;

@@ -1,6 +1,56 @@
 use std::path::PathBuf;
 
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
+
+use crate::analysis::{
+    AnalysisLevel, AnalysisOptions, CommunityConfig, CycleConfig, compute_hotspots,
+    detect_communities, find_cycles, project_graph, run_analysis,
+};
+use crate::model::EdgeKind;
+
+#[derive(Debug, Clone, Copy, ValueEnum, PartialEq, Eq)]
+pub enum CliLevel {
+    Symbol,
+    File,
+    Module,
+}
+
+impl From<CliLevel> for AnalysisLevel {
+    fn from(level: CliLevel) -> Self {
+        match level {
+            CliLevel::Symbol => AnalysisLevel::Symbol,
+            CliLevel::File => AnalysisLevel::File,
+            CliLevel::Module => AnalysisLevel::Module,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum, PartialEq, Eq)]
+pub enum CliEdgeKind {
+    Contains,
+    Imports,
+    Calls,
+    Inherits,
+    Implements,
+}
+
+impl From<CliEdgeKind> for EdgeKind {
+    fn from(kind: CliEdgeKind) -> Self {
+        match kind {
+            CliEdgeKind::Contains => EdgeKind::Contains,
+            CliEdgeKind::Imports => EdgeKind::Imports,
+            CliEdgeKind::Calls => EdgeKind::Calls,
+            CliEdgeKind::Inherits => EdgeKind::Inherits,
+            CliEdgeKind::Implements => EdgeKind::Implements,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum, PartialEq, Eq)]
+pub enum CliFormat {
+    Human,
+    Json,
+}
 
 #[derive(Debug, Parser)]
 #[command(name = "graphia", version, about = "Native code graph engine")]
@@ -45,6 +95,46 @@ pub enum Commands {
     Explain {
         repo: PathBuf,
         symbol: String,
+    },
+    Analyze {
+        repo: PathBuf,
+        #[arg(long, value_enum, default_value_t = CliLevel::File)]
+        level: CliLevel,
+        #[arg(long, value_enum)]
+        edge: Option<CliEdgeKind>,
+        #[arg(long)]
+        limit: Option<usize>,
+        #[arg(long, value_enum, default_value_t = CliFormat::Human)]
+        format: CliFormat,
+    },
+    Cycles {
+        repo: PathBuf,
+        #[arg(long, value_enum, default_value_t = CliLevel::File)]
+        level: CliLevel,
+        #[arg(long, value_enum)]
+        edge: Option<CliEdgeKind>,
+        #[arg(long)]
+        limit: Option<usize>,
+        #[arg(long, value_enum, default_value_t = CliFormat::Human)]
+        format: CliFormat,
+    },
+    Hotspots {
+        repo: PathBuf,
+        #[arg(long, value_enum, default_value_t = CliLevel::File)]
+        level: CliLevel,
+        #[arg(long)]
+        limit: Option<usize>,
+        #[arg(long, value_enum, default_value_t = CliFormat::Human)]
+        format: CliFormat,
+    },
+    Communities {
+        repo: PathBuf,
+        #[arg(long, value_enum, default_value_t = CliLevel::File)]
+        level: CliLevel,
+        #[arg(long)]
+        limit: Option<usize>,
+        #[arg(long, value_enum, default_value_t = CliFormat::Human)]
+        format: CliFormat,
     },
 }
 
@@ -165,7 +255,6 @@ pub fn run(cli: Cli) -> crate::error::Result<()> {
             }
             Ok(())
         }
-
         Commands::Update { repo } => {
             let (graph, changes) = crate::storage::build_or_update(&repo, false)?;
             crate::storage::save_graph_json(&graph, &repo.join("graph.json"))?;
@@ -218,6 +307,232 @@ pub fn run(cli: Cli) -> crate::error::Result<()> {
                     explanation.callees,
                     explanation.imports
                 );
+            }
+            Ok(())
+        }
+        Commands::Analyze {
+            repo,
+            level,
+            edge,
+            limit,
+            format,
+        } => {
+            let graph = load_or_build(&repo)?;
+            let options = AnalysisOptions {
+                level: level.into(),
+                edge_filter: edge.map(Into::into),
+                limit,
+            };
+            let report = run_analysis(&graph, options);
+
+            match format {
+                CliFormat::Json => {
+                    let json = serde_json::to_string_pretty(&report).map_err(|e| {
+                        crate::error::GraphiaError::Storage {
+                            message: e.to_string(),
+                        }
+                    })?;
+                    println!("{json}");
+                }
+                CliFormat::Human => {
+                    println!(
+                        "Analysis Summary (level={}, nodes={}, edges={}):",
+                        report.level.as_str(),
+                        report.node_count,
+                        report.edge_count
+                    );
+                    println!(
+                        "  SCCs: {} (non-trivial: {})",
+                        report.sccs.len(),
+                        report.sccs.iter().filter(|s| !s.is_trivial).count()
+                    );
+                    println!("  Cycles: {}", report.cycles.len());
+                    println!("  Communities: {}", report.communities.len());
+                    if !report.hotspots.is_empty() {
+                        println!("  Top Hotspots:");
+                        for (i, h) in report.hotspots.iter().take(5).enumerate() {
+                            println!(
+                                "    {}. {} (score={:.2}, in={}, out={}, scc={})",
+                                i + 1,
+                                h.id,
+                                h.score,
+                                h.fan_in,
+                                h.fan_out,
+                                h.in_scc
+                            );
+                        }
+                    }
+                }
+            }
+            Ok(())
+        }
+        Commands::Cycles {
+            repo,
+            level,
+            edge,
+            limit,
+            format,
+        } => {
+            let graph = load_or_build(&repo)?;
+            let projected = project_graph(&graph, level.into(), edge.map(Into::into));
+            let adj = projected.to_adjacency();
+            let mut cycles = find_cycles(&adj, CycleConfig::default());
+            if let Some(limit) = limit {
+                cycles.truncate(limit);
+            }
+
+            match format {
+                CliFormat::Json => {
+                    #[derive(serde::Serialize)]
+                    struct CyclesJsonOutput {
+                        analysis_version: u32,
+                        level: &'static str,
+                        cycle_count: usize,
+                        cycles: Vec<crate::analysis::Cycle>,
+                    }
+                    let out = CyclesJsonOutput {
+                        analysis_version: 1,
+                        level: AnalysisLevel::from(level).as_str(),
+                        cycle_count: cycles.len(),
+                        cycles,
+                    };
+                    let json = serde_json::to_string_pretty(&out).map_err(|e| {
+                        crate::error::GraphiaError::Storage {
+                            message: e.to_string(),
+                        }
+                    })?;
+                    println!("{json}");
+                }
+                CliFormat::Human => {
+                    println!(
+                        "Found {} cycle(s) at {} level:",
+                        cycles.len(),
+                        AnalysisLevel::from(level).as_str()
+                    );
+                    for (i, cycle) in cycles.iter().enumerate() {
+                        println!("  Cycle #{}: length {}", i + 1, cycle.length);
+                        for (step, node) in cycle.path.iter().enumerate() {
+                            let next_node = &cycle.path[(step + 1) % cycle.length];
+                            println!("    {} -> {}", node, next_node);
+                        }
+                    }
+                }
+            }
+            Ok(())
+        }
+        Commands::Hotspots {
+            repo,
+            level,
+            limit,
+            format,
+        } => {
+            let graph = load_or_build(&repo)?;
+            let projected = project_graph(&graph, level.into(), None);
+            let adj = projected.to_adjacency();
+            let mut hotspots = compute_hotspots(&adj);
+            if let Some(limit) = limit {
+                hotspots.truncate(limit);
+            }
+
+            match format {
+                CliFormat::Json => {
+                    #[derive(serde::Serialize)]
+                    struct HotspotsJsonOutput {
+                        analysis_version: u32,
+                        level: &'static str,
+                        hotspot_count: usize,
+                        hotspots: Vec<crate::analysis::Hotspot>,
+                    }
+                    let out = HotspotsJsonOutput {
+                        analysis_version: 1,
+                        level: AnalysisLevel::from(level).as_str(),
+                        hotspot_count: hotspots.len(),
+                        hotspots,
+                    };
+                    let json = serde_json::to_string_pretty(&out).map_err(|e| {
+                        crate::error::GraphiaError::Storage {
+                            message: e.to_string(),
+                        }
+                    })?;
+                    println!("{json}");
+                }
+                CliFormat::Human => {
+                    println!(
+                        "Top {} hotspot(s) at {} level:",
+                        hotspots.len(),
+                        AnalysisLevel::from(level).as_str()
+                    );
+                    for (i, h) in hotspots.iter().enumerate() {
+                        println!(
+                            "  {}. {} (score={:.2}, fan_in={}, fan_out={}, pagerank={:.4}, in_scc={})",
+                            i + 1,
+                            h.id,
+                            h.score,
+                            h.fan_in,
+                            h.fan_out,
+                            h.pagerank,
+                            h.in_scc
+                        );
+                    }
+                }
+            }
+            Ok(())
+        }
+        Commands::Communities {
+            repo,
+            level,
+            limit,
+            format,
+        } => {
+            let graph = load_or_build(&repo)?;
+            let projected = project_graph(&graph, level.into(), None);
+            let adj = projected.to_adjacency();
+            let mut communities = detect_communities(&adj, CommunityConfig::default());
+            if let Some(limit) = limit {
+                communities.truncate(limit);
+            }
+
+            match format {
+                CliFormat::Json => {
+                    #[derive(serde::Serialize)]
+                    struct CommunitiesJsonOutput {
+                        analysis_version: u32,
+                        level: &'static str,
+                        community_count: usize,
+                        communities: Vec<crate::analysis::Community>,
+                    }
+                    let out = CommunitiesJsonOutput {
+                        analysis_version: 1,
+                        level: AnalysisLevel::from(level).as_str(),
+                        community_count: communities.len(),
+                        communities,
+                    };
+                    let json = serde_json::to_string_pretty(&out).map_err(|e| {
+                        crate::error::GraphiaError::Storage {
+                            message: e.to_string(),
+                        }
+                    })?;
+                    println!("{json}");
+                }
+                CliFormat::Human => {
+                    println!(
+                        "Detected {} community(ies) at {} level:",
+                        communities.len(),
+                        AnalysisLevel::from(level).as_str()
+                    );
+                    for (i, c) in communities.iter().enumerate() {
+                        println!(
+                            "  Community #{} (size={}, internal_edges={}, external_edges={}):",
+                            i + 1,
+                            c.size,
+                            c.internal_edges,
+                            c.external_edges
+                        );
+                        for member in &c.members {
+                            println!("    - {}", member);
+                        }
+                    }
+                }
             }
             Ok(())
         }
@@ -346,5 +661,82 @@ mod tests {
             crate::storage::load_graph_json(&repo.path().join("graph.json")).expect("load json"),
             graph
         );
+    }
+
+    #[test]
+    fn cli_analyze_subcommand_json_and_human() {
+        let repo = tempdir().expect("temporary repository");
+        let graph = crate::graph::Graph::new(vec![], vec![]);
+        crate::storage::save_graph_json(&graph, &repo.path().join("graph.json"))
+            .expect("save graph");
+
+        run(Cli {
+            command: Commands::Analyze {
+                repo: repo.path().to_path_buf(),
+                level: CliLevel::File,
+                edge: None,
+                limit: Some(10),
+                format: CliFormat::Human,
+            },
+        })
+        .expect("run analyze human");
+
+        run(Cli {
+            command: Commands::Analyze {
+                repo: repo.path().to_path_buf(),
+                level: CliLevel::Module,
+                edge: Some(CliEdgeKind::Imports),
+                limit: Some(5),
+                format: CliFormat::Json,
+            },
+        })
+        .expect("run analyze json");
+    }
+
+    #[test]
+    fn cli_cycles_subcommand_options() {
+        let repo = tempdir().expect("temporary repository");
+        let graph = crate::graph::Graph::new(vec![], vec![]);
+        crate::storage::save_graph_json(&graph, &repo.path().join("graph.json"))
+            .expect("save graph");
+
+        run(Cli {
+            command: Commands::Cycles {
+                repo: repo.path().to_path_buf(),
+                level: CliLevel::File,
+                edge: None,
+                limit: Some(10),
+                format: CliFormat::Json,
+            },
+        })
+        .expect("run cycles");
+    }
+
+    #[test]
+    fn cli_hotspots_and_communities_subcommands() {
+        let repo = tempdir().expect("temporary repository");
+        let graph = crate::graph::Graph::new(vec![], vec![]);
+        crate::storage::save_graph_json(&graph, &repo.path().join("graph.json"))
+            .expect("save graph");
+
+        run(Cli {
+            command: Commands::Hotspots {
+                repo: repo.path().to_path_buf(),
+                level: CliLevel::File,
+                limit: Some(5),
+                format: CliFormat::Json,
+            },
+        })
+        .expect("run hotspots");
+
+        run(Cli {
+            command: Commands::Communities {
+                repo: repo.path().to_path_buf(),
+                level: CliLevel::Module,
+                limit: Some(5),
+                format: CliFormat::Json,
+            },
+        })
+        .expect("run communities");
     }
 }
