@@ -1,6 +1,7 @@
 pub mod analysis;
 pub mod cli;
 pub mod context;
+pub mod daemon;
 pub mod error;
 pub mod graph;
 pub mod incremental;

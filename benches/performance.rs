@@ -3,7 +3,12 @@ use std::hint::black_box;
 use std::path::Path;
 use std::time::Instant;
 
+use graphia::analysis::advanced::{
+    ArchitectureRulesConfig, GitCommitRecord, check_architecture_boundaries,
+    compute_change_coupling, diff_graphs, find_source_sink_flows,
+};
 use graphia::context::{BudgetValueType, ContextRequest, generate_context};
+use graphia::daemon::LiveStateManager;
 use graphia::graph::build_graph;
 use graphia::intelligence::{
     NeighborhoodOptions, SearchOptions, analyze_impact, get_neighborhood, search_graph,
@@ -275,6 +280,63 @@ fn measure_dataset(dataset: Dataset, fixture: &TempDir) {
     }
     let mcp_serde = mcp_serde_start.elapsed().as_nanos() / ITERATIONS as u128;
 
+    let daemon_state = LiveStateManager::initialize(fixture.path()).expect("init daemon state");
+    let daemon_update_start = Instant::now();
+    for _ in 0..ITERATIONS {
+        let updated_gen = daemon_state.update_graph(graph.clone());
+        let _ = black_box(updated_gen);
+    }
+    let daemon_update = daemon_update_start.elapsed().as_nanos() / ITERATIONS as u128;
+
+    let flow_query_start = Instant::now();
+    for _ in 0..ITERATIONS {
+        let flow_report = find_source_sink_flows(&graph, "function_0", "helper_0", Some(5));
+        let _ = black_box(flow_report);
+    }
+    let flow_query = flow_query_start.elapsed().as_nanos() / ITERATIONS as u128;
+
+    let arch_config = ArchitectureRulesConfig::default();
+    let boundary_check_start = Instant::now();
+    for _ in 0..ITERATIONS {
+        let bound_report = check_architecture_boundaries(&graph, &arch_config);
+        let _ = black_box(bound_report);
+    }
+    let boundary_check = boundary_check_start.elapsed().as_nanos() / ITERATIONS as u128;
+
+    let diff_start = Instant::now();
+    for _ in 0..ITERATIONS {
+        let diff_report = diff_graphs(&graph, &updated);
+        let _ = black_box(diff_report);
+    }
+    let graph_diff = diff_start.elapsed().as_nanos() / ITERATIONS as u128;
+
+    let dummy_commits = vec![
+        GitCommitRecord {
+            commit_hash: "commit1".to_string(),
+            author: "dev".to_string(),
+            timestamp: 1000,
+            files_changed: vec![
+                "src/module_000.rs".to_string(),
+                "src/module_001.rs".to_string(),
+            ],
+        },
+        GitCommitRecord {
+            commit_hash: "commit2".to_string(),
+            author: "dev".to_string(),
+            timestamp: 2000,
+            files_changed: vec![
+                "src/module_000.rs".to_string(),
+                "src/module_002.rs".to_string(),
+            ],
+        },
+    ];
+    let change_coupling_start = Instant::now();
+    for _ in 0..ITERATIONS {
+        let coupling_report = compute_change_coupling(&dummy_commits, Some(0.1));
+        let _ = black_box(coupling_report);
+    }
+    let change_coupling = change_coupling_start.elapsed().as_nanos() / ITERATIONS as u128;
+
     let values = [
         ("scan", scan),
         ("parse_extract", parse),
@@ -291,6 +353,11 @@ fn measure_dataset(dataset: Dataset, fixture: &TempDir) {
         ("context_generation", context_gen),
         ("mcp_tool_call", mcp_tool_call),
         ("mcp_serialization", mcp_serde),
+        ("daemon_live_update", daemon_update),
+        ("flow_query", flow_query),
+        ("boundary_check", boundary_check),
+        ("graph_diff", graph_diff),
+        ("change_coupling", change_coupling),
     ];
     for (stage, duration) in values {
         println!(

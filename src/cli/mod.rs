@@ -258,6 +258,81 @@ pub enum Commands {
     Mcp {
         repo: Option<PathBuf>,
     },
+    Daemon {
+        #[command(subcommand)]
+        action: Option<DaemonAction>,
+        #[arg(long)]
+        repo: Option<PathBuf>,
+        #[arg(long)]
+        debounce_ms: Option<u64>,
+        #[arg(long)]
+        foreground: bool,
+    },
+    DaemonStatus {
+        #[arg(long)]
+        repo: Option<PathBuf>,
+        #[arg(long, value_enum, default_value_t = CliFormat::Human)]
+        format: CliFormat,
+    },
+    Flow {
+        repo: Option<PathBuf>,
+        #[arg(long)]
+        source: String,
+        #[arg(long)]
+        sink: String,
+        #[arg(long)]
+        limit: Option<usize>,
+        #[arg(long, value_enum, default_value_t = CliFormat::Human)]
+        format: CliFormat,
+    },
+    ArchitectureCheck {
+        repo: Option<PathBuf>,
+        #[arg(long)]
+        config: Option<PathBuf>,
+        #[arg(long, value_enum, default_value_t = CliFormat::Human)]
+        format: CliFormat,
+    },
+    History {
+        repo: Option<PathBuf>,
+        #[arg(long)]
+        max_commits: Option<usize>,
+        #[arg(long, value_enum, default_value_t = CliFormat::Human)]
+        format: CliFormat,
+    },
+    Cochange {
+        repo: Option<PathBuf>,
+        #[arg(long)]
+        min_support: Option<f64>,
+        #[arg(long, value_enum, default_value_t = CliFormat::Human)]
+        format: CliFormat,
+    },
+    Deadcode {
+        repo: Option<PathBuf>,
+        #[arg(long, value_enum, default_value_t = CliFormat::Human)]
+        format: CliFormat,
+    },
+    Diff {
+        old_index: PathBuf,
+        new_index: PathBuf,
+        #[arg(long, value_enum, default_value_t = CliFormat::Human)]
+        format: CliFormat,
+    },
+    ApiDiff {
+        old_index: PathBuf,
+        new_index: PathBuf,
+        #[arg(long, value_enum, default_value_t = CliFormat::Human)]
+        format: CliFormat,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum DaemonAction {
+    Status {
+        #[arg(long)]
+        repo: Option<PathBuf>,
+        #[arg(long, value_enum, default_value_t = CliFormat::Human)]
+        format: CliFormat,
+    },
 }
 
 /// Execute selected command.
@@ -1079,7 +1154,364 @@ pub fn run(cli: Cli) -> crate::error::Result<()> {
                 })?;
             Ok(())
         }
+        Commands::Daemon {
+            action,
+            repo,
+            debounce_ms,
+            foreground: _,
+        } => {
+            if let Some(DaemonAction::Status {
+                repo: action_repo,
+                format,
+            }) = action
+            {
+                let target_repo = action_repo.or(repo).unwrap_or_else(|| {
+                    std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
+                });
+                return print_daemon_status(&target_repo, format);
+            }
+
+            let repo_root = repo
+                .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+            let debounce = debounce_ms
+                .map(std::time::Duration::from_millis)
+                .unwrap_or_else(|| std::time::Duration::from_millis(100));
+
+            let config = crate::daemon::DaemonConfig {
+                repo_root: repo_root.clone(),
+                debounce_duration: debounce,
+                queue_capacity: 1000,
+                persistence_interval: std::time::Duration::from_secs(5),
+            };
+
+            let mut server = crate::daemon::DaemonServer::new(config)?;
+            println!("Starting live daemon for {}...", repo_root.display());
+            server.run()?;
+            Ok(())
+        }
+        Commands::DaemonStatus { repo, format } => {
+            let target_repo = repo
+                .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+            print_daemon_status(&target_repo, format)
+        }
+        Commands::Flow {
+            repo,
+            source,
+            sink,
+            limit,
+            format,
+        } => {
+            let target_repo = repo
+                .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+            let graph = load_or_build(&target_repo)?;
+            let report =
+                crate::analysis::advanced::find_source_sink_flows(&graph, &source, &sink, limit);
+            match format {
+                CliFormat::Json => {
+                    let json = serde_json::to_string_pretty(&report).map_err(|e| {
+                        crate::error::GraphiaError::Storage {
+                            message: e.to_string(),
+                        }
+                    })?;
+                    println!("{json}");
+                }
+                CliFormat::Human => {
+                    println!(
+                        "Flow Analysis from '{}' to '{}': {} path(s) found",
+                        report.source_query, report.sink_query, report.paths_found
+                    );
+                    for (i, p) in report.paths.iter().enumerate() {
+                        println!(
+                            "  Path #{}: length {} (confidence: {:?})",
+                            i + 1,
+                            p.length,
+                            p.overall_confidence
+                        );
+                        for step in &p.steps {
+                            println!(
+                                "    [{}] {} (type: {}, conf: {:?})",
+                                step.step_index,
+                                step.node.qualified_name,
+                                step.edge_type,
+                                step.confidence
+                            );
+                        }
+                    }
+                }
+            }
+            Ok(())
+        }
+        Commands::ArchitectureCheck {
+            repo,
+            config,
+            format,
+        } => {
+            let target_repo = repo
+                .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+            let graph = load_or_build(&target_repo)?;
+            let arch_config = if let Some(cfg_path) = config {
+                let content = std::fs::read_to_string(&cfg_path).map_err(|e| {
+                    crate::error::GraphiaError::Storage {
+                        message: e.to_string(),
+                    }
+                })?;
+                serde_json::from_str(&content).map_err(|e| crate::error::GraphiaError::Storage {
+                    message: e.to_string(),
+                })?
+            } else {
+                crate::analysis::advanced::ArchitectureRulesConfig::default()
+            };
+            let report =
+                crate::analysis::advanced::check_architecture_boundaries(&graph, &arch_config);
+            match format {
+                CliFormat::Json => {
+                    let json = serde_json::to_string_pretty(&report).map_err(|e| {
+                        crate::error::GraphiaError::Storage {
+                            message: e.to_string(),
+                        }
+                    })?;
+                    println!("{json}");
+                }
+                CliFormat::Human => {
+                    println!(
+                        "Architecture Boundary Check: {}",
+                        if report.passed { "PASSED" } else { "FAILED" }
+                    );
+                    println!(
+                        "  Total edges evaluated: {}, Violations: {}",
+                        report.total_edges_evaluated, report.violations_count
+                    );
+                    for v in &report.violations {
+                        println!(
+                            "    - [{}] {} -> {} : {}",
+                            v.edge_kind.as_str(),
+                            v.from_file,
+                            v.to_file,
+                            v.reason
+                        );
+                    }
+                }
+            }
+            Ok(())
+        }
+        Commands::History {
+            repo,
+            max_commits,
+            format,
+        } => {
+            let target_repo = repo
+                .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+            let summary = crate::analysis::advanced::analyze_git_history(&target_repo, max_commits);
+            match format {
+                CliFormat::Json => {
+                    let json = serde_json::to_string_pretty(&summary).map_err(|e| {
+                        crate::error::GraphiaError::Storage {
+                            message: e.to_string(),
+                        }
+                    })?;
+                    println!("{json}");
+                }
+                CliFormat::Human => {
+                    println!(
+                        "Git History Intelligence: {} total commits",
+                        summary.total_commits
+                    );
+                    println!("  Top Churned Files:");
+                    for (i, f) in summary.files.iter().take(10).enumerate() {
+                        println!(
+                            "    {}. {} (commits: {}, authors: {})",
+                            i + 1,
+                            f.file,
+                            f.commit_count,
+                            f.authors.join(", ")
+                        );
+                    }
+                }
+            }
+            Ok(())
+        }
+        Commands::Cochange {
+            repo,
+            min_support,
+            format,
+        } => {
+            let target_repo = repo
+                .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+            let history = crate::analysis::advanced::analyze_git_history(&target_repo, Some(500));
+            let report =
+                crate::analysis::advanced::compute_change_coupling(&history.commits, min_support);
+            match format {
+                CliFormat::Json => {
+                    let json = serde_json::to_string_pretty(&report).map_err(|e| {
+                        crate::error::GraphiaError::Storage {
+                            message: e.to_string(),
+                        }
+                    })?;
+                    println!("{json}");
+                }
+                CliFormat::Human => {
+                    println!(
+                        "Temporal Co-Change Coupling ({} commits analyzed):",
+                        report.total_commits_analyzed
+                    );
+                    for (i, pair) in report.pairs.iter().take(10).enumerate() {
+                        println!(
+                            "    {}. {} <-> {} (co-commits: {}, support: {:.2}, conf A->B: {:.2}, conf B->A: {:.2})",
+                            i + 1,
+                            pair.file_a,
+                            pair.file_b,
+                            pair.co_commits,
+                            pair.support,
+                            pair.confidence_a_to_b,
+                            pair.confidence_b_to_a
+                        );
+                    }
+                }
+            }
+            Ok(())
+        }
+        Commands::Deadcode { repo, format } => {
+            let target_repo = repo
+                .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+            let graph = load_or_build(&target_repo)?;
+            let report = crate::analysis::advanced::detect_dead_code_candidates(&graph);
+            match format {
+                CliFormat::Json => {
+                    let json = serde_json::to_string_pretty(&report).map_err(|e| {
+                        crate::error::GraphiaError::Storage {
+                            message: e.to_string(),
+                        }
+                    })?;
+                    println!("{json}");
+                }
+                CliFormat::Human => {
+                    println!(
+                        "Structural Dead Code Candidates ({} found):",
+                        report.candidates_count
+                    );
+                    for (i, c) in report.candidates.iter().enumerate() {
+                        println!(
+                            "    {}. [{}] {} ({}:{}) - {}",
+                            i + 1,
+                            c.node.kind.as_str(),
+                            c.node.qualified_name,
+                            c.node.location.file,
+                            c.node.location.start_line,
+                            c.reason
+                        );
+                    }
+                }
+            }
+            Ok(())
+        }
+        Commands::Diff {
+            old_index,
+            new_index,
+            format,
+        } => {
+            let old_graph = load_or_build(&old_index)?;
+            let new_graph = load_or_build(&new_index)?;
+            let diff = crate::analysis::advanced::diff_graphs(&old_graph, &new_graph);
+            match format {
+                CliFormat::Json => {
+                    let json = serde_json::to_string_pretty(&diff).map_err(|e| {
+                        crate::error::GraphiaError::Storage {
+                            message: e.to_string(),
+                        }
+                    })?;
+                    println!("{json}");
+                }
+                CliFormat::Human => {
+                    println!(
+                        "Graph Diff Summary: +{} / -{} nodes, ~{} modified nodes",
+                        diff.added_nodes.len(),
+                        diff.removed_nodes.len(),
+                        diff.modified_nodes.len()
+                    );
+                    for n in &diff.added_nodes {
+                        println!("  + [{}] {}", n.kind.as_str(), n.qualified_name);
+                    }
+                    for n in &diff.removed_nodes {
+                        println!("  - [{}] {}", n.kind.as_str(), n.qualified_name);
+                    }
+                    for m in &diff.modified_nodes {
+                        println!(
+                            "  ~ {} ({}:{} -> {}:{})",
+                            m.qualified_name, m.old_file, m.old_line, m.new_file, m.new_line
+                        );
+                    }
+                }
+            }
+            Ok(())
+        }
+        Commands::ApiDiff {
+            old_index,
+            new_index,
+            format,
+        } => {
+            let old_graph = load_or_build(&old_index)?;
+            let new_graph = load_or_build(&new_index)?;
+            let diff = crate::analysis::advanced::diff_public_api(&old_graph, &new_graph);
+            match format {
+                CliFormat::Json => {
+                    let json = serde_json::to_string_pretty(&diff).map_err(|e| {
+                        crate::error::GraphiaError::Storage {
+                            message: e.to_string(),
+                        }
+                    })?;
+                    println!("{json}");
+                }
+                CliFormat::Human => {
+                    println!(
+                        "Public API Diff Summary: +{} / -{} public symbols",
+                        diff.added_public_symbols.len(),
+                        diff.removed_public_symbols.len()
+                    );
+                    for n in &diff.added_public_symbols {
+                        println!("  + [{}] {}", n.kind.as_str(), n.qualified_name);
+                    }
+                    for n in &diff.removed_public_symbols {
+                        println!("  - [{}] {}", n.kind.as_str(), n.qualified_name);
+                    }
+                }
+            }
+            Ok(())
+        }
     }
+}
+
+fn print_daemon_status(repo: &std::path::Path, format: CliFormat) -> crate::error::Result<()> {
+    let status_opt = crate::daemon::DaemonServer::read_daemon_status(repo)?;
+    match format {
+        CliFormat::Json => {
+            let json = serde_json::to_string_pretty(&status_opt).map_err(|e| {
+                crate::error::GraphiaError::Storage {
+                    message: e.to_string(),
+                }
+            })?;
+            println!("{json}");
+        }
+        CliFormat::Human => match status_opt {
+            Some(status) => {
+                println!("Graphia Daemon Status:");
+                println!("  Running: {}", status.running);
+                println!("  PID: {}", status.pid);
+                println!("  Repository: {}", status.repo_root.display());
+                println!("  Graph Generation: {}", status.generation.0);
+                println!(
+                    "  Graph Nodes: {}, Edges: {}",
+                    status.node_count, status.edge_count
+                );
+                println!("  Pending Events: {}", status.pending_events);
+                println!("  State Dirty: {}", status.dirty);
+                println!("  Last Update Timestamp (ms): {}", status.last_update_ms);
+            }
+            None => {
+                println!("No active daemon found for repository: {}", repo.display());
+            }
+        },
+    }
+    Ok(())
 }
 
 #[derive(Debug, Default)]
