@@ -48,7 +48,12 @@ fn selective_update_reparses_only_modified_file() {
         .expect("selective update");
     assert_eq!(summary.files_reparsed, 1);
     assert!(!summary.fallback_used);
-    assert_eq!(ws.graph, IncrementalWorkspace::new(root.to_path_buf()).expect("clean").graph);
+    assert_eq!(
+        ws.graph,
+        IncrementalWorkspace::new(root.to_path_buf())
+            .expect("clean")
+            .graph
+    );
 }
 
 #[test]
@@ -64,6 +69,11 @@ fn unknown_rename_records_explicit_fallback_reason() {
         }])
         .expect("fallback update");
     assert!(summary.fallback_used);
-    assert!(summary.fallback_reason.as_deref().is_some_and(|reason| reason.contains("unknown rename")));
+    assert!(
+        summary
+            .fallback_reason
+            .as_deref()
+            .is_some_and(|reason| reason.contains("unknown rename"))
+    );
     assert_eq!(ws.fallback_reconcile_count, 1);
 }

@@ -4,8 +4,8 @@ use std::time::Duration;
 
 use graphia::cli::{Cli, CliFormat, Commands, DaemonAction, run};
 use graphia::daemon::{
-    DaemonConfig, DaemonServer, Debouncer, GraphGeneration, LiveStateManager, QueueStatus,
-    UpdateQueue, is_excluded_path, is_relevant_source_file,
+    DaemonConfig, DaemonServer, Debouncer, GraphGeneration, LiveStateManager, PersistenceWorker,
+    QueueStatus, UpdateQueue, is_excluded_path, is_relevant_source_file,
 };
 use tempfile::tempdir;
 
@@ -253,4 +253,23 @@ fn test_daemon_cli_subcommands() {
         },
     };
     run(cli_nested).expect("run nested daemon status CLI");
+}
+
+#[test]
+fn persistence_worker_flushes_latest_generation() {
+    let dir = tempdir().expect("tempdir");
+    fs::write(dir.path().join("main.rs"), "pub fn main_fn() {}").expect("write source");
+    let manager = LiveStateManager::initialize(dir.path()).expect("init");
+    let worker = PersistenceWorker::new(dir.path().to_path_buf());
+    worker.enqueue(manager.read_snapshot());
+    let generation = manager.reconcile().expect("reconcile");
+    worker.enqueue(manager.read_snapshot());
+    worker.flush().expect("flush persistence");
+    assert_eq!(
+        graphia::storage::load_graph_binary(&dir.path().join(".graphia/index.bin"))
+            .expect("load index")
+            .node_count(),
+        manager.read_snapshot().node_count
+    );
+    assert_eq!(generation, GraphGeneration(2));
 }

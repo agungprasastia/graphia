@@ -6,7 +6,7 @@ pub mod update;
 pub mod watcher;
 
 pub use debounce::{Debouncer, SemanticAction};
-pub use server::{DaemonConfig, DaemonServer};
+pub use server::{DaemonConfig, DaemonServer, PersistenceWorker};
 pub use shutdown::ShutdownSignal;
 pub use state::{DaemonStatusInfo, GraphGeneration, LiveSnapshot, LiveStateManager};
 pub use update::{QueueStatus, UpdateQueue};

@@ -37,3 +37,24 @@ fn test_daemon_lifecycle_health_and_delta_processing() {
     assert!(next_gen > initial_gen);
     assert_eq!(manager.health(), DaemonHealth::Healthy);
 }
+
+#[test]
+fn failed_update_preserves_snapshot_and_generation() {
+    let temp = tempdir().expect("tempdir");
+    let file = temp.path().join("broken.rs");
+    fs::write(&file, "pub fn stable() {}").expect("write source");
+    let manager = DaemonServer::new(DaemonConfig {
+        repo_root: temp.path().to_path_buf(),
+        ..DaemonConfig::default()
+    })
+    .expect("server init")
+    .state_manager();
+    let before = manager.read_snapshot();
+    fs::remove_file(&file).expect("remove source");
+    fs::create_dir(&file).expect("replace source with directory");
+    let result = manager.apply_actions(&[SemanticAction::Modified(file)]);
+    assert!(result.is_err());
+    assert_eq!(manager.read_snapshot().generation, before.generation);
+    assert_eq!(manager.health(), DaemonHealth::Dirty);
+    assert!(manager.last_error().is_some());
+}

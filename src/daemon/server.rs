@@ -2,13 +2,15 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::mpsc::channel;
+use std::sync::{Condvar, Mutex};
+use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use serde_json::to_vec_pretty;
 
 use crate::daemon::debounce::Debouncer;
 use crate::daemon::shutdown::ShutdownSignal;
-use crate::daemon::state::{DaemonStatusInfo, LiveStateManager};
+use crate::daemon::state::{DaemonStatusInfo, GraphGeneration, LiveSnapshot, LiveStateManager};
 use crate::daemon::update::{QueueStatus, UpdateQueue};
 use crate::daemon::watcher::create_watcher;
 use crate::error::{GraphiaError, Result};
@@ -35,6 +37,91 @@ pub struct DaemonServer {
     config: DaemonConfig,
     state_manager: Arc<LiveStateManager>,
     shutdown_signal: ShutdownSignal,
+}
+
+pub struct PersistenceWorker {
+    queue: Arc<(Mutex<Option<Arc<LiveSnapshot>>>, Condvar)>,
+    live_generation: Arc<std::sync::atomic::AtomicU64>,
+    last_persisted_generation: Arc<std::sync::atomic::AtomicU64>,
+    stopping: Arc<std::sync::atomic::AtomicBool>,
+    thread: Option<JoinHandle<Result<()>>>,
+}
+
+impl PersistenceWorker {
+    pub fn new(root: PathBuf) -> Self {
+        let queue = Arc::new((Mutex::new(None), Condvar::new()));
+        let worker_queue = Arc::clone(&queue);
+        let live_generation = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let last_persisted_generation = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let stopping = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let persisted = Arc::clone(&last_persisted_generation);
+        let worker_stopping = Arc::clone(&stopping);
+        let thread =
+            thread::spawn(move || Self::run(root, worker_queue, persisted, worker_stopping));
+        Self {
+            queue,
+            live_generation,
+            last_persisted_generation,
+            stopping,
+            thread: Some(thread),
+        }
+    }
+
+    fn run(
+        root: PathBuf,
+        queue: Arc<(Mutex<Option<Arc<LiveSnapshot>>>, Condvar)>,
+        persisted: Arc<std::sync::atomic::AtomicU64>,
+        stopping: Arc<std::sync::atomic::AtomicBool>,
+    ) -> Result<()> {
+        loop {
+            let mut pending = queue.0.lock().expect("persistence queue lock");
+            while pending.is_none() && !stopping.load(std::sync::atomic::Ordering::Acquire) {
+                pending = queue.1.wait(pending).expect("persistence queue lock");
+            }
+            let Some(snapshot) = pending.take() else {
+                break;
+            };
+            drop(pending);
+            crate::storage::save_graph_binary(&snapshot.graph, &root.join(".graphia/index.bin"))?;
+            persisted.store(snapshot.generation.0, std::sync::atomic::Ordering::Release);
+        }
+        Ok(())
+    }
+
+    pub fn enqueue(&self, snapshot: Arc<LiveSnapshot>) {
+        self.live_generation
+            .store(snapshot.generation.0, std::sync::atomic::Ordering::Release);
+        let mut pending = self.queue.0.lock().expect("persistence queue lock");
+        *pending = Some(snapshot);
+        self.queue.1.notify_one();
+    }
+
+    #[must_use]
+    pub fn live_generation(&self) -> GraphGeneration {
+        GraphGeneration(
+            self.live_generation
+                .load(std::sync::atomic::Ordering::Acquire),
+        )
+    }
+    #[must_use]
+    pub fn last_persisted_generation(&self) -> GraphGeneration {
+        GraphGeneration(
+            self.last_persisted_generation
+                .load(std::sync::atomic::Ordering::Acquire),
+        )
+    }
+
+    pub fn flush(mut self) -> Result<()> {
+        self.stopping
+            .store(true, std::sync::atomic::Ordering::Release);
+        self.queue.1.notify_one();
+        if let Some(thread) = self.thread.take() {
+            thread.join().map_err(|_| {
+                GraphiaError::InvalidArgument("persistence worker panicked".into())
+            })??;
+        }
+        Ok(())
+    }
 }
 
 impl DaemonServer {
@@ -72,13 +159,11 @@ impl DaemonServer {
 
     /// Run the daemon loop blocking until shutdown signal or error.
     pub fn run(&mut self) -> Result<()> {
-        let shutdown = self.shutdown_signal.clone();
-        ctrlc::set_handler(move || shutdown.trigger()).map_err(|error| {
-            GraphiaError::InvalidArgument(format!("unable to install shutdown handler: {error}"))
-        })?;
+        self.install_signal_handler()?;
 
         let (tx, rx) = channel();
-        let _watcher = create_watcher(&self.config.repo_root, tx)?;
+        let watcher = create_watcher(&self.config.repo_root, tx)?;
+        let persistence = PersistenceWorker::new(self.config.repo_root.clone());
 
         let mut debouncer =
             Debouncer::new(self.config.repo_root.clone(), self.config.debounce_duration);
@@ -86,7 +171,8 @@ impl DaemonServer {
         let mut last_persist = Instant::now();
 
         // Write initial status file
-        self.write_status_file(queue.len(), queue.is_dirty())?;
+        persistence.enqueue(self.state_manager.read_snapshot());
+        self.write_status_file(queue.len(), queue.is_dirty(), &persistence)?;
 
         while !self.shutdown_signal.is_cancelled() {
             // Read events with a short timeout to allow debouncing & shutdown checks
@@ -101,9 +187,9 @@ impl DaemonServer {
                 if status == QueueStatus::OverflowDirty {
                     // Reconcile immediately, but never clear dirty state after a
                     // failed recovery. The previous snapshot remains authoritative.
-                        match self.state_manager.reconcile_with_reason(
-                            queue.dirty_reason().unwrap_or("watcher queue overflow"),
-                        ) {
+                    match self.state_manager.reconcile_with_reason(
+                        queue.dirty_reason().unwrap_or("watcher queue overflow"),
+                    ) {
                         Ok(_) => queue.clear_dirty(),
                         Err(error) => {
                             eprintln!("[graphia-daemon] recovery failed: {error}");
@@ -112,7 +198,7 @@ impl DaemonServer {
                             queue.mark_dirty();
                         }
                     }
-                    self.write_status_file(queue.len(), queue.is_dirty())?;
+                    self.write_status_file(queue.len(), queue.is_dirty(), &persistence)?;
                 }
             }
 
@@ -133,20 +219,60 @@ impl DaemonServer {
                         }
                     }
                 }
-                self.write_status_file(queue.len(), queue.is_dirty())?;
+                persistence.enqueue(self.state_manager.read_snapshot());
+                self.write_status_file(queue.len(), queue.is_dirty(), &persistence)?;
             }
 
             // Periodic persistence / status refresh
             if last_persist.elapsed() >= self.config.persistence_interval {
-                self.write_status_file(queue.len(), queue.is_dirty())?;
+                self.write_status_file(queue.len(), queue.is_dirty(), &persistence)?;
                 last_persist = Instant::now();
             }
         }
 
         // Final graceful flush
-        self.write_status_file(queue.len(), queue.is_dirty())?;
+        drop(watcher);
+        persistence.enqueue(self.state_manager.read_snapshot());
+        self.write_status_file(queue.len(), queue.is_dirty(), &persistence)?;
+        persistence.flush()?;
         self.remove_status_file();
 
+        Ok(())
+    }
+
+    fn install_signal_handler(&self) -> Result<()> {
+        let shutdown = self.shutdown_signal.clone();
+        thread::Builder::new()
+            .name("graphia-signal-handler".into())
+            .spawn(move || {
+                let runtime = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("signal runtime");
+                runtime.block_on(async move {
+                    #[cfg(unix)]
+                    {
+                        let mut terminate = tokio::signal::unix::signal(
+                            tokio::signal::unix::SignalKind::terminate(),
+                        )
+                        .expect("SIGTERM handler");
+                        tokio::select! {
+                            _ = tokio::signal::ctrl_c() => shutdown.trigger(),
+                            _ = terminate.recv() => shutdown.trigger(),
+                        }
+                    }
+                    #[cfg(not(unix))]
+                    {
+                        tokio::signal::ctrl_c().await.expect("Ctrl+C handler");
+                        shutdown.trigger();
+                    }
+                });
+            })
+            .map_err(|error| {
+                GraphiaError::InvalidArgument(format!(
+                    "unable to install shutdown handler: {error}"
+                ))
+            })?;
         Ok(())
     }
 
@@ -154,7 +280,12 @@ impl DaemonServer {
         root.join(".graphia/daemon.json")
     }
 
-    pub fn write_status_file(&self, pending_events: usize, dirty: bool) -> Result<()> {
+    pub fn write_status_file(
+        &self,
+        pending_events: usize,
+        dirty: bool,
+        persistence: &PersistenceWorker,
+    ) -> Result<()> {
         let snap = self.state_manager.read_snapshot();
         let update = self.state_manager.last_update_summary();
         let status = DaemonStatusInfo {
@@ -170,9 +301,14 @@ impl DaemonServer {
             health: self.state_manager.health(),
             fallback_reconcile_count: self.state_manager.fallback_reconcile_count(),
             files_reparsed: update.as_ref().map_or(0, |summary| summary.files_reparsed),
-            affected_files: update.as_ref().map_or(0, |summary| summary.affected_files.len()),
+            affected_files: update
+                .as_ref()
+                .map_or(0, |summary| summary.affected_files.len()),
             fallback_used: update.as_ref().is_some_and(|summary| summary.fallback_used),
             fallback_reason: update.and_then(|summary| summary.fallback_reason),
+            last_error: self.state_manager.last_error(),
+            live_generation: persistence.live_generation(),
+            last_persisted_generation: persistence.last_persisted_generation(),
         };
 
         let json = to_vec_pretty(&status).map_err(|e| GraphiaError::Storage {

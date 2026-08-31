@@ -9,7 +9,9 @@ use crate::error::Result;
 use crate::graph::Graph;
 use crate::incremental::{IncrementalUpdateSummary, IncrementalWorkspace};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[derive(
+    Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
+)]
 pub struct GraphGeneration(pub u64);
 
 impl GraphGeneration {
@@ -55,6 +57,12 @@ pub struct DaemonStatusInfo {
     pub affected_files: usize,
     pub fallback_used: bool,
     pub fallback_reason: Option<String>,
+    #[serde(default)]
+    pub last_error: Option<String>,
+    #[serde(default)]
+    pub live_generation: GraphGeneration,
+    #[serde(default)]
+    pub last_persisted_generation: GraphGeneration,
 }
 
 pub struct LiveStateManager {
@@ -63,6 +71,7 @@ pub struct LiveStateManager {
     workspace: Arc<RwLock<IncrementalWorkspace>>,
     health: Arc<RwLock<DaemonHealth>>,
     last_update: Arc<RwLock<Option<IncrementalUpdateSummary>>>,
+    last_error: Arc<RwLock<Option<String>>>,
 }
 
 impl LiveStateManager {
@@ -93,6 +102,7 @@ impl LiveStateManager {
             workspace: Arc::new(RwLock::new(ws)),
             health: Arc::new(RwLock::new(DaemonHealth::Healthy)),
             last_update: Arc::new(RwLock::new(None)),
+            last_error: Arc::new(RwLock::new(None)),
         })
     }
 
@@ -131,10 +141,12 @@ impl LiveStateManager {
                 }
                 *self.last_update.write().expect("last update lock") = Some(summary);
                 self.set_health(DaemonHealth::Healthy);
+                *self.last_error.write().expect("last error lock") = None;
                 Ok(dirty)
             }
             Err(err) => {
                 self.set_health(DaemonHealth::Dirty);
+                *self.last_error.write().expect("last error lock") = Some(err.to_string());
                 Err(err)
             }
         }
@@ -172,11 +184,22 @@ impl LiveStateManager {
     pub fn reconcile_with_reason(&self, reason: &str) -> Result<GraphGeneration> {
         self.set_health(DaemonHealth::Recovering);
         let mut ws = self.workspace.write().expect("workspace write lock");
-        ws.fallback_reason = Some(reason.to_string());
-        ws.reconcile_full()?;
-        let next_generation = self.update_graph(ws.graph.clone());
-        self.set_health(DaemonHealth::Healthy);
-        Ok(next_generation)
+        let mut candidate = ws.clone();
+        candidate.fallback_reason = Some(reason.to_string());
+        match candidate.reconcile_full() {
+            Ok(()) => {
+                let next_generation = self.update_graph(candidate.graph.clone());
+                *ws = candidate;
+                self.set_health(DaemonHealth::Healthy);
+                *self.last_error.write().expect("last error lock") = None;
+                Ok(next_generation)
+            }
+            Err(err) => {
+                self.set_health(DaemonHealth::Failed);
+                *self.last_error.write().expect("last error lock") = Some(err.to_string());
+                Err(err)
+            }
+        }
     }
 
     #[must_use]
@@ -195,5 +218,10 @@ impl LiveStateManager {
     #[must_use]
     pub fn repo_root(&self) -> &Path {
         &self.repo_root
+    }
+
+    #[must_use]
+    pub fn last_error(&self) -> Option<String> {
+        self.last_error.read().expect("last error lock").clone()
     }
 }

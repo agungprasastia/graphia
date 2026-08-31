@@ -127,7 +127,9 @@ impl IncrementalWorkspace {
 
     pub fn apply_changes(&mut self, actions: &[SemanticAction]) -> Result<bool> {
         Ok(self.apply_changes_selective(actions)?.files_reparsed > 0
-            || actions.iter().any(|action| !matches!(action, SemanticAction::Modified(_))))
+            || actions
+                .iter()
+                .any(|action| !matches!(action, SemanticAction::Modified(_))))
     }
 
     pub fn compute_affected_closure(&self, changed_files: &[String]) -> BTreeSet<String> {
@@ -175,20 +177,31 @@ impl IncrementalWorkspace {
                     changed_files.insert(rel_path.clone());
                     if let Some(lang) = crate::scan::detect_language(&full_path) {
                         if full_path.exists() {
-                            let content = fs::read(&full_path).map_err(|error| GraphiaError::Io {
-                                path: full_path.clone(), message: error.to_string(),
-                            })?;
+                            let content =
+                                fs::read(&full_path).map_err(|error| GraphiaError::Io {
+                                    path: full_path.clone(),
+                                    message: error.to_string(),
+                                })?;
                             let parsed = parse_bytes(&rel_path, lang, &content)?;
                             self.files.insert(rel_path.clone(), (Some(lang), parsed));
                             if let Ok(metadata) = fs::metadata(&full_path) {
-                                self.metadata.insert(rel_path.clone(), FileMetadata {
-                                    path: rel_path.clone(),
-                                    size: metadata.len(),
-                                    modified_ns: metadata.modified().ok().and_then(|value| value.duration_since(std::time::UNIX_EPOCH).ok()).map(|value| value.as_nanos()),
-                                    hash: Sha256::digest(&content).into(),
-                                    language: Some(lang),
-                                    parser_version: CACHE_SCHEMA_VERSION,
-                                });
+                                self.metadata.insert(
+                                    rel_path.clone(),
+                                    FileMetadata {
+                                        path: rel_path.clone(),
+                                        size: metadata.len(),
+                                        modified_ns: metadata
+                                            .modified()
+                                            .ok()
+                                            .and_then(|value| {
+                                                value.duration_since(std::time::UNIX_EPOCH).ok()
+                                            })
+                                            .map(|value| value.as_nanos()),
+                                        hash: Sha256::digest(&content).into(),
+                                        language: Some(lang),
+                                        parser_version: CACHE_SCHEMA_VERSION,
+                                    },
+                                );
                             }
                             files_reparsed += 1;
                         } else {
@@ -217,20 +230,35 @@ impl IncrementalWorkspace {
                     changed_files.insert(to_rel.clone());
                     self.files.remove(&from_rel);
                     self.metadata.remove(&from_rel);
-                    let Some(lang) = crate::scan::detect_language(&to_full) else { continue };
+                    let Some(lang) = crate::scan::detect_language(&to_full) else {
+                        continue;
+                    };
                     let content = fs::read(&to_full).map_err(|error| GraphiaError::Io {
-                        path: to_full.clone(), message: error.to_string(),
+                        path: to_full.clone(),
+                        message: error.to_string(),
                     })?;
-                    self.files.insert(to_rel.clone(), (Some(lang), parse_bytes(&to_rel, lang, &content)?));
+                    self.files.insert(
+                        to_rel.clone(),
+                        (Some(lang), parse_bytes(&to_rel, lang, &content)?),
+                    );
                     if let Ok(metadata) = fs::metadata(&to_full) {
-                        self.metadata.insert(to_rel.clone(), FileMetadata {
-                            path: to_rel.clone(),
-                            size: metadata.len(),
-                            modified_ns: metadata.modified().ok().and_then(|value| value.duration_since(std::time::UNIX_EPOCH).ok()).map(|value| value.as_nanos()),
-                            hash: Sha256::digest(&content).into(),
-                            language: Some(lang),
-                            parser_version: CACHE_SCHEMA_VERSION,
-                        });
+                        self.metadata.insert(
+                            to_rel.clone(),
+                            FileMetadata {
+                                path: to_rel.clone(),
+                                size: metadata.len(),
+                                modified_ns: metadata
+                                    .modified()
+                                    .ok()
+                                    .and_then(|value| {
+                                        value.duration_since(std::time::UNIX_EPOCH).ok()
+                                    })
+                                    .map(|value| value.as_nanos()),
+                                hash: Sha256::digest(&content).into(),
+                                language: Some(lang),
+                                parser_version: CACHE_SCHEMA_VERSION,
+                            },
+                        );
                     }
                     files_reparsed += 1;
                 }
@@ -241,49 +269,100 @@ impl IncrementalWorkspace {
             self.fallback_reason = Some(reason.clone());
             self.reconcile_full()?;
             return Ok(IncrementalUpdateSummary {
-                files_reparsed, affected_files: changed_files, nodes_mutated: self.graph.nodes.len(),
-                fallback_used: true, fallback_reason: Some(reason),
+                files_reparsed,
+                affected_files: changed_files,
+                nodes_mutated: self.graph.nodes.len(),
+                fallback_used: true,
+                fallback_reason: Some(reason),
             });
         }
 
-        if changed_files.is_empty() { return Ok(IncrementalUpdateSummary {
-            files_reparsed, affected_files: BTreeSet::new(), nodes_mutated: 0,
-            fallback_used: false, fallback_reason: None,
-        }); }
-        let affected_files = self.compute_affected_closure(
-            &changed_files.iter().cloned().collect::<Vec<_>>(),
-        );
+        if changed_files.is_empty() {
+            return Ok(IncrementalUpdateSummary {
+                files_reparsed,
+                affected_files: BTreeSet::new(),
+                nodes_mutated: 0,
+                fallback_used: false,
+                fallback_reason: None,
+            });
+        }
+        let affected_files =
+            self.compute_affected_closure(&changed_files.iter().cloned().collect::<Vec<_>>());
         let old_nodes = self.graph.nodes.len();
-        let parsed_entries = self.files.iter().map(|(p, (lang, parsed))| (p.clone(), *lang, parsed.clone())).collect();
+        let parsed_entries = self
+            .files
+            .iter()
+            .map(|(p, (lang, parsed))| (p.clone(), *lang, parsed.clone()))
+            .collect();
         let mut graph = build_graph(parsed_entries);
         graph.canonicalize()?;
         self.graph = graph;
         self.rebuild_indexes();
         self.fallback_reason = None;
         Ok(IncrementalUpdateSummary {
-            files_reparsed, affected_files, nodes_mutated: old_nodes.abs_diff(self.graph.nodes.len()),
-            fallback_used: false, fallback_reason: None,
+            files_reparsed,
+            affected_files,
+            nodes_mutated: old_nodes.abs_diff(self.graph.nodes.len()),
+            fallback_used: false,
+            fallback_reason: None,
         })
     }
 
     fn normalize_path(&self, path: &Path) -> (PathBuf, String) {
-        let full = if path.is_absolute() { path.to_path_buf() } else { self.repo_root.join(path) };
-        let rel = full.strip_prefix(&self.repo_root).unwrap_or(path).to_string_lossy().replace('\\', "/");
+        let full = if path.is_absolute() {
+            path.to_path_buf()
+        } else {
+            self.repo_root.join(path)
+        };
+        let rel = full
+            .strip_prefix(&self.repo_root)
+            .unwrap_or(path)
+            .to_string_lossy()
+            .replace('\\', "/");
         (full, rel)
     }
 
     fn rebuild_indexes(&mut self) {
-        self.file_nodes.clear(); self.file_edges.clear();
-        self.import_dependents.clear(); self.type_dependents.clear();
-        for node in &self.graph.nodes { self.file_nodes.entry(node.file.clone()).or_default().push(node.id); }
+        self.file_nodes.clear();
+        self.file_edges.clear();
+        self.import_dependents.clear();
+        self.type_dependents.clear();
+        for node in &self.graph.nodes {
+            self.file_nodes
+                .entry(node.file.clone())
+                .or_default()
+                .push(node.id);
+        }
         for edge in &self.graph.edges {
-            let Some(from) = self.graph.nodes.iter().find(|node| node.id == edge.from) else { continue };
-            let identity = EdgeIdentity::new(edge.from, edge.to, edge.kind, edge.confidence, edge.label.clone());
-            self.file_edges.entry(from.file.clone()).or_default().push(identity);
+            let Some(from) = self.graph.nodes.iter().find(|node| node.id == edge.from) else {
+                continue;
+            };
+            let identity = EdgeIdentity::new(
+                edge.from,
+                edge.to,
+                edge.kind,
+                edge.confidence,
+                edge.label.clone(),
+            );
+            self.file_edges
+                .entry(from.file.clone())
+                .or_default()
+                .push(identity);
             if let Some(to) = self.graph.nodes.iter().find(|node| node.id == edge.to) {
-                if edge.kind == EdgeKind::Imports { self.import_dependents.entry(to.file.clone()).or_default().insert(from.file.clone()); }
-                if edge.kind == EdgeKind::TypeReferences || edge.kind == EdgeKind::Inherits || edge.kind == EdgeKind::Implements {
-                    self.type_dependents.entry(to.file.clone()).or_default().insert(from.file.clone());
+                if edge.kind == EdgeKind::Imports {
+                    self.import_dependents
+                        .entry(to.file.clone())
+                        .or_default()
+                        .insert(from.file.clone());
+                }
+                if edge.kind == EdgeKind::TypeReferences
+                    || edge.kind == EdgeKind::Inherits
+                    || edge.kind == EdgeKind::Implements
+                {
+                    self.type_dependents
+                        .entry(to.file.clone())
+                        .or_default()
+                        .insert(from.file.clone());
                 }
             }
         }
