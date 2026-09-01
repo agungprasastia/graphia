@@ -3,21 +3,143 @@ use std::sync::{
     Arc,
     atomic::{AtomicBool, Ordering},
 };
+#[cfg(test)]
+use std::sync::{Condvar, Mutex, atomic::AtomicUsize};
+#[cfg(test)]
+use std::time::Duration;
 
-#[derive(Debug, Clone, Default)]
-pub struct CancellationToken(Arc<AtomicBool>);
+#[cfg(test)]
+#[derive(Debug, Default)]
+pub(crate) struct TestInstrumentation {
+    pub(crate) worker_started: AtomicBool,
+    pub(crate) work_units: AtomicUsize,
+    pub(crate) cancel_observed: AtomicBool,
+    pub(crate) worker_finished: AtomicBool,
+    pub(crate) active_workers: AtomicUsize,
+    pub(crate) max_active_workers: AtomicUsize,
+    pub(crate) workers_started: AtomicUsize,
+    pub(crate) pause_work: AtomicBool,
+    pub(crate) hold_workers: AtomicBool,
+    state: Mutex<()>,
+    changed: Condvar,
+}
+
+#[cfg(test)]
+impl TestInstrumentation {
+    pub(crate) fn record_worker_started(&self) {
+        let mut state = self.state.lock().expect("instrumentation state");
+        let active = self.active_workers.fetch_add(1, Ordering::AcqRel) + 1;
+        self.max_active_workers.fetch_max(active, Ordering::AcqRel);
+        self.workers_started.fetch_add(1, Ordering::AcqRel);
+        self.worker_started.store(true, Ordering::Release);
+        self.changed.notify_all();
+        while self.hold_workers.load(Ordering::Acquire) {
+            state = self.changed.wait(state).expect("instrumentation wait");
+        }
+    }
+
+    pub(crate) fn record_worker_finished(&self) {
+        let _state = self.state.lock().expect("instrumentation state");
+        self.active_workers.fetch_sub(1, Ordering::AcqRel);
+        self.worker_finished.store(true, Ordering::Release);
+        self.changed.notify_all();
+    }
+
+    fn record_work_unit(&self, cancelled: &AtomicBool) {
+        let mut state = self.state.lock().expect("instrumentation state");
+        self.work_units.fetch_add(1, Ordering::AcqRel);
+        self.changed.notify_all();
+        while self.pause_work.load(Ordering::Acquire) && !cancelled.load(Ordering::Acquire) {
+            state = self.changed.wait(state).expect("instrumentation wait");
+        }
+    }
+
+    fn record_cancel_observed(&self) {
+        let _state = self.state.lock().expect("instrumentation state");
+        self.cancel_observed.store(true, Ordering::Release);
+        self.changed.notify_all();
+    }
+
+    fn notify(&self) {
+        let _state = self.state.lock().expect("instrumentation state");
+        self.changed.notify_all();
+    }
+
+    pub(crate) fn release_workers(&self) {
+        let _state = self.state.lock().expect("instrumentation state");
+        self.hold_workers.store(false, Ordering::Release);
+        self.changed.notify_all();
+    }
+
+    pub(crate) fn wait_until(&self, predicate: impl Fn() -> bool) -> bool {
+        let state = self.state.lock().expect("instrumentation state");
+        if predicate() {
+            return true;
+        }
+        let (_state, timeout) = self
+            .changed
+            .wait_timeout_while(state, Duration::from_secs(5), |_| !predicate())
+            .expect("instrumentation wait");
+        !timeout.timed_out() || predicate()
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct CancellationToken {
+    cancelled: Arc<AtomicBool>,
+    #[cfg(test)]
+    instrumentation: Option<Arc<TestInstrumentation>>,
+}
+
+impl Default for CancellationToken {
+    fn default() -> Self {
+        Self {
+            cancelled: Arc::new(AtomicBool::new(false)),
+            #[cfg(test)]
+            instrumentation: None,
+        }
+    }
+}
 
 impl CancellationToken {
     #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
-    pub fn cancel(&self) {
-        self.0.store(true, Ordering::Relaxed);
+
+    #[cfg(test)]
+    pub(crate) fn with_instrumentation(instrumentation: Arc<TestInstrumentation>) -> Self {
+        Self {
+            cancelled: Arc::new(AtomicBool::new(false)),
+            instrumentation: Some(instrumentation),
+        }
     }
+
+    pub fn cancel(&self) {
+        self.cancelled.store(true, Ordering::Release);
+        #[cfg(test)]
+        if let Some(instrumentation) = &self.instrumentation {
+            instrumentation.notify();
+        }
+    }
+
     #[must_use]
     pub fn is_cancelled(&self) -> bool {
-        self.0.load(Ordering::Relaxed)
+        let cancelled = self.cancelled.load(Ordering::Acquire);
+        #[cfg(test)]
+        if cancelled && let Some(instrumentation) = &self.instrumentation {
+            instrumentation.record_cancel_observed();
+        }
+        cancelled
+    }
+
+    #[must_use]
+    pub(crate) fn check_work_unit(&self) -> bool {
+        #[cfg(test)]
+        if let Some(instrumentation) = &self.instrumentation {
+            instrumentation.record_work_unit(&self.cancelled);
+        }
+        self.is_cancelled()
     }
 }
 

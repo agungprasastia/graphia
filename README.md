@@ -8,16 +8,29 @@
 
 **Graphia** is a high-performance, deterministic, native code graph and repository intelligence engine built in Rust. It extracts, indexes, resolves, and analyzes semantic relationships across multi-language codebases in milliseconds—with zero external runtime dependencies (no Python, no SQLite, no cloud requirements, and no LLMs in the core pipeline).
 
+## Foundation Status
+
+**M4.1.3 — PASS**
+
+**Graphia v0.1 Foundation Complete**
+
+All strict gates pass: formatting, all-target/all-feature compilation, Clippy
+with `-D warnings`, and 218 tests across 27 suites. Runtime closure includes
+selective incremental resolution for every semantic relation, clean-build
+equivalence across candidate-state transitions, true in-flight MCP cancellation,
+active-registry cleanup, and a proven four-worker bound.
+
 ---
 
 ## Key Highlights
 
 - **16 First-Class Languages**: Rust, Python, TypeScript, JavaScript, TSX, JSX, Go, C, C++, Java, C#, Kotlin, Zig, PHP, Ruby, and Swift via dedicated Tree-sitter parsers.
 - **Deterministic Multi-Stage Resolution**: Scope-aware lexical shadowing, import aliasing, re-export tracking, and receiver method dispatch without speculative false-positive edges.
+- **Selective Incremental Resolution**: Pending and reverse-resolution indexes re-resolve affected consumers without ordinary full graph rebuilds or reparsing resolution-only files, including resolved/ambiguous/unresolved candidate transitions.
 - **Native Graph Analysis**: Strongly Connected Components (Tarjan), elementary cycle detection, degree & PageRank centrality, afferent/efferent coupling ($C_a, C_e, I$), structural hotspot scoring, and deterministic community detection.
 - **Repository Intelligence**: Bounded symbol neighborhood extraction, blast radius & change surface analysis (`graphia impact`), deterministic test discovery, and language-aware entrypoint detection.
 - **AI Context Engine**: AST line-range slicing with distance-decay relevance ranking, exact token/byte budgeting, and deduplicated context bundles designed to eliminate context-window waste for coding agents.
-- **Model Context Protocol (MCP) Server**: Built-in JSON-RPC 2.0 stdio transport exposing 11 read-only tools with strict `stdout` protocol isolation and sandbox security.
+- **Model Context Protocol (MCP) Server**: Built-in JSON-RPC 2.0 stdio transport exposing 11 read-only tools with strict `stdout` protocol isolation, sandbox security, true in-flight cancellation, active-request cleanup, and bounded workers.
 - **Live Daemon**: Low-overhead recursive filesystem watcher with event debouncing/coalescing, bounded incremental update queues, cumulative burst-completion tracking, persistence generation tracking, and snapshot isolation.
 - **Advanced Static Analysis**: Refined virtual dispatch candidate sets, intra-procedural dataflow/typeflow paths, architecture layer boundary enforcement, git history co-change metrics, structural dead code candidate detection, and graph/API diffing.
 - **Typeflow support boundary**: AST-aware approximate typeflow covers Rust, TypeScript, JavaScript, TSX, JSX, and Python; other supported languages retain normalized extraction with conservative fallback analysis.

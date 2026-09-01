@@ -8,8 +8,46 @@ pub use candidate::{Candidate, CandidateSelector, Resolution, ResolutionReason, 
 pub use import::{ImportDirective, ImportTable, parse_import_directive};
 pub use scope::{Scope, ScopeKind, ScopeTree};
 
-use crate::model::{Confidence, Edge, EdgeIdentity, EdgeKind, Language, Node, NodeId, NodeKind};
-use crate::parser::{Call, ParsedFile};
+use crate::model::{
+    Confidence, Edge, EdgeIdentity, EdgeKind, Language, Node, NodeId, NodeKind, SourceLocation,
+};
+use crate::parser::{Call, Export, Import, ParsedFile};
+
+#[derive(Debug, Clone, Default)]
+pub(crate) struct ResolutionFileContext {
+    pub language: Option<Language>,
+    pub imports: Vec<Import>,
+    pub exports: Vec<Export>,
+}
+
+impl ResolutionFileContext {
+    pub(crate) fn from_parsed(language: Option<Language>, parsed: &ParsedFile) -> Self {
+        Self {
+            language,
+            imports: parsed.imports.clone(),
+            exports: parsed.exports.clone(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct CallReferenceIdentity {
+    pub file: String,
+    pub caller: String,
+    pub callee: String,
+    pub location: SourceLocation,
+}
+
+impl CallReferenceIdentity {
+    pub(crate) fn new(file: &str, call: &Call) -> Self {
+        Self {
+            file: file.to_string(),
+            caller: call.caller.clone(),
+            callee: call.callee.clone(),
+            location: call.location.clone(),
+        }
+    }
+}
 
 /// Resolution statistics and outcomes.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -17,8 +55,8 @@ pub struct ResolutionSummary {
     pub resolved_calls: usize,
     pub unresolved_calls: usize,
     pub ambiguous_calls: usize,
-    /// Call location / description -> Resolution state
-    pub call_states: Vec<(String, String, ResolutionState)>,
+    /// Stable call-reference identity -> resolution state.
+    pub call_states: BTreeMap<CallReferenceIdentity, ResolutionState>,
 }
 
 /// Orchestrator for scope-aware, alias-aware, receiver-aware resolution.
@@ -80,20 +118,42 @@ impl ResolutionEngine {
         nodes: &[Node],
         files: &[(String, Option<Language>, ParsedFile)],
     ) {
+        let contexts = files
+            .iter()
+            .map(|(path, language, parsed)| {
+                (
+                    path.clone(),
+                    ResolutionFileContext::from_parsed(*language, parsed),
+                )
+            })
+            .collect();
+        self.index_contexts(nodes, &contexts);
+    }
+
+    pub(crate) fn index_contexts(
+        &mut self,
+        nodes: &[Node],
+        files: &BTreeMap<String, ResolutionFileContext>,
+    ) {
         for node in nodes {
             self.node_by_id.insert(node.id, node.clone());
         }
 
         // 1. Build file scopes, register file nodes and exports
-        for (path, lang, parsed) in files {
+        for (path, context) in files {
             let file_node_id = nodes
                 .iter()
                 .find(|n| n.kind == NodeKind::File && n.file == *path)
                 .map(|n| n.id);
 
-            let file_scope_id =
-                self.scope_tree
-                    .add_scope(Some(0), ScopeKind::File, path, path, *lang, None);
+            let file_scope_id = self.scope_tree.add_scope(
+                Some(0),
+                ScopeKind::File,
+                path,
+                path,
+                context.language,
+                None,
+            );
 
             if let Some(fid) = file_node_id {
                 self.file_nodes.insert(path.clone(), fid);
@@ -102,10 +162,10 @@ impl ResolutionEngine {
 
             // Register import directives
             self.import_table
-                .register_file_imports(path, *lang, &parsed.imports);
+                .register_file_imports(path, context.language, &context.imports);
 
             // Register export directives / re-exports
-            for exp in &parsed.exports {
+            for exp in &context.exports {
                 if let Some(target) = &exp.target {
                     self.export_table
                         .insert((path.clone(), exp.name.clone()), target.clone());
@@ -131,20 +191,19 @@ impl ResolutionEngine {
 
             // Check if node qualified_name or parent indicates class membership
             // Many parsers format qualified_name as "file::parent::method" or "file::method"
-            let (scope_for_symbol, parsed_parent) =
-                if let Some(parent) = find_symbol_parent(node, files) {
-                    parent_type_name = Some(parent.clone());
-                    // Find or create scope for parent class
-                    let class_scope = self.find_or_create_type_scope(
-                        file_scope_id,
-                        &parent,
-                        &node.file,
-                        node.language,
-                    );
-                    (class_scope, Some(parent))
-                } else {
-                    (file_scope_id, None)
-                };
+            let (scope_for_symbol, parsed_parent) = if let Some(parent) = node.container.clone() {
+                parent_type_name = Some(parent.clone());
+                // Find or create scope for parent class
+                let class_scope = self.find_or_create_type_scope(
+                    file_scope_id,
+                    &parent,
+                    &node.file,
+                    node.language,
+                );
+                (class_scope, Some(parent))
+            } else {
+                (file_scope_id, None)
+            };
 
             self.scope_tree
                 .define_symbol(scope_for_symbol, &node.name, node.id);
@@ -237,11 +296,10 @@ impl ResolutionEngine {
                 });
             let Some(caller) = caller_node else {
                 summary.unresolved_calls += 1;
-                summary.call_states.push((
-                    file.clone(),
-                    call.callee.clone(),
+                summary.call_states.insert(
+                    CallReferenceIdentity::new(file, call),
                     ResolutionState::Unresolved,
-                ));
+                );
                 continue;
             };
 
@@ -280,7 +338,7 @@ impl ResolutionEngine {
 
             summary
                 .call_states
-                .push((file.clone(), call.callee.clone(), state));
+                .insert(CallReferenceIdentity::new(file, call), state);
         }
 
         (resolved_edges, summary)
@@ -986,22 +1044,6 @@ impl ResolutionEngine {
 
         selector.resolve()
     }
-}
-
-fn find_symbol_parent(
-    node: &Node,
-    files: &[(String, Option<Language>, ParsedFile)],
-) -> Option<String> {
-    for (path, _, parsed) in files {
-        if path == &node.file {
-            for s in &parsed.symbols {
-                if s.qualified_name == node.qualified_name {
-                    return s.parent.clone();
-                }
-            }
-        }
-    }
-    None
 }
 
 fn matches_import_target(file_path: &str, target_path: &str) -> bool {

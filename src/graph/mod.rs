@@ -8,15 +8,19 @@ use crate::model::{
     NodeKind, SourceLocation,
 };
 use crate::parser::{Call, ParsedFile, Symbol};
-use crate::resolve::{Resolution, ResolutionEngine};
+use crate::resolve::{
+    CallReferenceIdentity, Resolution, ResolutionEngine, ResolutionFileContext, ResolutionState,
+};
 
 #[derive(Debug, Clone)]
 pub struct Graph {
     pub nodes: Vec<Node>,
     pub edges: Vec<Edge>,
     resolution: ResolutionReport,
-    resolution_calls: Vec<(String, Call)>,
-    parsed_files: Vec<(String, Option<Language>, ParsedFile)>,
+    resolution_calls: BTreeMap<String, Vec<Call>>,
+    call_resolutions: BTreeMap<CallReferenceIdentity, ResolutionState>,
+    parsed_files: BTreeMap<String, (Option<Language>, ParsedFile)>,
+    resolution_files: BTreeMap<String, ResolutionFileContext>,
     source_root: Option<PathBuf>,
 }
 
@@ -37,22 +41,40 @@ pub struct ResolutionReport {
     pub ambiguous_calls: usize,
 }
 
+impl ResolutionReport {
+    fn from_call_states(states: &BTreeMap<CallReferenceIdentity, ResolutionState>) -> Self {
+        let mut report = Self::default();
+        for state in states.values() {
+            match state {
+                ResolutionState::Resolved { .. } => report.resolved_calls += 1,
+                ResolutionState::Unresolved => report.unresolved_calls += 1,
+                ResolutionState::Ambiguous { .. } => report.ambiguous_calls += 1,
+            }
+        }
+        report
+    }
+}
+
 impl Graph {
-    pub(crate) fn set_resolution_context(
+    pub(crate) fn update_resolution_context(
         &mut self,
-        parsed_files: Vec<(String, Option<Language>, ParsedFile)>,
+        parsed_files: Vec<(String, Option<Language>, Option<ParsedFile>)>,
     ) {
-        self.resolution_calls = parsed_files
-            .iter()
-            .flat_map(|(path, _, parsed)| {
-                parsed
-                    .calls
-                    .iter()
-                    .cloned()
-                    .map(|call| (path.clone(), call))
-            })
-            .collect();
-        self.parsed_files = parsed_files;
+        for (path, language, parsed) in parsed_files {
+            if let Some(parsed) = parsed {
+                self.resolution_calls
+                    .insert(path.clone(), parsed.calls.clone());
+                self.resolution_files.insert(
+                    path.clone(),
+                    ResolutionFileContext::from_parsed(language, &parsed),
+                );
+                self.parsed_files.insert(path, (language, parsed));
+            } else {
+                self.resolution_calls.remove(&path);
+                self.resolution_files.remove(&path);
+                self.parsed_files.remove(&path);
+            }
+        }
     }
 
     pub fn canonicalize(&mut self) -> crate::error::Result<()> {
@@ -153,8 +175,10 @@ impl Graph {
             nodes,
             edges,
             resolution: ResolutionReport::default(),
-            resolution_calls: Vec::new(),
-            parsed_files: Vec::new(),
+            resolution_calls: BTreeMap::new(),
+            call_resolutions: BTreeMap::new(),
+            parsed_files: BTreeMap::new(),
+            resolution_files: BTreeMap::new(),
             source_root: None,
         }
     }
@@ -195,10 +219,15 @@ impl Graph {
             .collect();
 
         let mut engine = ResolutionEngine::new();
-        engine.index_files(&self.nodes, &self.parsed_files);
+        engine.index_contexts(&self.nodes, &self.resolution_files);
 
-        let (resolved_edges, summary) =
-            engine.resolve_calls(&self.resolution_calls, &self.nodes, &imports);
+        let calls = self
+            .resolution_calls
+            .iter()
+            .flat_map(|(path, calls)| calls.iter().cloned().map(|call| (path.clone(), call)))
+            .collect::<Vec<_>>();
+
+        let (resolved_edges, summary) = engine.resolve_calls(&calls, &self.nodes, &imports);
 
         self.edges.extend(resolved_edges);
         let mut edge_ids = HashSet::new();
@@ -208,6 +237,7 @@ impl Graph {
             unresolved_calls: summary.unresolved_calls,
             ambiguous_calls: summary.ambiguous_calls,
         };
+        self.call_resolutions = summary.call_states;
         self.canonicalize()?;
         Ok(self.resolution.clone())
     }
@@ -226,17 +256,13 @@ impl Graph {
             edge.kind == EdgeKind::Contains
                 || (!touched.contains(&edge.from) && !touched.contains(&edge.to))
         });
-        let entries = &self.parsed_files;
-        let file_entries = entries
-            .iter()
-            .map(|(path, language, parsed)| FileEntry {
-                path: path.clone(),
-                language: *language,
-                parsed: parsed.clone(),
-            })
-            .collect::<Vec<_>>();
         let mut engine = ResolutionEngine::new();
-        engine.index_files(&self.nodes, entries);
+        engine.index_contexts(&self.nodes, &self.resolution_files);
+        let file_paths = self
+            .resolution_files
+            .keys()
+            .map(String::as_str)
+            .collect::<BTreeSet<_>>();
         let file_id = |path: &str| {
             self.nodes
                 .iter()
@@ -271,40 +297,57 @@ impl Graph {
                 label,
             });
         };
-        let imports = entries
+        let imports = affected_files
             .iter()
-            .filter_map(|(path, _, parsed)| {
-                file_id(path).map(|id| {
-                    (
-                        id,
-                        parsed
-                            .imports
-                            .iter()
-                            .filter_map(|import| {
-                                resolve_import(path, &import.path, &file_entries)
+            .filter_map(|path| {
+                self.parsed_files.get(path).and_then(|(_, parsed)| {
+                    file_id(path).map(|id| {
+                        (
+                            id,
+                            parsed
+                                .imports
+                                .iter()
+                                .filter_map(|import| {
+                                    resolve_import_paths(
+                                        path,
+                                        &import.path,
+                                        file_paths.iter().copied(),
+                                    )
                                     .and_then(|target| file_id(&target))
-                            })
-                            .collect::<Vec<_>>(),
-                    )
+                                })
+                                .collect::<Vec<_>>(),
+                        )
+                    })
                 })
             })
             .flat_map(|(from, targets)| targets.into_iter().map(move |to| (from, to)))
             .collect::<Vec<_>>();
-        let (resolved_calls, call_summary) =
-            engine.resolve_calls(&self.resolution_calls, &self.nodes, &imports);
+        let calls = affected_files
+            .iter()
+            .flat_map(|path| {
+                self.resolution_calls
+                    .get(path)
+                    .into_iter()
+                    .flatten()
+                    .cloned()
+                    .map(|call| (path.clone(), call))
+            })
+            .collect::<Vec<_>>();
+        let (resolved_calls, call_summary) = engine.resolve_calls(&calls, &self.nodes, &imports);
         for edge in resolved_calls {
             if touched.contains(&edge.from) || touched.contains(&edge.to) {
                 self.edges.push(edge);
             }
         }
-        for (path, _, parsed) in entries
-            .iter()
-            .filter(|(path, _, _)| affected_files.contains(path))
-        {
+        for path in affected_files {
+            let Some((_, parsed)) = self.parsed_files.get(path).cloned() else {
+                continue;
+            };
             let Some(file) = file_id(path) else { continue };
             for import in &parsed.imports {
                 if let Some(target) =
-                    resolve_import(path, &import.path, &file_entries).and_then(|p| file_id(&p))
+                    resolve_import_paths(path, &import.path, file_paths.iter().copied())
+                        .and_then(|p| file_id(&p))
                 {
                     add(
                         &mut self.edges,
@@ -431,13 +474,18 @@ impl Graph {
         }
         let mut edge_ids = HashSet::new();
         self.edges.retain(|edge| edge_ids.insert(edge.id));
-        self.resolution = ResolutionReport {
-            resolved_calls: call_summary.resolved_calls,
-            unresolved_calls: call_summary.unresolved_calls,
-            ambiguous_calls: call_summary.ambiguous_calls,
-        };
+        self.call_resolutions
+            .retain(|identity, _| !affected_files.contains(&identity.file));
+        self.call_resolutions.extend(call_summary.call_states);
+        self.resolution = ResolutionReport::from_call_states(&self.call_resolutions);
         self.canonicalize()?;
         Ok(self.resolution.clone())
+    }
+
+    pub(crate) fn call_is_resolved(&self, file: &str, call: &Call) -> bool {
+        self.call_resolutions
+            .get(&CallReferenceIdentity::new(file, call))
+            .is_some_and(|state| matches!(state, ResolutionState::Resolved { .. }))
     }
 
     #[must_use]
@@ -960,15 +1008,31 @@ pub fn build_graph(files: Vec<(String, Option<Language>, ParsedFile)>) -> Graph 
         })
         .collect();
 
+    let resolution_files = entries
+        .iter()
+        .map(|entry| {
+            (
+                entry.path.clone(),
+                ResolutionFileContext::from_parsed(entry.language, &entry.parsed),
+            )
+        })
+        .collect();
+    let parsed_files = entries
+        .into_iter()
+        .map(|entry| (entry.path, (entry.language, entry.parsed)))
+        .collect();
+    let mut calls_by_file: BTreeMap<String, Vec<Call>> = BTreeMap::new();
+    for (path, call) in resolution_calls {
+        calls_by_file.entry(path).or_default().push(call);
+    }
     let mut graph = Graph {
         nodes,
         edges,
         resolution,
-        resolution_calls,
-        parsed_files: entries
-            .into_iter()
-            .map(|e| (e.path, e.language, e.parsed))
-            .collect(),
+        resolution_calls: calls_by_file,
+        call_resolutions: BTreeMap::new(),
+        parsed_files,
+        resolution_files,
         source_root: None,
     };
     graph.nodes.sort_by(|a, b| {
@@ -992,6 +1056,18 @@ fn resolve_import(
     importing_file: &str,
     import_path: &str,
     entries: &[FileEntry],
+) -> Option<String> {
+    resolve_import_paths(
+        importing_file,
+        import_path,
+        entries.iter().map(|entry| entry.path.as_str()),
+    )
+}
+
+fn resolve_import_paths<'a>(
+    importing_file: &str,
+    import_path: &str,
+    paths: impl IntoIterator<Item = &'a str>,
 ) -> Option<String> {
     let text = import_path.trim();
     let candidate = if let Some(candidate) = text
@@ -1039,51 +1115,51 @@ fn resolve_import(
         return None;
     }
 
-    let mut matches = entries
-        .iter()
-        .filter(|entry| {
-            let stem = entry
-                .path
+    let mut matches = paths
+        .into_iter()
+        .filter(|path| {
+            let path = *path;
+            let stem = path
                 .strip_suffix(".rs")
-                .or_else(|| entry.path.strip_suffix(".py"))
-                .or_else(|| entry.path.strip_suffix(".ts"))
-                .or_else(|| entry.path.strip_suffix(".tsx"))
-                .or_else(|| entry.path.strip_suffix(".mts"))
-                .or_else(|| entry.path.strip_suffix(".cts"))
-                .or_else(|| entry.path.strip_suffix(".js"))
-                .or_else(|| entry.path.strip_suffix(".mjs"))
-                .or_else(|| entry.path.strip_suffix(".cjs"))
-                .or_else(|| entry.path.strip_suffix(".jsx"))
-                .or_else(|| entry.path.strip_suffix(".go"))
-                .or_else(|| entry.path.strip_suffix(".cpp"))
-                .or_else(|| entry.path.strip_suffix(".cc"))
-                .or_else(|| entry.path.strip_suffix(".cxx"))
-                .or_else(|| entry.path.strip_suffix(".hpp"))
-                .or_else(|| entry.path.strip_suffix(".hxx"))
-                .or_else(|| entry.path.strip_suffix(".hh"))
-                .or_else(|| entry.path.strip_suffix(".c"))
-                .or_else(|| entry.path.strip_suffix(".h"))
-                .or_else(|| entry.path.strip_suffix(".java"))
-                .or_else(|| entry.path.strip_suffix(".cs"))
-                .or_else(|| entry.path.strip_suffix(".kt"))
-                .or_else(|| entry.path.strip_suffix(".kts"))
-                .or_else(|| entry.path.strip_suffix(".zig"))
-                .or_else(|| entry.path.strip_suffix(".php"))
-                .or_else(|| entry.path.strip_suffix(".rb"))
-                .or_else(|| entry.path.strip_suffix(".swift"))
-                .unwrap_or(&entry.path);
+                .or_else(|| path.strip_suffix(".py"))
+                .or_else(|| path.strip_suffix(".ts"))
+                .or_else(|| path.strip_suffix(".tsx"))
+                .or_else(|| path.strip_suffix(".mts"))
+                .or_else(|| path.strip_suffix(".cts"))
+                .or_else(|| path.strip_suffix(".js"))
+                .or_else(|| path.strip_suffix(".mjs"))
+                .or_else(|| path.strip_suffix(".cjs"))
+                .or_else(|| path.strip_suffix(".jsx"))
+                .or_else(|| path.strip_suffix(".go"))
+                .or_else(|| path.strip_suffix(".cpp"))
+                .or_else(|| path.strip_suffix(".cc"))
+                .or_else(|| path.strip_suffix(".cxx"))
+                .or_else(|| path.strip_suffix(".hpp"))
+                .or_else(|| path.strip_suffix(".hxx"))
+                .or_else(|| path.strip_suffix(".hh"))
+                .or_else(|| path.strip_suffix(".c"))
+                .or_else(|| path.strip_suffix(".h"))
+                .or_else(|| path.strip_suffix(".java"))
+                .or_else(|| path.strip_suffix(".cs"))
+                .or_else(|| path.strip_suffix(".kt"))
+                .or_else(|| path.strip_suffix(".kts"))
+                .or_else(|| path.strip_suffix(".zig"))
+                .or_else(|| path.strip_suffix(".php"))
+                .or_else(|| path.strip_suffix(".rb"))
+                .or_else(|| path.strip_suffix(".swift"))
+                .unwrap_or(path);
             candidate == *stem
-                || candidate == entry.path
+                || candidate == path
                 || candidate.ends_with(&format!("/{stem}"))
-                || candidate.ends_with(&format!("/{}", entry.path))
-                || format!("{candidate}.java") == entry.path
-                || format!("{candidate}.kt") == entry.path
-                || format!("{candidate}.kts") == entry.path
-                || format!("{candidate}.cs") == entry.path
-                || format!("{candidate}.zig") == entry.path
-                || format!("{candidate}.php") == entry.path
-                || format!("{candidate}.rb") == entry.path
-                || format!("{candidate}.swift") == entry.path
+                || candidate.ends_with(&format!("/{path}"))
+                || format!("{candidate}.java") == path
+                || format!("{candidate}.kt") == path
+                || format!("{candidate}.kts") == path
+                || format!("{candidate}.cs") == path
+                || format!("{candidate}.zig") == path
+                || format!("{candidate}.php") == path
+                || format!("{candidate}.rb") == path
+                || format!("{candidate}.swift") == path
                 || candidate == format!("{stem}.rs")
                 || candidate == format!("{stem}.py")
                 || candidate == format!("{stem}.ts")
@@ -1114,7 +1190,7 @@ fn resolve_import(
                 || candidate == format!("{stem}/mod")
                 || candidate == format!("{stem}/index")
         })
-        .map(|entry| entry.path.clone())
+        .map(str::to_string)
         .collect::<Vec<_>>();
     matches.sort();
     (matches.len() == 1).then(|| matches.remove(0))

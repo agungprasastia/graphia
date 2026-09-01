@@ -5,6 +5,8 @@ use std::sync::{Arc, Mutex, mpsc};
 use std::time::Duration;
 
 use super::error::{McpError, Result};
+#[cfg(test)]
+use super::protocol::TestInstrumentation;
 use super::protocol::{
     CallToolParams, CancellationToken, Implementation, InitializeParams, InitializeResult,
     JsonRpcRequest, JsonRpcResponse, ListToolsResult, RequestId, ServerCapabilities,
@@ -52,6 +54,33 @@ struct StreamJob {
     initialized: bool,
     cancellations: Arc<Mutex<BTreeMap<RequestId, CancellationToken>>>,
     token: Option<CancellationToken>,
+    #[cfg(test)]
+    instrumentation: Option<Arc<TestInstrumentation>>,
+}
+
+struct ActiveRequestGuard {
+    cancellations: Arc<Mutex<BTreeMap<RequestId, CancellationToken>>>,
+    id: RequestId,
+}
+
+impl ActiveRequestGuard {
+    fn new(
+        cancellations: &Arc<Mutex<BTreeMap<RequestId, CancellationToken>>>,
+        id: &RequestId,
+    ) -> Self {
+        Self {
+            cancellations: Arc::clone(cancellations),
+            id: id.clone(),
+        }
+    }
+}
+
+impl Drop for ActiveRequestGuard {
+    fn drop(&mut self) {
+        if let Ok(mut registry) = self.cancellations.lock() {
+            registry.remove(&self.id);
+        }
+    }
 }
 
 /// MCP Server handling JSON-RPC requests, session state, and tool execution.
@@ -62,6 +91,8 @@ pub struct McpServer {
     auto_index: bool,
     cancellations: Arc<Mutex<BTreeMap<RequestId, CancellationToken>>>,
     request_token: Option<CancellationToken>,
+    #[cfg(test)]
+    instrumentation: Option<Arc<TestInstrumentation>>,
 }
 
 impl McpServer {
@@ -82,6 +113,8 @@ impl McpServer {
             auto_index,
             cancellations: Arc::new(Mutex::new(BTreeMap::new())),
             request_token: None,
+            #[cfg(test)]
+            instrumentation: None,
         }
     }
 
@@ -173,6 +206,12 @@ impl McpServer {
         self
     }
 
+    #[cfg(test)]
+    fn with_instrumentation(mut self, instrumentation: Arc<TestInstrumentation>) -> Self {
+        self.instrumentation = Some(instrumentation);
+        self
+    }
+
     /// Run the server on the provided input and output streams.
     /// Standard error can be used for server logging without contaminating stdout.
     pub fn run_stream<R: Read + Send, W: Write>(&mut self, input: R, output: W) -> Result<()> {
@@ -231,6 +270,16 @@ impl McpServer {
                             Some(job) => job,
                             None => return,
                         };
+                        #[cfg(test)]
+                        let instrumentation = job.instrumentation.clone();
+                        #[cfg(test)]
+                        if job.request.method == "tools/call"
+                            && let Some(instrumentation) = &instrumentation
+                        {
+                            instrumentation.record_worker_started();
+                        }
+                        #[cfg(test)]
+                        let is_tool_call = job.request.method == "tools/call";
                         let mut server = McpServer {
                             repo_root: job.repo_root,
                             graph: job.graph,
@@ -238,8 +287,14 @@ impl McpServer {
                             auto_index: false,
                             cancellations: Arc::clone(&job.cancellations),
                             request_token: job.token,
+                            #[cfg(test)]
+                            instrumentation: instrumentation.clone(),
                         };
                         let response = server.handle_request(job.request, job.id);
+                        #[cfg(test)]
+                        if is_tool_call && let Some(instrumentation) = &instrumentation {
+                            instrumentation.record_worker_finished();
+                        }
                         let _ = response_tx.send(response);
                     }
                 });
@@ -284,7 +339,25 @@ impl McpServer {
                         } else {
                             self.graph.clone()
                         };
-                        let token = (request.method == "tools/call").then(CancellationToken::new);
+                        let token = if request.method == "tools/call" {
+                            #[cfg(test)]
+                            {
+                                Some(self.instrumentation.as_ref().map_or_else(
+                                    CancellationToken::new,
+                                    |instrumentation| {
+                                        CancellationToken::with_instrumentation(Arc::clone(
+                                            instrumentation,
+                                        ))
+                                    },
+                                ))
+                            }
+                            #[cfg(not(test))]
+                            {
+                                Some(CancellationToken::new())
+                            }
+                        } else {
+                            None
+                        };
                         if let Some(token) = &token
                             && let Ok(mut registry) = self.cancellations.lock()
                         {
@@ -298,6 +371,8 @@ impl McpServer {
                             initialized: self.initialized,
                             cancellations: Arc::clone(&self.cancellations),
                             token,
+                            #[cfg(test)]
+                            instrumentation: self.instrumentation.clone(),
                         };
                         match job_tx.try_send(job) {
                             Ok(()) => {
@@ -314,7 +389,12 @@ impl McpServer {
                                         .to_jsonrpc_error(),
                                 ));
                             }
-                            Err(mpsc::TrySendError::Disconnected(_)) => break,
+                            Err(mpsc::TrySendError::Disconnected(job)) => {
+                                if let Ok(mut registry) = self.cancellations.lock() {
+                                    registry.remove(&job.id);
+                                }
+                                break;
+                            }
                         }
                     }
                     Ok(StreamEvent::Cancel(id)) => self.cancel_request(&id),
@@ -449,6 +529,7 @@ impl McpServer {
         params: Option<serde_json::Value>,
         id: RequestId,
     ) -> JsonRpcResponse {
+        let _active_request = ActiveRequestGuard::new(&self.cancellations, &id);
         let Some(param_val) = params else {
             return JsonRpcResponse::error(
                 id,
@@ -508,9 +589,6 @@ impl McpServer {
             call_params.arguments.as_ref(),
             &token,
         );
-        if let Ok(mut registry) = self.cancellations.lock() {
-            registry.remove(&id);
-        }
         match result {
             Ok(tool_result) => match serde_json::to_value(tool_result) {
                 Ok(val) => JsonRpcResponse::success(id, val),
@@ -610,6 +688,135 @@ impl McpServer {
 mod tests {
     use super::*;
     use std::io::Cursor;
+    use std::sync::Condvar;
+    use std::sync::atomic::Ordering;
+
+    use crate::model::{
+        Confidence, Edge, EdgeId, EdgeKind, Language, Node, NodeId, NodeKind, SourceLocation,
+        Visibility,
+    };
+
+    struct ChannelReader {
+        receiver: mpsc::Receiver<Vec<u8>>,
+        chunk: Cursor<Vec<u8>>,
+    }
+
+    impl ChannelReader {
+        fn new(receiver: mpsc::Receiver<Vec<u8>>) -> Self {
+            Self {
+                receiver,
+                chunk: Cursor::new(Vec::new()),
+            }
+        }
+    }
+
+    impl Read for ChannelReader {
+        fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+            loop {
+                if self.chunk.position() < self.chunk.get_ref().len() as u64 {
+                    return self.chunk.read(buffer);
+                }
+                match self.receiver.recv() {
+                    Ok(chunk) => self.chunk = Cursor::new(chunk),
+                    Err(_) => return Ok(0),
+                }
+            }
+        }
+    }
+
+    #[derive(Clone, Default)]
+    struct SynchronizedOutput(Arc<(Mutex<Vec<u8>>, Condvar)>);
+
+    impl Write for SynchronizedOutput {
+        fn write(&mut self, buffer: &[u8]) -> std::io::Result<usize> {
+            let mut bytes = self.0.0.lock().expect("output lock");
+            bytes.extend_from_slice(buffer);
+            self.0.1.notify_all();
+            Ok(buffer.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl SynchronizedOutput {
+        fn response(bytes: &[u8], id: &RequestId) -> Option<JsonRpcResponse> {
+            String::from_utf8_lossy(bytes).lines().find_map(|line| {
+                serde_json::from_str::<JsonRpcResponse>(line)
+                    .ok()
+                    .filter(|response| &response.id == id)
+            })
+        }
+
+        fn wait_response(&self, id: RequestId) -> JsonRpcResponse {
+            let bytes = self.0.0.lock().expect("output lock");
+            let (bytes, timeout) = self
+                .0
+                .1
+                .wait_timeout_while(bytes, Duration::from_secs(5), |bytes| {
+                    Self::response(bytes, &id).is_none()
+                })
+                .expect("output wait");
+            assert!(!timeout.timed_out(), "response {id:?} timed out");
+            Self::response(&bytes, &id).expect("response present")
+        }
+    }
+
+    fn send_line(sender: &mpsc::Sender<Vec<u8>>, line: &str) {
+        sender
+            .send(format!("{line}\n").into_bytes())
+            .expect("send input");
+    }
+
+    fn chain_graph(total_work: u64) -> Graph {
+        let nodes = (0..total_work)
+            .map(|id| Node {
+                id: NodeId(id),
+                kind: NodeKind::Function,
+                name: format!("n{id}"),
+                qualified_name: format!("chain::n{id}"),
+                file: "chain.rs".into(),
+                location: SourceLocation {
+                    file: "chain.rs".into(),
+                    start_line: 1,
+                    start_col: 1,
+                    end_line: 1,
+                    end_col: 1,
+                },
+                language: Some(Language::Rust),
+                visibility: Visibility::Public,
+                signature: None,
+                container: None,
+            })
+            .collect();
+        let edges = (0..total_work - 1)
+            .map(|id| Edge {
+                id: EdgeId(id),
+                kind: EdgeKind::Calls,
+                from: NodeId(id),
+                to: NodeId(id + 1),
+                confidence: Confidence::Resolved,
+                label: None,
+            })
+            .collect();
+        Graph::new(nodes, edges)
+    }
+
+    fn wide_graph(total_work: u64) -> Graph {
+        let mut graph = chain_graph(total_work);
+        graph.edges = (1..total_work)
+            .map(|id| Edge {
+                id: EdgeId(id - 1),
+                kind: EdgeKind::Calls,
+                from: NodeId(0),
+                to: NodeId(id),
+                confidence: Confidence::Resolved,
+                label: None,
+            })
+            .collect();
+        graph
+    }
 
     #[test]
     fn server_handles_initialize_and_tools_list() {
@@ -675,6 +882,36 @@ mod tests {
     }
 
     #[test]
+    fn invalid_tool_request_cleans_active_registry() {
+        let id = RequestId::Number(4);
+        let mut server = McpServer::new(None).with_graph(Graph::new(vec![], vec![]));
+        server
+            .cancellations
+            .lock()
+            .expect("active registry")
+            .insert(id.clone(), CancellationToken::default());
+
+        let response = server.handle_request(
+            JsonRpcRequest {
+                jsonrpc: "2.0".to_string(),
+                id: Some(id.clone()),
+                method: "tools/call".to_string(),
+                params: None,
+            },
+            id.clone(),
+        );
+
+        assert!(response.error.is_some());
+        assert!(
+            !server
+                .cancellations
+                .lock()
+                .expect("active registry")
+                .contains_key(&id)
+        );
+    }
+
+    #[test]
     fn server_runs_stream() {
         let input = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"2024-11-05\"}}\n{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/list\"}\n";
         let mut output = Vec::new();
@@ -693,5 +930,159 @@ mod tests {
 
         let res2: serde_json::Value = serde_json::from_str(lines[1]).unwrap();
         assert_eq!(res2["id"], 2);
+    }
+
+    #[test]
+    fn stream_cancels_only_after_worker_starts_real_work() {
+        const TOTAL_WORK: u64 = 10_000;
+        let graph = wide_graph(TOTAL_WORK);
+        let baseline = Arc::new(TestInstrumentation::default());
+        let baseline_token = CancellationToken::with_instrumentation(Arc::clone(&baseline));
+        let baseline_arguments = serde_json::json!({
+            "from": "n0",
+            "to": "n9999",
+            "max_depth": 1
+        })
+        .as_object()
+        .expect("arguments")
+        .clone();
+        call_tool_with_cancellation(
+            &graph,
+            None,
+            "graphia_dependency_path",
+            Some(&baseline_arguments),
+            &baseline_token,
+        )
+        .expect("baseline traversal");
+        assert_eq!(
+            baseline.work_units.load(Ordering::Acquire),
+            TOTAL_WORK as usize
+        );
+
+        let instrumentation = Arc::new(TestInstrumentation::default());
+        instrumentation.pause_work.store(true, Ordering::Release);
+        let (input_sender, input_receiver) = mpsc::channel();
+        let output = SynchronizedOutput::default();
+        let mut server = McpServer::new(None)
+            .with_graph(graph)
+            .with_instrumentation(Arc::clone(&instrumentation));
+        let active_registry = Arc::clone(&server.cancellations);
+        let server_output = output.clone();
+        let server_thread = std::thread::spawn(move || {
+            server.run_stream(ChannelReader::new(input_receiver), server_output)
+        });
+
+        send_line(
+            &input_sender,
+            r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05"}}"#,
+        );
+        assert!(output.wait_response(RequestId::Number(1)).error.is_none());
+        send_line(
+            &input_sender,
+            r#"{"jsonrpc":"2.0","id":100,"method":"tools/call","params":{"name":"graphia_dependency_path","arguments":{"from":"n0","to":"n9999","max_depth":1}}}"#,
+        );
+        assert!(instrumentation.wait_until(|| {
+            instrumentation.worker_started.load(Ordering::Acquire)
+                && instrumentation.work_units.load(Ordering::Acquire) > 0
+        }));
+
+        send_line(
+            &input_sender,
+            r#"{"jsonrpc":"2.0","method":"$/cancelRequest","params":{"id":100}}"#,
+        );
+        let cancelled = output.wait_response(RequestId::Number(100));
+        assert_eq!(
+            cancelled.error.as_ref().map(|error| error.code),
+            Some(super::super::error::error_codes::CANCELLED)
+        );
+        assert!(instrumentation.wait_until(|| {
+            instrumentation.cancel_observed.load(Ordering::Acquire)
+                && instrumentation.worker_finished.load(Ordering::Acquire)
+        }));
+        let work_units = instrumentation.work_units.load(Ordering::Acquire);
+        assert!(work_units > 0);
+        assert!(work_units < TOTAL_WORK as usize);
+        assert!(instrumentation.cancel_observed.load(Ordering::Acquire));
+        assert!(
+            !active_registry
+                .lock()
+                .expect("active registry")
+                .contains_key(&RequestId::Number(100))
+        );
+
+        send_line(
+            &input_sender,
+            r#"{"jsonrpc":"2.0","id":101,"method":"tools/call","params":{"name":"graphia_search_symbol","arguments":{"query":"n1"}}}"#,
+        );
+        assert!(output.wait_response(RequestId::Number(101)).error.is_none());
+        drop(input_sender);
+        server_thread
+            .join()
+            .expect("server thread")
+            .expect("server result");
+    }
+
+    #[test]
+    fn stream_worker_pool_never_exceeds_configured_bound() {
+        let instrumentation = Arc::new(TestInstrumentation::default());
+        instrumentation.hold_workers.store(true, Ordering::Release);
+        let (input_sender, input_receiver) = mpsc::channel();
+        let output = SynchronizedOutput::default();
+        let mut server = McpServer::new(None)
+            .with_graph(chain_graph(16))
+            .with_instrumentation(Arc::clone(&instrumentation));
+        let server_output = output.clone();
+        let server_thread = std::thread::spawn(move || {
+            server.run_stream(ChannelReader::new(input_receiver), server_output)
+        });
+
+        for offset in 0..MAX_IN_FLIGHT_REQUESTS {
+            let id = 200 + offset as i64;
+            send_line(
+                &input_sender,
+                &format!(
+                    r#"{{"jsonrpc":"2.0","id":{id},"method":"tools/call","params":{{"name":"graphia_search_symbol","arguments":{{"query":"n1"}}}}}}"#
+                ),
+            );
+            assert!(instrumentation.wait_until(|| {
+                instrumentation.workers_started.load(Ordering::Acquire) > offset
+            }));
+        }
+        assert_eq!(
+            instrumentation.active_workers.load(Ordering::Acquire),
+            MAX_IN_FLIGHT_REQUESTS
+        );
+        send_line(
+            &input_sender,
+            &format!(
+                r#"{{"jsonrpc":"2.0","id":{},"method":"tools/call","params":{{"name":"graphia_search_symbol","arguments":{{"query":"n2"}}}}}}"#,
+                200 + MAX_IN_FLIGHT_REQUESTS
+            ),
+        );
+        assert!(
+            instrumentation.max_active_workers.load(Ordering::Acquire) <= MAX_IN_FLIGHT_REQUESTS
+        );
+        instrumentation.release_workers();
+
+        for offset in 0..=MAX_IN_FLIGHT_REQUESTS {
+            assert!(
+                output
+                    .wait_response(RequestId::Number(200 + offset as i64))
+                    .error
+                    .is_none()
+            );
+        }
+        assert!(instrumentation.wait_until(|| {
+            instrumentation.workers_started.load(Ordering::Acquire) == MAX_IN_FLIGHT_REQUESTS + 1
+                && instrumentation.active_workers.load(Ordering::Acquire) == 0
+        }));
+        assert!(
+            instrumentation.max_active_workers.load(Ordering::Acquire) <= MAX_IN_FLIGHT_REQUESTS
+        );
+        drop(input_sender);
+        server_thread
+            .join()
+            .expect("server thread")
+            .expect("server result");
     }
 }

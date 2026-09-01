@@ -1,6 +1,6 @@
 # M4 Advanced Static Analysis Report
 
-> Historical M4 scope. All capabilities listed here are closed under M4.1.2 with precision fixes and known limitations documented in [`m4.1.2-final-closure-report.md`](m4.1.2-final-closure-report.md).
+> Historical M4 scope. Final closure is **M4.1.3 — PASS / Graphia v0.1 Foundation Complete**, documented in [`m4.1.3-final-report.md`](m4.1.3-final-report.md).
 
 ## Overview
 M4 introduces modular, on-demand advanced static analysis capabilities to the Graphia engine, enabling deep structural reasoning across codebases without heavy runtime overhead.
@@ -41,11 +41,13 @@ M4 introduces modular, on-demand advanced static analysis capabilities to the Gr
    - `graphia api diff <old-index> <new-index>`
 
 ## Verification Matrix & Benchmark Summary
-- Test Suite: All unit and integration tests passing (`cargo test --all-targets --all-features`).
+- Test Suite: 218 tests across 27 suites passing (`cargo test --all-targets --all-features`).
 - Quality Gates: Clippy clean with zero warnings (`-D warnings`) and formatted (`cargo fmt --check`).
+- Incremental Resolution: Positive runtime regressions pass for `References`, `TypeReferences`, `Calls`, `Inherits`, `Implements`, `Instantiates`, and re-exports; candidate transitions pass for resolved/ambiguous/unresolved states; incremental graphs equal authoritative clean builds without ordinary full rebuild or fallback.
+- MCP Runtime: Cancellation occurs after worker start and nonzero traversal work, cleans the active registry, preserves the next request, and proves the four-worker bound under excess requests.
 - Advanced Analysis Latency (`benches/performance.rs`):
   - Flow query: ~42 µs (small), ~230 µs (medium), ~1.9 ms (large).
   - Boundary check: ~37 µs (small), ~122 µs (medium), ~1.79 ms (large).
   - Graph diff: ~24 µs (small), ~123 µs (medium), ~739 µs (large).
   - Change coupling: ~5 µs (small), ~14 µs (medium), ~14 µs (large).
-> **Status note:** this historical report is superseded by the M4.1.3 blocker audit.
+> **Status:** M4.1.3 — PASS. Graphia v0.1 Foundation Complete.

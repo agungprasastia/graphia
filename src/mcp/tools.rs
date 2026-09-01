@@ -44,16 +44,24 @@ fn parse_checked_depth(
     args: &serde_json::Map<String, serde_json::Value>,
     default: usize,
 ) -> Result<usize> {
-    if let Some(val) = args.get("depth") {
+    parse_checked_depth_argument(args, "depth", default)
+}
+
+fn parse_checked_depth_argument(
+    args: &serde_json::Map<String, serde_json::Value>,
+    name: &str,
+    default: usize,
+) -> Result<usize> {
+    if let Some(val) = args.get(name) {
         let n = val.as_u64().ok_or_else(|| {
-            McpError::InvalidParams("Argument 'depth' must be an integer".to_string())
+            McpError::InvalidParams(format!("Argument '{name}' must be an integer"))
         })?;
         let n_usize = usize::try_from(n).map_err(|_| {
-            McpError::InvalidParams("Argument 'depth' exceeds platform limits".to_string())
+            McpError::InvalidParams(format!("Argument '{name}' exceeds platform limits"))
         })?;
         if n_usize > MAX_DEPTH {
             return Err(McpError::InvalidParams(format!(
-                "Argument 'depth' exceeds server maximum {MAX_DEPTH}"
+                "Argument '{name}' exceeds server maximum {MAX_DEPTH}"
             )));
         }
         Ok(n_usize)
@@ -181,7 +189,8 @@ pub fn get_tool_definitions() -> Vec<Tool> {
                     },
                     "max_depth": {
                         "type": "integer",
-                        "description": "Maximum search depth (default: 50)"
+                        "description": "Maximum search depth (default: 20)",
+                        "maximum": MAX_DEPTH
                     }
                 },
                 "required": ["from", "to"]
@@ -572,7 +581,7 @@ fn tool_dependency_path(
         .and_then(|v| v.as_str())
         .ok_or_else(|| McpError::InvalidParams("Missing 'to' argument".to_string()))?;
 
-    let max_depth = parse_checked_depth(args, 20)?;
+    let max_depth = parse_checked_depth_argument(args, "max_depth", 20)?;
 
     let index = QueryIndex::new(graph);
     let from_matches = index.find(graph, from);
@@ -596,7 +605,7 @@ fn tool_dependency_path(
         start_node.id,
         end_node.id,
         TraversalLimits::new(max_depth, 10_000),
-        Some(&|| token.is_cancelled()),
+        Some(&|| token.check_work_unit()),
     ) {
         Ok(Some(path_edges)) => {
             let mut steps: Vec<&Node> = vec![start_node];

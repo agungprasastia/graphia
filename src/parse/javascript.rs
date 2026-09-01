@@ -108,6 +108,44 @@ pub fn parse_js_family(file: &str, root: &TsNode<'_>, source: &[u8]) -> ParsedFi
         });
 
         match node.kind() {
+            "export_statement" => {
+                if let Some(target_node) = node.child_by_field_name("source")
+                    && let Some(clause) = children_vec(&node)
+                        .into_iter()
+                        .find(|child| child.kind() == "export_clause")
+                {
+                    let target = node_text(&target_node, source)
+                        .trim()
+                        .trim_matches(['\'', '"']);
+                    let location = location_for_node(file, &node);
+                    for specifier in children_vec(&clause)
+                        .into_iter()
+                        .filter(|child| child.kind() == "export_specifier")
+                    {
+                        let Some(name_node) = specifier.child_by_field_name("name") else {
+                            continue;
+                        };
+                        let remote = node_text(&name_node, source).trim_matches(['\'', '"']);
+                        let exported = specifier
+                            .child_by_field_name("alias")
+                            .map(|alias| {
+                                node_text(&alias, source)
+                                    .trim_matches(['\'', '"'])
+                                    .to_string()
+                            })
+                            .unwrap_or_else(|| remote.to_string());
+                        imports.push(Import {
+                            path: format!("import {{ {remote} }} from '{target}'"),
+                            location: location.clone(),
+                        });
+                        exports.push(Export {
+                            name: exported,
+                            location: location.clone(),
+                            target: Some(format!("{target}::{remote}")),
+                        });
+                    }
+                }
+            }
             "function_declaration" | "function" | "generator_function_declaration" => {
                 if let Some(name_node) = node.child_by_field_name("name") {
                     let name = node_text(&name_node, source).to_string();

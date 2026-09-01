@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use crate::daemon::debounce::SemanticAction;
 use crate::error::{GraphiaError, Result};
 use crate::graph::{Graph, build_graph};
-use crate::model::{EdgeIdentity, EdgeKind, Language, NodeId};
+use crate::model::{EdgeIdentity, EdgeKind, Language, NodeId, NodeKind};
 use crate::parser::{ParsedFile, parse_bytes};
 use crate::scan::{ScannedFile, scan_repo};
 use crate::storage::{FileMetadata, Metadata, compare_metadata, metadata_for_files};
@@ -13,6 +13,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 const CACHE_SCHEMA_VERSION: u32 = crate::storage::FILE_SCHEMA_VERSION;
+type ResolutionKey = (u8, String);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ChangeKind {
@@ -50,7 +51,12 @@ pub struct IncrementalWorkspace {
     pub file_edges: BTreeMap<String, Vec<EdgeIdentity>>,
     pub import_dependents: BTreeMap<String, BTreeSet<String>>,
     pub type_dependents: BTreeMap<String, BTreeSet<String>>,
+    symbol_providers: BTreeMap<String, BTreeSet<String>>,
+    import_targets: BTreeMap<String, BTreeSet<String>>,
     pub pending_resolution: BTreeMap<(u8, String), BTreeSet<String>>,
+    pub resolution_dependents: BTreeMap<(u8, String), BTreeSet<String>>,
+    pending_resolution_files: BTreeMap<String, BTreeSet<ResolutionKey>>,
+    resolution_dependency_files: BTreeMap<String, BTreeSet<ResolutionKey>>,
     pub fallback_reconcile_count: usize,
     pub fallback_reason: Option<String>,
 }
@@ -73,6 +79,10 @@ pub struct IncrementalUpdateSummary {
     pub pending_index_lookups: usize,
     /// Number of pending consumers returned by those direct lookups.
     pub pending_entries_examined: usize,
+    /// Number of direct all-reference dependency buckets queried by this update.
+    pub resolution_index_lookups: usize,
+    /// Number of resolved/ambiguous consumers returned by those direct lookups.
+    pub resolution_entries_examined: usize,
     /// Ordinary selective updates must keep this at zero.
     pub full_pending_scans: usize,
 }
@@ -88,7 +98,12 @@ impl IncrementalWorkspace {
             file_edges: BTreeMap::new(),
             import_dependents: BTreeMap::new(),
             type_dependents: BTreeMap::new(),
+            symbol_providers: BTreeMap::new(),
+            import_targets: BTreeMap::new(),
             pending_resolution: BTreeMap::new(),
+            resolution_dependents: BTreeMap::new(),
+            pending_resolution_files: BTreeMap::new(),
+            resolution_dependency_files: BTreeMap::new(),
             fallback_reconcile_count: 0,
             fallback_reason: None,
         };
@@ -139,6 +154,10 @@ impl IncrementalWorkspace {
         graph.canonicalize()?;
         self.graph = graph;
         self.rebuild_indexes();
+        self.pending_resolution.clear();
+        self.resolution_dependents.clear();
+        self.pending_resolution_files.clear();
+        self.resolution_dependency_files.clear();
         self.rebuild_pending_index(self.files.keys().cloned().collect());
         Ok(())
     }
@@ -191,6 +210,8 @@ impl IncrementalWorkspace {
                 fallback_reason: None,
                 pending_index_lookups: 0,
                 pending_entries_examined: 0,
+                resolution_index_lookups: 0,
+                resolution_entries_examined: 0,
                 full_pending_scans: 0,
             });
         }
@@ -324,6 +345,8 @@ impl IncrementalWorkspace {
                 fallback_reason: Some(reason),
                 pending_index_lookups: 0,
                 pending_entries_examined: 0,
+                resolution_index_lookups: 0,
+                resolution_entries_examined: 0,
                 full_pending_scans: 0,
             });
         }
@@ -344,15 +367,22 @@ impl IncrementalWorkspace {
                 fallback_reason: None,
                 pending_index_lookups: 0,
                 pending_entries_examined: 0,
+                resolution_index_lookups: 0,
+                resolution_entries_examined: 0,
                 full_pending_scans: 0,
             });
         }
         let dependency_hints = self.new_dependency_hints(&changed_files);
-        let (reverse_unresolved, pending_index_lookups, pending_entries_examined) =
-            self.reverse_unresolved_hints(&changed_files, &previous);
+        let (
+            reverse_resolution,
+            pending_index_lookups,
+            pending_entries_examined,
+            resolution_index_lookups,
+            resolution_entries_examined,
+        ) = self.reverse_resolution_hints(&changed_files, &previous);
         let mut dependency_seeds = changed_files.clone();
         dependency_seeds.extend(dependency_hints.iter().cloned());
-        dependency_seeds.extend(reverse_unresolved.iter().cloned());
+        dependency_seeds.extend(reverse_resolution.iter().cloned());
         let affected_files =
             self.compute_affected_closure(&dependency_seeds.iter().cloned().collect::<Vec<_>>());
         let resolution_files = affected_files.clone();
@@ -362,7 +392,7 @@ impl IncrementalWorkspace {
             .cloned()
             .collect::<BTreeSet<_>>();
         let mutation_files = mutation_files
-            .difference(&reverse_unresolved)
+            .difference(&reverse_resolution)
             .cloned()
             .chain(changed_files.iter().cloned())
             .collect::<BTreeSet<_>>();
@@ -408,10 +438,15 @@ impl IncrementalWorkspace {
         });
         self.graph.nodes.extend(fragment.nodes);
         self.graph.edges.extend(fragment.edges);
-        self.graph.set_resolution_context(
-            self.files
+        self.graph.update_resolution_context(
+            changed_files
                 .iter()
-                .map(|(path, (language, parsed))| (path.clone(), *language, parsed.clone()))
+                .map(|path| {
+                    self.files.get(path).map_or_else(
+                        || (path.clone(), None, None),
+                        |(language, parsed)| (path.clone(), *language, Some(parsed.clone())),
+                    )
+                })
                 .collect(),
         );
         self.graph.set_source_root(self.repo_root.clone());
@@ -434,6 +469,8 @@ impl IncrementalWorkspace {
             fallback_reason: None,
             pending_index_lookups,
             pending_entries_examined,
+            resolution_index_lookups,
+            resolution_entries_examined,
             full_pending_scans: 0,
         })
     }
@@ -485,65 +522,62 @@ impl IncrementalWorkspace {
                 continue;
             };
             let mut names = BTreeSet::new();
-            names.extend(parsed.type_references.iter().map(|item| item.name.as_str()));
-            names.extend(parsed.references.iter().map(|item| item.name.as_str()));
+            names.extend(
+                parsed
+                    .type_references
+                    .iter()
+                    .map(|item| semantic_name(&item.name)),
+            );
+            names.extend(
+                parsed
+                    .references
+                    .iter()
+                    .map(|item| semantic_name(&item.name)),
+            );
             names.extend(
                 parsed
                     .instantiations
                     .iter()
-                    .map(|item| item.type_name.as_str()),
+                    .map(|item| semantic_name(&item.type_name)),
             );
-            names.extend(
-                parsed
-                    .inheritances
-                    .iter()
-                    .flat_map(|item| [item.base_type.as_str(), item.derived_type.as_str()]),
-            );
-            names.extend(parsed.implementations.iter().flat_map(|item| {
+            names.extend(parsed.inheritances.iter().flat_map(|item| {
                 [
-                    item.trait_or_interface.as_str(),
-                    item.implementing_type.as_str(),
+                    semantic_name(&item.base_type),
+                    semantic_name(&item.derived_type),
                 ]
             }));
-            names.extend(parsed.calls.iter().map(|item| item.callee.as_str()));
-            for import in &parsed.imports {
-                let normalized = import.path.replace("::", "/");
-                for candidate in self.files.keys() {
-                    let stem = candidate
-                        .rsplit('/')
-                        .next()
-                        .and_then(|name| name.split('.').next())
-                        .unwrap_or(candidate);
-                    if normalized.contains(candidate)
-                        || candidate.contains(&normalized)
-                        || normalized.split(['/', ':', '.']).any(|part| part == stem)
-                    {
-                        hints.insert(candidate.clone());
-                    }
+            names.extend(parsed.implementations.iter().flat_map(|item| {
+                [
+                    semantic_name(&item.trait_or_interface),
+                    semantic_name(&item.implementing_type),
+                ]
+            }));
+            names.extend(parsed.calls.iter().map(|item| semantic_name(&item.callee)));
+            for name in names {
+                if let Some(providers) = self.symbol_providers.get(&name) {
+                    hints.extend(providers.iter().cloned());
                 }
             }
-            for (candidate, (_, target)) in &self.files {
-                if target.symbols.iter().any(|symbol| {
-                    names.iter().any(|name| {
-                        let short = name.rsplit([':', '.']).next().unwrap_or(name);
-                        symbol.name == short
-                            || symbol.qualified_name == *name
-                            || symbol.qualified_name.ends_with(&format!("::{short}"))
-                    })
-                }) {
-                    hints.insert(candidate.clone());
+            for import in &parsed.imports {
+                for key in import_lookup_keys(&import.path) {
+                    if let Some(targets) = self.import_targets.get(&key) {
+                        hints.extend(targets.iter().cloned());
+                    }
                 }
             }
         }
         hints
     }
 
-    fn reverse_unresolved_hints(
+    fn reverse_resolution_hints(
         &self,
         changed_files: &BTreeSet<String>,
         previous: &BTreeMap<String, ParsedFile>,
-    ) -> (BTreeSet<String>, usize, usize) {
+    ) -> (BTreeSet<String>, usize, usize, usize, usize) {
         let mut names = BTreeSet::new();
+        for file in changed_files.iter().chain(previous.keys()) {
+            names.extend(import_lookup_keys(file));
+        }
         for parsed in changed_files
             .iter()
             .filter_map(|file| self.files.get(file).map(|(_, parsed)| parsed))
@@ -566,6 +600,8 @@ impl IncrementalWorkspace {
         let mut consumers = BTreeSet::new();
         let mut lookups = 0;
         let mut entries = 0;
+        let mut resolution_lookups = 0;
+        let mut resolution_entries = 0;
         for name in names {
             for kind in [
                 EdgeKind::References,
@@ -587,52 +623,108 @@ impl IncrementalWorkspace {
                             .cloned(),
                     );
                 }
+                resolution_lookups += 1;
+                if let Some(files) = self.resolution_dependents.get(&(kind.code(), name.clone())) {
+                    resolution_entries += files.len();
+                    consumers.extend(
+                        files
+                            .iter()
+                            .filter(|file| !changed_files.contains(*file))
+                            .cloned(),
+                    );
+                }
             }
         }
-        (consumers, lookups, entries)
+        (
+            consumers,
+            lookups,
+            entries,
+            resolution_lookups,
+            resolution_entries,
+        )
     }
 
     fn rebuild_pending_index(&mut self, files: BTreeSet<String>) {
-        self.pending_resolution.retain(|_, consumers| {
-            consumers.retain(|file| !files.contains(file));
-            !consumers.is_empty()
-        });
         for file in files {
+            remove_owned_resolution_entries(
+                &mut self.pending_resolution,
+                &mut self.pending_resolution_files,
+                &file,
+            );
+            remove_owned_resolution_entries(
+                &mut self.resolution_dependents,
+                &mut self.resolution_dependency_files,
+                &file,
+            );
             let Some((_, parsed)) = self.files.get(&file).cloned() else {
                 continue;
             };
-            let mut add = |kind: EdgeKind, name: &str| {
-                if !self.reference_is_unresolved(&file, kind, name) {
-                    return;
-                }
-                self.pending_resolution
-                    .entry((kind.code(), semantic_name(name)))
-                    .or_default()
-                    .insert(file.clone());
-            };
-            for item in &parsed.references {
-                add(EdgeKind::References, &item.name);
-            }
-            for item in &parsed.type_references {
-                add(EdgeKind::TypeReferences, &item.name);
-            }
+            let mut dependencies = Vec::new();
+            let mut pending = Vec::new();
             for item in &parsed.calls {
-                add(EdgeKind::Calls, &item.callee);
+                let key = (EdgeKind::Calls.code(), semantic_name(&item.callee));
+                dependencies.push(key.clone());
+                if !self.graph.call_is_resolved(&file, item) {
+                    pending.push(key);
+                }
             }
-            for item in &parsed.instantiations {
-                add(EdgeKind::Instantiates, &item.type_name);
-            }
-            for item in &parsed.inheritances {
-                add(EdgeKind::Inherits, &item.base_type);
-            }
-            for item in &parsed.implementations {
-                add(EdgeKind::Implements, &item.trait_or_interface);
+            {
+                let mut add = |kind: EdgeKind, name: &str| {
+                    let key = (kind.code(), semantic_name(name));
+                    dependencies.push(key.clone());
+                    if self.reference_is_unresolved(&file, kind, name) {
+                        pending.push(key);
+                    }
+                };
+                for item in &parsed.references {
+                    add(EdgeKind::References, &item.name);
+                }
+                for item in &parsed.type_references {
+                    add(EdgeKind::TypeReferences, &item.name);
+                }
+                for item in &parsed.instantiations {
+                    add(EdgeKind::Instantiates, &item.type_name);
+                }
+                for item in &parsed.inheritances {
+                    add(EdgeKind::Inherits, &item.base_type);
+                }
+                for item in &parsed.implementations {
+                    add(EdgeKind::Implements, &item.trait_or_interface);
+                }
             }
             for item in &parsed.imports {
-                add(EdgeKind::Imports, &item.path);
+                let non_definitive =
+                    self.reference_is_unresolved(&file, EdgeKind::Imports, &item.path);
+                for name in import_lookup_keys(&item.path) {
+                    let key = (EdgeKind::Imports.code(), name);
+                    dependencies.push(key.clone());
+                    if non_definitive {
+                        pending.push(key);
+                    }
+                }
             }
             for item in &parsed.exports {
-                add(EdgeKind::Exports, &item.name);
+                let key = (EdgeKind::Exports.code(), semantic_name(&item.name));
+                dependencies.push(key.clone());
+                if self.reference_is_unresolved(&file, EdgeKind::Exports, &item.name) {
+                    pending.push(key);
+                }
+            }
+            for key in dependencies {
+                insert_owned_resolution_entry(
+                    &mut self.resolution_dependents,
+                    &mut self.resolution_dependency_files,
+                    key,
+                    &file,
+                );
+            }
+            for key in pending {
+                insert_owned_resolution_entry(
+                    &mut self.pending_resolution,
+                    &mut self.pending_resolution_files,
+                    key,
+                    &file,
+                );
             }
         }
     }
@@ -669,11 +761,32 @@ impl IncrementalWorkspace {
         self.file_edges.clear();
         self.import_dependents.clear();
         self.type_dependents.clear();
+        self.symbol_providers.clear();
+        self.import_targets.clear();
+        for file in self.files.keys() {
+            for key in import_lookup_keys(file) {
+                self.import_targets
+                    .entry(key)
+                    .or_default()
+                    .insert(file.clone());
+            }
+        }
         for node in &self.graph.nodes {
             self.file_nodes
                 .entry(node.file.clone())
                 .or_default()
                 .push(node.id);
+            if node.kind != NodeKind::File {
+                for key in [
+                    semantic_name(&node.name),
+                    semantic_name(&node.qualified_name),
+                ] {
+                    self.symbol_providers
+                        .entry(key)
+                        .or_default()
+                        .insert(node.file.clone());
+                }
+            }
         }
         for edge in &self.graph.edges {
             let Some(from) = self.graph.nodes.iter().find(|node| node.id == edge.from) else {
@@ -709,6 +822,99 @@ impl IncrementalWorkspace {
             }
         }
     }
+}
+
+fn insert_owned_resolution_entry(
+    index: &mut BTreeMap<ResolutionKey, BTreeSet<String>>,
+    owners: &mut BTreeMap<String, BTreeSet<ResolutionKey>>,
+    key: ResolutionKey,
+    file: &str,
+) {
+    index
+        .entry(key.clone())
+        .or_default()
+        .insert(file.to_string());
+    owners.entry(file.to_string()).or_default().insert(key);
+}
+
+fn remove_owned_resolution_entries(
+    index: &mut BTreeMap<ResolutionKey, BTreeSet<String>>,
+    owners: &mut BTreeMap<String, BTreeSet<ResolutionKey>>,
+    file: &str,
+) {
+    let Some(keys) = owners.remove(file) else {
+        return;
+    };
+    for key in keys {
+        let empty = index.get_mut(&key).is_some_and(|files| {
+            files.remove(file);
+            files.is_empty()
+        });
+        if empty {
+            index.remove(&key);
+        }
+    }
+}
+
+fn import_lookup_keys(value: &str) -> BTreeSet<String> {
+    const EXTENSIONS: [&str; 28] = [
+        ".rs", ".py", ".ts", ".tsx", ".mts", ".cts", ".js", ".mjs", ".cjs", ".jsx", ".go", ".c",
+        ".h", ".cpp", ".cc", ".cxx", ".hpp", ".hxx", ".hh", ".java", ".cs", ".kt", ".kts", ".zig",
+        ".php", ".rb", ".swift", ".m",
+    ];
+    let quoted = value.find(['\'', '"']).and_then(|start| {
+        let delimiter = value.as_bytes()[start] as char;
+        let rest = &value[start + 1..];
+        rest.find(delimiter).map(|end| &rest[..end])
+    });
+    let unquoted = || {
+        let trimmed = value.trim();
+        if let Some(rest) = trimmed.strip_prefix("use ") {
+            rest
+        } else if let Some(rest) = trimmed.strip_prefix("from ") {
+            rest.split_whitespace().next().unwrap_or(rest)
+        } else if let Some(rest) = trimmed.strip_prefix("import ") {
+            rest
+        } else if let Some(rest) = trimmed.strip_prefix("#include ") {
+            rest
+        } else {
+            trimmed
+        }
+    };
+    let candidate = quoted
+        .unwrap_or_else(unquoted)
+        .trim_matches(|character: char| {
+            matches!(
+                character,
+                '.' | '/' | ';' | '\'' | '"' | '(' | ')' | '<' | '>'
+            )
+        });
+    if candidate.is_empty() {
+        return BTreeSet::new();
+    }
+    let mut normalized = candidate.replace('\\', "/").replace("::", "/");
+    if !EXTENSIONS
+        .iter()
+        .any(|extension| normalized.ends_with(extension))
+        && !normalized.contains('/')
+        && normalized.contains('.')
+    {
+        normalized = normalized.replace('.', "/");
+    }
+    let mut keys = BTreeSet::new();
+    keys.insert(normalized.clone());
+    if let Some(base) = normalized.rsplit('/').next() {
+        keys.insert(base.to_string());
+    }
+    for extension in EXTENSIONS {
+        if let Some(stem) = normalized.strip_suffix(extension) {
+            keys.insert(stem.to_string());
+            if let Some(base) = stem.rsplit('/').next() {
+                keys.insert(base.to_string());
+            }
+        }
+    }
+    keys
 }
 
 fn semantic_name(name: &str) -> String {
