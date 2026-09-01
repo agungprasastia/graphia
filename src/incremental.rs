@@ -69,6 +69,12 @@ pub struct IncrementalUpdateSummary {
     pub full_rebuild: bool,
     pub fallback_used: bool,
     pub fallback_reason: Option<String>,
+    /// Number of direct pending-index buckets queried by this update.
+    pub pending_index_lookups: usize,
+    /// Number of pending consumers returned by those direct lookups.
+    pub pending_entries_examined: usize,
+    /// Ordinary selective updates must keep this at zero.
+    pub full_pending_scans: usize,
 }
 
 impl IncrementalWorkspace {
@@ -183,10 +189,17 @@ impl IncrementalWorkspace {
                 full_rebuild: false,
                 fallback_used: false,
                 fallback_reason: None,
+                pending_index_lookups: 0,
+                pending_entries_examined: 0,
+                full_pending_scans: 0,
             });
         }
 
         let mut changed_files = BTreeSet::new();
+        // Keep old semantic surfaces while replacing parsed files.  Removed names
+        // must invalidate formerly-resolved consumers just as added names wake
+        // unresolved consumers.
+        let mut previous = BTreeMap::new();
         let mut files_reparsed = 0;
         let mut fallback_reason = None;
         for action in actions {
@@ -194,6 +207,9 @@ impl IncrementalWorkspace {
                 SemanticAction::Created(path) | SemanticAction::Modified(path) => {
                     let (full_path, rel_path) = self.normalize_path(path);
                     changed_files.insert(rel_path.clone());
+                    if let Some((_, parsed)) = self.files.get(&rel_path) {
+                        previous.insert(rel_path.clone(), parsed.clone());
+                    }
                     if let Some(lang) = crate::scan::detect_language(&full_path) {
                         if full_path.exists() {
                             let content =
@@ -235,6 +251,9 @@ impl IncrementalWorkspace {
                 SemanticAction::Removed(path) => {
                     let (_, rel_path) = self.normalize_path(path);
                     changed_files.insert(rel_path.clone());
+                    if let Some((_, parsed)) = self.files.get(&rel_path) {
+                        previous.insert(rel_path.clone(), parsed.clone());
+                    }
                     self.files.remove(&rel_path);
                     self.metadata.remove(&rel_path);
                 }
@@ -247,6 +266,9 @@ impl IncrementalWorkspace {
                     }
                     changed_files.insert(from_rel.clone());
                     changed_files.insert(to_rel.clone());
+                    if let Some((_, parsed)) = self.files.get(&from_rel) {
+                        previous.insert(from_rel.clone(), parsed.clone());
+                    }
                     self.files.remove(&from_rel);
                     self.metadata.remove(&from_rel);
                     let Some(lang) = crate::scan::detect_language(&to_full) else {
@@ -300,6 +322,9 @@ impl IncrementalWorkspace {
                 full_rebuild: true,
                 fallback_used: true,
                 fallback_reason: Some(reason),
+                pending_index_lookups: 0,
+                pending_entries_examined: 0,
+                full_pending_scans: 0,
             });
         }
 
@@ -317,10 +342,14 @@ impl IncrementalWorkspace {
                 full_rebuild: false,
                 fallback_used: false,
                 fallback_reason: None,
+                pending_index_lookups: 0,
+                pending_entries_examined: 0,
+                full_pending_scans: 0,
             });
         }
         let dependency_hints = self.new_dependency_hints(&changed_files);
-        let reverse_unresolved = self.reverse_unresolved_hints(&changed_files);
+        let (reverse_unresolved, pending_index_lookups, pending_entries_examined) =
+            self.reverse_unresolved_hints(&changed_files, &previous);
         let mut dependency_seeds = changed_files.clone();
         dependency_seeds.extend(dependency_hints.iter().cloned());
         dependency_seeds.extend(reverse_unresolved.iter().cloned());
@@ -403,6 +432,9 @@ impl IncrementalWorkspace {
             full_rebuild: false,
             fallback_used: false,
             fallback_reason: None,
+            pending_index_lookups,
+            pending_entries_examined,
+            full_pending_scans: 0,
         })
     }
 
@@ -506,22 +538,58 @@ impl IncrementalWorkspace {
         hints
     }
 
-    fn reverse_unresolved_hints(&self, changed_files: &BTreeSet<String>) -> BTreeSet<String> {
-        let names = changed_files
+    fn reverse_unresolved_hints(
+        &self,
+        changed_files: &BTreeSet<String>,
+        previous: &BTreeMap<String, ParsedFile>,
+    ) -> (BTreeSet<String>, usize, usize) {
+        let mut names = BTreeSet::new();
+        for parsed in changed_files
             .iter()
-            .filter_map(|file| self.files.get(file))
-            .flat_map(|(_, parsed)| parsed.symbols.iter().map(|symbol| symbol.name.as_str()))
-            .collect::<BTreeSet<_>>();
-        self.pending_resolution
-            .iter()
-            .filter(|((_, key), _)| names.contains(key.as_str()))
-            .flat_map(|(_, files)| {
-                files
+            .filter_map(|file| self.files.get(file).map(|(_, parsed)| parsed))
+            .chain(previous.values())
+        {
+            names.extend(
+                parsed
+                    .symbols
                     .iter()
-                    .filter(|file| !changed_files.contains(*file))
-                    .cloned()
-            })
-            .collect()
+                    .map(|symbol| semantic_name(&symbol.name)),
+            );
+            // Exports include Rust `pub use` re-exports.  They are a provider
+            // surface even when no new declaration node was parsed.
+            names.extend(parsed.exports.iter().flat_map(|export| {
+                std::iter::once(semantic_name(&export.name))
+                    .chain(export.target.as_deref().map(semantic_name))
+            }));
+        }
+
+        let mut consumers = BTreeSet::new();
+        let mut lookups = 0;
+        let mut entries = 0;
+        for name in names {
+            for kind in [
+                EdgeKind::References,
+                EdgeKind::TypeReferences,
+                EdgeKind::Calls,
+                EdgeKind::Instantiates,
+                EdgeKind::Inherits,
+                EdgeKind::Implements,
+                EdgeKind::Imports,
+                EdgeKind::Exports,
+            ] {
+                lookups += 1;
+                if let Some(files) = self.pending_resolution.get(&(kind.code(), name.clone())) {
+                    entries += files.len();
+                    consumers.extend(
+                        files
+                            .iter()
+                            .filter(|file| !changed_files.contains(*file))
+                            .cloned(),
+                    );
+                }
+            }
+        }
+        (consumers, lookups, entries)
     }
 
     fn rebuild_pending_index(&mut self, files: BTreeSet<String>) {
@@ -534,11 +602,11 @@ impl IncrementalWorkspace {
                 continue;
             };
             let mut add = |kind: EdgeKind, name: &str| {
+                if !self.reference_is_unresolved(&file, kind, name) {
+                    return;
+                }
                 self.pending_resolution
-                    .entry((
-                        kind.code(),
-                        name.rsplit([':', '.']).next().unwrap_or(name).to_string(),
-                    ))
+                    .entry((kind.code(), semantic_name(name)))
                     .or_default()
                     .insert(file.clone());
             };
@@ -567,6 +635,19 @@ impl IncrementalWorkspace {
                 add(EdgeKind::Exports, &item.name);
             }
         }
+    }
+
+    fn reference_is_unresolved(&self, file: &str, kind: EdgeKind, name: &str) -> bool {
+        !self.graph.edges.iter().any(|edge| {
+            edge.kind == kind
+                && edge.label.as_deref().is_some_and(|label| label == name)
+                && self
+                    .graph
+                    .nodes
+                    .iter()
+                    .find(|node| node.id == edge.from)
+                    .is_some_and(|node| node.file == file)
+        })
     }
 
     fn normalize_path(&self, path: &Path) -> (PathBuf, String) {
@@ -628,6 +709,14 @@ impl IncrementalWorkspace {
             }
         }
     }
+}
+
+fn semantic_name(name: &str) -> String {
+    name.trim_end_matches(';')
+        .rsplit([':', '.'])
+        .next()
+        .unwrap_or(name)
+        .to_string()
 }
 
 fn validate_cache(cache: &Cache) -> bool {
