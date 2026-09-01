@@ -323,12 +323,12 @@ impl IncrementalWorkspace {
         dependency_seeds.extend(reverse_unresolved.iter().cloned());
         let affected_files =
             self.compute_affected_closure(&dependency_seeds.iter().cloned().collect::<Vec<_>>());
-        let component_files = self.expand_graph_component(&affected_files);
-        let component_files = component_files
+        let mutation_files = self.expand_graph_component(&affected_files);
+        let mutation_files = mutation_files
             .difference(&dependency_hints)
             .cloned()
             .collect::<BTreeSet<_>>();
-        let component_files = component_files
+        let mutation_files = mutation_files
             .difference(&reverse_unresolved)
             .cloned()
             .chain(changed_files.iter().cloned())
@@ -339,7 +339,7 @@ impl IncrementalWorkspace {
             .graph
             .nodes
             .iter()
-            .filter(|node| component_files.contains(&node.file))
+            .filter(|node| mutation_files.contains(&node.file))
             .count();
         let old_component_edges = self
             .graph
@@ -350,13 +350,13 @@ impl IncrementalWorkspace {
                     .nodes
                     .iter()
                     .find(|node| node.id == edge.from)
-                    .is_some_and(|node| component_files.contains(&node.file))
+                    .is_some_and(|node| mutation_files.contains(&node.file))
             })
             .count();
         let parsed_entries = self
             .files
             .iter()
-            .filter(|(path, _)| component_files.contains(*path))
+            .filter(|(path, _)| mutation_files.contains(*path))
             .map(|(p, (lang, parsed))| (p.clone(), *lang, parsed.clone()))
             .collect();
         let fragment = build_graph(parsed_entries);
@@ -364,12 +364,12 @@ impl IncrementalWorkspace {
             .graph
             .nodes
             .iter()
-            .filter(|node| component_files.contains(&node.file))
+            .filter(|node| mutation_files.contains(&node.file))
             .map(|node| node.id)
             .collect::<BTreeSet<_>>();
         self.graph
             .nodes
-            .retain(|node| !component_files.contains(&node.file));
+            .retain(|node| !mutation_files.contains(&node.file));
         self.graph.edges.retain(|edge| {
             !removed_node_ids.contains(&edge.from) && !removed_node_ids.contains(&edge.to)
         });
@@ -382,14 +382,14 @@ impl IncrementalWorkspace {
                 .collect(),
         );
         self.graph.set_source_root(self.repo_root.clone());
-        self.graph.resolve_cross_file_affected(&component_files)?;
+        self.graph.resolve_cross_file_affected(&affected_files)?;
         self.rebuild_indexes();
         self.fallback_reason = None;
         Ok(IncrementalUpdateSummary {
             files_reparsed,
             files_parsed: files_reparsed,
             affected_files,
-            files_affected: component_files.len(),
+            files_affected: mutation_files.len(),
             nodes_mutated: old_nodes.abs_diff(self.graph.nodes.len()),
             nodes_added: self.graph.nodes.len().saturating_sub(old_nodes) + old_component_nodes,
             nodes_removed: old_nodes.saturating_sub(self.graph.nodes.len()) + old_component_nodes,
