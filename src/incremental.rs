@@ -50,6 +50,7 @@ pub struct IncrementalWorkspace {
     pub file_edges: BTreeMap<String, Vec<EdgeIdentity>>,
     pub import_dependents: BTreeMap<String, BTreeSet<String>>,
     pub type_dependents: BTreeMap<String, BTreeSet<String>>,
+    pub pending_resolution: BTreeMap<(u8, String), BTreeSet<String>>,
     pub fallback_reconcile_count: usize,
     pub fallback_reason: Option<String>,
 }
@@ -81,6 +82,7 @@ impl IncrementalWorkspace {
             file_edges: BTreeMap::new(),
             import_dependents: BTreeMap::new(),
             type_dependents: BTreeMap::new(),
+            pending_resolution: BTreeMap::new(),
             fallback_reconcile_count: 0,
             fallback_reason: None,
         };
@@ -131,6 +133,7 @@ impl IncrementalWorkspace {
         graph.canonicalize()?;
         self.graph = graph;
         self.rebuild_indexes();
+        self.rebuild_pending_index(self.files.keys().cloned().collect());
         Ok(())
     }
 
@@ -323,6 +326,7 @@ impl IncrementalWorkspace {
         dependency_seeds.extend(reverse_unresolved.iter().cloned());
         let affected_files =
             self.compute_affected_closure(&dependency_seeds.iter().cloned().collect::<Vec<_>>());
+        let resolution_files = affected_files.clone();
         let mutation_files = self.expand_graph_component(&affected_files);
         let mutation_files = mutation_files
             .difference(&dependency_hints)
@@ -384,6 +388,7 @@ impl IncrementalWorkspace {
         self.graph.set_source_root(self.repo_root.clone());
         self.graph.resolve_cross_file_affected(&affected_files)?;
         self.rebuild_indexes();
+        self.rebuild_pending_index(resolution_files.clone());
         self.fallback_reason = None;
         Ok(IncrementalUpdateSummary {
             files_reparsed,
@@ -507,62 +512,61 @@ impl IncrementalWorkspace {
             .filter_map(|file| self.files.get(file))
             .flat_map(|(_, parsed)| parsed.symbols.iter().map(|symbol| symbol.name.as_str()))
             .collect::<BTreeSet<_>>();
-        self.files
+        self.pending_resolution
             .iter()
-            .filter(|(file, _)| !changed_files.contains(*file))
-            .filter(|(_, (_, parsed))| {
-                parsed
-                    .references
+            .filter(|((_, key), _)| names.contains(key.as_str()))
+            .flat_map(|(_, files)| {
+                files
                     .iter()
-                    .any(|reference| names.contains(reference.name.as_str()))
-                    || parsed
-                        .type_references
-                        .iter()
-                        .any(|reference| names.contains(reference.name.as_str()))
-                    || parsed.calls.iter().any(|call| {
-                        names.contains(
-                            call.callee
-                                .rsplit([':', '.'])
-                                .next()
-                                .unwrap_or(call.callee.as_str()),
-                        )
-                    })
-                    || parsed.instantiations.iter().any(|item| {
-                        names.contains(
-                            item.type_name
-                                .trim_end_matches(';')
-                                .rsplit([':', '.'])
-                                .next()
-                                .unwrap_or(item.type_name.as_str()),
-                        )
-                    })
-                    || parsed.inheritances.iter().any(|item| {
-                        names.contains(
-                            item.base_type
-                                .rsplit([':', '.'])
-                                .next()
-                                .unwrap_or(item.base_type.as_str()),
-                        )
-                    })
-                    || parsed.implementations.iter().any(|item| {
-                        names.contains(
-                            item.trait_or_interface
-                                .rsplit([':', '.'])
-                                .next()
-                                .unwrap_or(item.trait_or_interface.as_str()),
-                        )
-                    })
-                    || parsed
-                        .imports
-                        .iter()
-                        .any(|item| names.iter().any(|name| item.path.contains(name)))
-                    || parsed
-                        .exports
-                        .iter()
-                        .any(|item| names.contains(item.name.as_str()))
+                    .filter(|file| !changed_files.contains(*file))
+                    .cloned()
             })
-            .map(|(file, _)| file.clone())
             .collect()
+    }
+
+    fn rebuild_pending_index(&mut self, files: BTreeSet<String>) {
+        self.pending_resolution.retain(|_, consumers| {
+            consumers.retain(|file| !files.contains(file));
+            !consumers.is_empty()
+        });
+        for file in files {
+            let Some((_, parsed)) = self.files.get(&file).cloned() else {
+                continue;
+            };
+            let mut add = |kind: EdgeKind, name: &str| {
+                self.pending_resolution
+                    .entry((
+                        kind.code(),
+                        name.rsplit([':', '.']).next().unwrap_or(name).to_string(),
+                    ))
+                    .or_default()
+                    .insert(file.clone());
+            };
+            for item in &parsed.references {
+                add(EdgeKind::References, &item.name);
+            }
+            for item in &parsed.type_references {
+                add(EdgeKind::TypeReferences, &item.name);
+            }
+            for item in &parsed.calls {
+                add(EdgeKind::Calls, &item.callee);
+            }
+            for item in &parsed.instantiations {
+                add(EdgeKind::Instantiates, &item.type_name);
+            }
+            for item in &parsed.inheritances {
+                add(EdgeKind::Inherits, &item.base_type);
+            }
+            for item in &parsed.implementations {
+                add(EdgeKind::Implements, &item.trait_or_interface);
+            }
+            for item in &parsed.imports {
+                add(EdgeKind::Imports, &item.path);
+            }
+            for item in &parsed.exports {
+                add(EdgeKind::Exports, &item.name);
+            }
+        }
     }
 
     fn normalize_path(&self, path: &Path) -> (PathBuf, String) {
