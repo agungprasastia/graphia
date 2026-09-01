@@ -8,11 +8,6 @@
 
 **Graphia** is a high-performance, deterministic, native code graph and repository intelligence engine built in Rust. It extracts, indexes, resolves, and analyzes semantic relationships across multi-language codebases in milliseconds—with zero external runtime dependencies (no Python, no SQLite, no cloud requirements, and no LLMs in the core pipeline).
 
-Foundation status: **PASS**. Runtime correctness, incremental resolution,
-daemon synchronization, and MCP cancellation proofs are covered by the test
-suite and benchmark harness. See [`docs/m4.1.3-final-report.md`](docs/m4.1.3-final-report.md)
-for implementation evidence and measured results.
-
 ---
 
 ## Key Highlights
