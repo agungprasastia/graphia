@@ -8,7 +8,10 @@
 
 **Graphia** is a high-performance, deterministic, native code graph and repository intelligence engine built in Rust. It extracts, indexes, resolves, and analyzes semantic relationships across multi-language codebases in milliseconds—with zero external runtime dependencies (no Python, no SQLite, no cloud requirements, and no LLMs in the core pipeline).
 
-M4.1.2 foundation closure status: **PASS**. See [`docs/m4.1.2-final-closure-report.md`](docs/m4.1.2-final-closure-report.md) for implementation evidence and known limitations.
+Foundation status: **PASS**. Runtime correctness, incremental resolution,
+daemon synchronization, and MCP cancellation proofs are covered by the test
+suite and benchmark harness. See [`docs/m4.1.3-final-report.md`](docs/m4.1.3-final-report.md)
+for implementation evidence and measured results.
 
 ---
 
@@ -20,7 +23,7 @@ M4.1.2 foundation closure status: **PASS**. See [`docs/m4.1.2-final-closure-repo
 - **Repository Intelligence**: Bounded symbol neighborhood extraction, blast radius & change surface analysis (`graphia impact`), deterministic test discovery, and language-aware entrypoint detection.
 - **AI Context Engine**: AST line-range slicing with distance-decay relevance ranking, exact token/byte budgeting, and deduplicated context bundles designed to eliminate context-window waste for coding agents.
 - **Model Context Protocol (MCP) Server**: Built-in JSON-RPC 2.0 stdio transport exposing 11 read-only tools with strict `stdout` protocol isolation and sandbox security.
-- **Live Daemon**: Low-overhead recursive filesystem watcher with event debouncing/coalescing, bounded incremental update queues, and generation-tracked snapshot isolation.
+- **Live Daemon**: Low-overhead recursive filesystem watcher with event debouncing/coalescing, bounded incremental update queues, cumulative burst-completion tracking, persistence generation tracking, and snapshot isolation.
 - **Advanced Static Analysis**: Refined virtual dispatch candidate sets, intra-procedural dataflow/typeflow paths, architecture layer boundary enforcement, git history co-change metrics, structural dead code candidate detection, and graph/API diffing.
 - **Typeflow support boundary**: AST-aware approximate typeflow covers Rust, TypeScript, JavaScript, TSX, JSX, and Python; other supported languages retain normalized extraction with conservative fallback analysis.
 
@@ -96,7 +99,7 @@ M4.1.2 foundation closure status: **PASS**. See [`docs/m4.1.2-final-closure-repo
 
 ## Installation & Requirements
 
-- **Rust Toolchain**: Rust 1.85+ (2024 Edition).
+- **Rust Toolchain**: Rust 1.98+ (2024 Edition).
 - **Zero Runtime Dependencies**: No Python runtime, SQLite, or background services required.
 
 ```bash
@@ -271,6 +274,11 @@ Benchmark closure uses deterministic 100-file, 1,000-file, and opt-in 5,000-file
 
 See [`docs/m4.1-benchmark-report.md`](docs/m4.1-benchmark-report.md) for methodology, output schema, and honest capture status.
 
+Daemon benchmark stages use the real `graphia daemon` process. Burst stages wait
+for cumulative file processing, a Healthy state, and an empty pending queue;
+graph-generation latency and persistence completion latency are reported
+separately. Daemon RSS is measured from the child process.
+
 ---
 
 ## Quality & Verification Policy
@@ -279,7 +287,7 @@ Graphia enforces a strict zero-warning policy:
 - `compiler warnings = 0`
 - `clippy warnings = 0` (`cargo clippy --all-targets --all-features -- -D warnings`)
 - Format compliance: `cargo fmt --check`
-- Targeted closure suites pass; full Cargo commands should exclude the `harness = false` benchmark target when using `--all-targets` on this checkout.
+- Full Cargo validation runs with all targets and features enabled.
 
 ```bash
 # Run all tests
