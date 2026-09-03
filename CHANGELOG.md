@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-09-04
+
 ### Added
 - **Unified AI Exploration (`graphia explore` & `graphia_explore`)**:
   - 1-call code exploration returning symbol definition, source code slice, container, callers, callees, blast radius, and related tests.
