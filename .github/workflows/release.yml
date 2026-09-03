@@ -2,86 +2,94 @@ name: Release
 
 on:
   push:
-    tags:
-      - 'v*'
+    tags: ["v*"]
+
+permissions:
+  contents: write
 
 jobs:
-  create-release:
-    name: Create GitHub Release
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Extract Release Notes from CHANGELOG
-        shell: bash
-        run: |
-          python3 .github/scripts/extract_changelog.py "${{ github.ref_name }}" CHANGELOG.md release_notes.md
-
-      - name: Publish Release
-        uses: softprops/action-gh-release@v2
-        with:
-          name: ${{ github.ref_name }}
-          body_path: release_notes.md
-          draft: false
-          prerelease: false
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-  upload-assets:
-    name: Build Binary (${{ matrix.target }})
-    needs: create-release
+  build:
+    name: Build (${{ matrix.target }})
     runs-on: ${{ matrix.os }}
-    permissions:
-      contents: write
     strategy:
-      fail-fast: false
       matrix:
         include:
-          - os: ubuntu-latest
-            target: x86_64-unknown-linux-gnu
-            binary_name: graphia
-            asset_name: graphia-linux-x86_64
-          - os: macos-latest
-            target: x86_64-apple-darwin
-            binary_name: graphia
-            asset_name: graphia-macos-x86_64
-          - os: macos-latest
-            target: aarch64-apple-darwin
-            binary_name: graphia
-            asset_name: graphia-macos-arm64
-          - os: windows-latest
-            target: x86_64-pc-windows-msvc
-            binary_name: graphia.exe
-            asset_name: graphia-windows-x86_64.exe
-
+          - target: linux-x64
+            os: ubuntu-latest
+            rust-target: x86_64-unknown-linux-gnu
+            ext: ""
+          - target: linux-arm64
+            os: ubuntu-latest
+            rust-target: aarch64-unknown-linux-gnu
+            ext: ""
+          - target: darwin-x64
+            os: macos-latest
+            rust-target: x86_64-apple-darwin
+            ext: ""
+          - target: darwin-arm64
+            os: macos-latest
+            rust-target: aarch64-apple-darwin
+            ext: ""
+          - target: windows-x64
+            os: windows-latest
+            rust-target: x86_64-pc-windows-msvc
+            ext: ".exe"
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Setup Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@stable
         with:
-          targets: ${{ matrix.target }}
+          targets: ${{ matrix.rust-target }}
 
-      - name: Build Release Binary
-        run: cargo build --release --target ${{ matrix.target }}
-
-      - name: Verify release sources
-        run: cargo test --all-targets --all-features
-
-      - name: Prepare binary artifact
-        shell: bash
+      - name: Install cross-compiler (Linux ARM64)
+        if: matrix.rust-target == 'aarch64-unknown-linux-gnu'
         run: |
-          mkdir -p dist
-          cp target/${{ matrix.target }}/release/${{ matrix.binary_name }} dist/${{ matrix.asset_name }}
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu
 
-      - name: Upload Release Asset
+      - name: Test
+        if: matrix.rust-target != 'aarch64-unknown-linux-gnu'
+        run: cargo test --verbose --all-targets
+
+      - name: Build Release
+        env:
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
+          CC_aarch64_unknown_linux_gnu: aarch64-linux-gnu-gcc
+        run: cargo build --release --target ${{ matrix.rust-target }}
+
+      - name: Package (Unix)
+        if: matrix.ext == ''
+        run: tar czf graphia-${{ matrix.target }}.tar.gz -C target/${{ matrix.rust-target }}/release graphia
+
+      - name: Package (Windows)
+        if: matrix.ext == '.exe'
+        run: |
+          cd target\${{ matrix.rust-target }}\release
+          7z a ..\..\..\graphia-${{ matrix.target }}.zip graphia.exe
+        shell: pwsh
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: graphia-${{ matrix.target }}
+          path: graphia-${{ matrix.target }}.${{ matrix.ext == '.exe' && 'zip' || 'tar.gz' }}
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Extract Release Notes
+        id: extract-release-notes
+        uses: ffurrer2/extract-release-notes@v3
+
+      - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/${{ matrix.asset_name }}
-          tag_name: ${{ github.ref_name }}
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          files: artifacts/*
+          body: ${{ steps.extract-release-notes.outputs.release_notes }}
