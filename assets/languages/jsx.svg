@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="104" height="104" viewBox="0 0 104 104" role="img" aria-label="JSX">
+  <title>JSX</title>
+  <rect x="0.5" y="0.5" width="103" height="103" rx="8" fill="#f7f6f2" stroke="#d6d3c8"/>
+  <g transform="translate(30, 18) scale(1.83333)">
+    <circle cx="12" cy="12" r="2.2" fill="#F7DF1E"/>
+    <ellipse cx="12" cy="12" rx="10" ry="3.8" fill="none" stroke="#61DAFB" stroke-width="1.2"/>
+    <ellipse cx="12" cy="12" rx="10" ry="3.8" transform="rotate(60 12 12)" fill="none" stroke="#61DAFB" stroke-width="1.2"/>
+    <ellipse cx="12" cy="12" rx="10" ry="3.8" transform="rotate(120 12 12)" fill="none" stroke="#61DAFB" stroke-width="1.2"/>
+  </g>
+  <text x="52" y="82" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="600" fill="#16150f">JSX</text>
+</svg>

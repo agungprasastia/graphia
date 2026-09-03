@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="104" height="104" viewBox="0 0 104 104" role="img" aria-label="Zig">
+  <title>Zig</title>
+  <rect x="0.5" y="0.5" width="103" height="103" rx="8" fill="#f7f6f2" stroke="#d6d3c8"/>
+  <g transform="translate(30, 20) scale(1.83333)">
+    <path fill="#F7A41D" d="M0 6.92h6.818L10.228 3.515H3.41zm0 7.568h3.41l6.818-6.818H3.409zm6.818 3.41h11.182l-3.41 3.41H3.41zm4.091-10.978l3.41-3.41h3.409l-3.41 3.41zm0 7.568l6.818-6.818h3.41l-6.818 6.818zm6.818 3.41l3.41-3.41h3.409l-3.41 3.41z"/>
+  </g>
+  <text x="52" y="82" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="600" fill="#16150f">Zig</text>
+</svg>

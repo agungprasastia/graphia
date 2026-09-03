@@ -1,12 +1,24 @@
+<div align="center">
+
 # Graphia
+
+### Supercharge AI Coding Agents (Claude Code, Cursor, Codex, Antigravity) with Deterministic Semantic Code Intelligence
+
+**High-performance native code graph · surgical context slicing · 100% local · zero external runtime dependencies**
 
 [![Rust Version](https://img.shields.io/badge/rust-1.98%2B%20(2024%20edition)-orange.svg)](https://www.rust-lang.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Build Status](https://img.shields.io/badge/build-passing-brightgreen.svg)]()
 [![Warnings](https://img.shields.io/badge/warnings-0%20(strict)-brightgreen.svg)]()
-[![Languages](https://img.shields.io/badge/languages-16%20supported-blueviolet.svg)]()
+[![Languages](https://img.shields.io/badge/languages-16%20supported-blueviolet.svg)](#language-support)
 
-**Graphia** is a high-performance, deterministic, native code graph and repository intelligence engine built in Rust. It extracts, indexes, resolves, and analyzes semantic relationships across multi-language codebases in milliseconds—with zero external runtime dependencies (no Python, no SQLite, no cloud requirements, and no LLMs in the core pipeline).
+[![Claude Code](https://img.shields.io/badge/Claude_Code-supported-blueviolet.svg)](#7-model-context-protocol-mcp-server)
+[![Cursor](https://img.shields.io/badge/Cursor-supported-blueviolet.svg)](#7-model-context-protocol-mcp-server)
+[![Codex](https://img.shields.io/badge/Codex-supported-blueviolet.svg)](#7-model-context-protocol-mcp-server)
+[![Antigravity](https://img.shields.io/badge/Antigravity-supported-blueviolet.svg)](#7-model-context-protocol-mcp-server)
+[![VS Code](https://img.shields.io/badge/VS_Code-supported-blueviolet.svg)](#7-model-context-protocol-mcp-server)
+
+</div>
 
 ---
 
@@ -18,7 +30,7 @@
 - **Native Graph Analysis**: Strongly Connected Components (Tarjan), elementary cycle detection, degree & PageRank centrality, afferent/efferent coupling ($C_a, C_e, I$), structural hotspot scoring, and deterministic community detection.
 - **Repository Intelligence**: Bounded symbol neighborhood extraction, blast radius & change surface analysis (`graphia impact`), deterministic test discovery, and language-aware entrypoint detection.
 - **AI Context Engine**: AST line-range slicing with distance-decay relevance ranking, exact token/byte budgeting, and deduplicated context bundles designed to eliminate context-window waste for coding agents.
-- **Model Context Protocol (MCP) Server**: Built-in JSON-RPC 2.0 stdio transport exposing 11 read-only tools with strict `stdout` protocol isolation, sandbox security, true in-flight cancellation, active-request cleanup, and bounded workers.
+- **Model Context Protocol (MCP) Server**: Built-in JSON-RPC 2.0 stdio transport exposing 12 read-only tools with strict `stdout` protocol isolation, sandbox security, true in-flight cancellation, active-request cleanup, and bounded workers.
 - **Live Daemon**: Low-overhead recursive filesystem watcher with event debouncing/coalescing, bounded incremental update queues, cumulative burst-completion tracking, persistence generation tracking, and snapshot isolation.
 - **Advanced Static Analysis**: Refined virtual dispatch candidate sets, intra-procedural dataflow/typeflow paths, architecture layer boundary enforcement, git history co-change metrics, structural dead code candidate detection, and graph/API diffing.
 - **Typeflow support boundary**: AST-aware approximate typeflow covers Rust, TypeScript, JavaScript, TSX, JSX, and Python; other supported languages retain normalized extraction with conservative fallback analysis.
@@ -48,8 +60,8 @@
               ┌─────────────────────────────┼─────────────────────────────┐
               ▼                             ▼                             ▼
         Query Engine                 Analysis Engine            Intelligence Engine
-       (BFS, Path,                   (SCC, Cycles,               (Impact, Neighborhood,
-        Exact Lookup)                 Centrality,                 Test Discovery,
+       (BFS, Path,                   (SCC, Cycles,               (Explore, Impact,
+        Exact Lookup)                 Centrality,                 Report, Tests,
               │                       Communities)                Architecture Overview)
               │                             │                             │
               └─────────────────────────────┼─────────────────────────────┘
@@ -60,7 +72,7 @@
                     ┌───────────────────────┴───────────────────────┐
                     ▼                                               ▼
              CLI Subcommands                                 MCP Stdio Server
-      (Human & Versioned JSON)                              (11 Read-Only Tools)
+      (Human & Versioned JSON)                              (12 Read-Only Tools)
                     │                                               │
                     └───────────────────────┬───────────────────────┘
                                             ▼
@@ -70,7 +82,31 @@
 
 ---
 
-## Supported Languages
+## Language Support
+
+Every language below gets the same treatment — full structural extraction and cross-file resolution into one graph, no per-language setup:
+
+<p align="center">
+  <img src="assets/languages/typescript.svg" width="104" height="104" alt="TypeScript" />
+  <img src="assets/languages/javascript.svg" width="104" height="104" alt="JavaScript" />
+  <img src="assets/languages/tsx.svg" width="104" height="104" alt="TSX" />
+  <img src="assets/languages/jsx.svg" width="104" height="104" alt="JSX" />
+  <img src="assets/languages/python.svg" width="104" height="104" alt="Python" />
+  <img src="assets/languages/go.svg" width="104" height="104" alt="Go" />
+  <img src="assets/languages/rust.svg" width="104" height="104" alt="Rust" />
+  <img src="assets/languages/java.svg" width="104" height="104" alt="Java" />
+  <img src="assets/languages/csharp.svg" width="104" height="104" alt="C#" />
+  <img src="assets/languages/c.svg" width="104" height="104" alt="C" />
+  <img src="assets/languages/cpp.svg" width="104" height="104" alt="C++" />
+  <img src="assets/languages/swift.svg" width="104" height="104" alt="Swift" />
+  <img src="assets/languages/kotlin.svg" width="104" height="104" alt="Kotlin" />
+  <img src="assets/languages/zig.svg" width="104" height="104" alt="Zig" />
+  <img src="assets/languages/php.svg" width="104" height="104" alt="PHP" />
+  <img src="assets/languages/ruby.svg" width="104" height="104" alt="Ruby" />
+</p>
+
+<details>
+<summary><b>Per-language details — extensions, directives, and extracted AST entities</b></summary>
 
 | Language | Extension(s) | Key Entities Extracted | Directives Handled |
 |---|---|---|---|
@@ -90,6 +126,8 @@
 | **PHP** | `.php`, `.phtml`, `.php3..7`, `.phps` | Namespaces, Classes, Traits, Interfaces, Enums, Functions, Methods | `use`, `namespace` |
 | **Ruby** | `.rb`, `.erb` | Modules, Classes, Methods, Singleton Methods | `require`, `require_relative` |
 | **Swift** | `.swift` | Protocols, Classes, Structs, Enums, Initializers (`init`), Functions | `import` statements |
+
+</details>
 
 ---
 
@@ -111,7 +149,17 @@ cargo build --release
 
 ## CLI Usage Guide
 
-### 1. Repository Scanning & Graph Building
+### 1. Zero-Config Project Initialization
+
+```bash
+# Initialize project, configure Claude Code/Cursor/VS Code MCP, and prime index
+graphia init
+
+# Run non-interactively
+graphia init --yes
+```
+
+### 2. Repository Scanning & Graph Building
 
 ```bash
 # Scan supported source files
@@ -130,9 +178,15 @@ graphia stats .
 graphia export . --format json
 ```
 
-### 2. Graph Traversal & Structural Queries
+### 3. Unified AI Exploration & Structural Queries
 
 ```bash
+# 1-call code exploration (source slice, container, callers, callees, blast radius, tests)
+graphia explore UserService
+
+# Specify search depth and output JSON
+graphia explore UserService --depth 3 --format json
+
 # Query exact or partial symbol definition
 graphia query . UserService
 
@@ -143,9 +197,15 @@ graphia path . "AuthController::login" "Database::query"
 graphia explain . UserService
 ```
 
-### 3. Structural Graph Analysis
+### 4. Structural Graph Analysis & Architectural Reports
 
 ```bash
+# Generate executive architectural audit report (GRAPH_REPORT.md)
+graphia report
+
+# Custom output destination
+graphia report --output docs/GRAPH_REPORT.md
+
 # General graph analysis overview (Symbol, File, or Module level)
 graphia analyze . --level module --format json
 
@@ -159,7 +219,7 @@ graphia hotspots . --limit 10
 graphia communities . --level module
 ```
 
-### 4. Repository Intelligence
+### 5. Repository Intelligence
 
 ```bash
 # Structural search with multi-signal ranking
@@ -181,7 +241,7 @@ graphia entrypoints
 graphia architecture
 ```
 
-### 5. AI Context Slicing
+### 6. AI Context Slicing
 
 ```bash
 # Generate minimal sufficient context bundle for a symbol
@@ -194,7 +254,7 @@ graphia context --query "user authentication" --budget-type approx_tokens --form
 graphia context --changed
 ```
 
-### 6. Model Context Protocol (MCP) Server
+### 7. Model Context Protocol (MCP) Server
 
 Graphia includes a native, read-only MCP server over standard input/output (`stdio`):
 
@@ -207,19 +267,20 @@ graphia mcp --repo . --auto-index
 ```
 
 #### MCP Tool Roster:
-1. `graphia_search_symbol`: Multi-signal ranked symbol search.
-2. `graphia_get_symbol`: Detailed definition, location, and structural relationships.
-3. `graphia_find_callers`: Inbound caller tracing.
-4. `graphia_find_callees`: Outbound invocation analysis.
-5. `graphia_find_references`: References categorized by calls, types, and imports.
-6. `graphia_dependency_path`: Shortest structural dependency path.
-7. `graphia_neighborhood`: Structural neighborhood extraction.
-8. `graphia_impact`: Blast radius and change surface estimation.
-9. `graphia_find_tests`: Associated test discovery.
-10. `graphia_architecture`: Structural repository overview.
-11. `graphia_context`: Token-budgeted AST-sliced context bundle.
+1. `graphia_explore`: 1-call unified exploration (definition, source slice, callers, callees, blast radius, tests).
+2. `graphia_search_symbol`: Multi-signal ranked symbol search.
+3. `graphia_get_symbol`: Detailed definition, location, and structural relationships.
+4. `graphia_find_callers`: Inbound caller tracing.
+5. `graphia_find_callees`: Outbound invocation analysis.
+6. `graphia_find_references`: References categorized by calls, types, and imports.
+7. `graphia_dependency_path`: Shortest structural dependency path.
+8. `graphia_neighborhood`: Structural neighborhood extraction.
+9. `graphia_impact`: Blast radius and change surface estimation.
+10. `graphia_find_tests`: Associated test discovery.
+11. `graphia_architecture`: Structural repository overview.
+12. `graphia_context`: Token-budgeted AST-sliced context bundle.
 
-### 7. Live Daemon
+### 8. Live Daemon
 
 Run Graphia as a live synchronization daemon that updates the native graph incrementally in real time:
 
