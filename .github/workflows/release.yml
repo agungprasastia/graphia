@@ -9,7 +9,10 @@ jobs:
   publish-release:
     name: Build Binary (${{ matrix.target }})
     runs-on: ${{ matrix.os }}
+    permissions:
+      contents: write
     strategy:
+      fail-fast: false
       matrix:
         include:
           - os: ubuntu-latest
