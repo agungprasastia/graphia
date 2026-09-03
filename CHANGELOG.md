@@ -27,9 +27,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Interactive HTML5 canvas graph for visual radial neighborhood navigation with zoom, pan, and click-to-explore.
   - Live symbol search with keyboard shortcut (`Ctrl+K` or `/`), and drawer inspector for God nodes & circular cycles.
   - CLI command `graphia ui [--repo <path>] [--port <port>] [--no-open]`.
+- **Multi-Format Graph Exporters (`graphia export`)**:
+  - Parity with Graphify and CodeGraph visual export formats.
+  - **Obsidian Vault (`--format obsidian`)**: Interactive Markdown knowledge vault with YAML frontmatter, `[[wikilinks]]` between symbols and files, and preconfigured `.obsidian/graph.json` color groups.
+  - **Mermaid Flowchart (`--format mermaid`)**: Markdown flowchart syntax with subgraphs ready for GitHub READMEs, PRs, and Notion embeds.
+  - **Graphviz DOT (`--format dot`)**: Directed graph syntax with shaped nodes, color-coded edges, and cluster subgraphs.
+  - **GraphML & GEXF (`--format graphml`, `--format gexf`)**: Standard XML graph formats for Gephi, Cytoscape, and yEd network visualizers.
+  - **Cytoscape JSON (`--format cytoscape`)**: Direct elements JSON schema for Cytoscape.js web graphs.
+  - Added `--output / -o` flag for custom destination files or vault folders.
+- **One-Liner Installers**:
+  - Added `install.sh` for instant Linux and macOS installation via `curl -fsSL ... | sh`.
+  - Added `install.ps1` for instant Windows PowerShell installation via `irm ... | iex`.
 - **Integration Test Suite**:
   - Added `tests/agent_dx.rs` testing explore, init, and report workflows end-to-end.
   - Added `tests/ui_server.rs` verifying embedded HTTP endpoints and lifecycle.
+  - Added `tests/export_formats.rs` verifying all graph export formats and CLI subcommands.
 
 ## [0.1.0] - 2026-09-04
 

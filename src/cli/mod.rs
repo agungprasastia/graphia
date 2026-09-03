@@ -142,6 +142,8 @@ pub enum Commands {
         repo: PathBuf,
         #[arg(long, default_value = "json")]
         format: String,
+        #[arg(long, short)]
+        output: Option<PathBuf>,
     },
     Explain {
         repo: PathBuf,
@@ -499,19 +501,20 @@ pub fn run(cli: Cli) -> crate::error::Result<()> {
             println!("{}", format_change_summary(&counts));
             Ok(())
         }
-        Commands::Export { repo, format } => {
-            if format != "json" {
-                return Err(crate::error::GraphiaError::InvalidArgument(
-                    "only json export is supported".into(),
-                ));
-            }
+        Commands::Export {
+            repo,
+            format,
+            output,
+        } => {
             let graph = if repo.join(".graphia/index.bin").exists() {
                 crate::storage::load_graph_binary(&repo.join(".graphia/index.bin"))?
-            } else {
+            } else if repo.join("graph.json").exists() {
                 crate::storage::load_graph_json(&repo.join("graph.json"))?
+            } else {
+                load_or_build(&repo)?
             };
-            crate::storage::save_graph_json(&graph, &repo.join("graph.json"))?;
-            println!("exported json");
+            let dest = crate::export::export_graph(&graph, &format, output.as_deref(), &repo)?;
+            println!("exported {} format to {}", format, dest.display());
             Ok(())
         }
         Commands::Explain { repo, symbol } => {
@@ -1783,6 +1786,7 @@ mod tests {
             command: Commands::Export {
                 repo: repo.path().to_path_buf(),
                 format: "json".to_string(),
+                output: None,
             },
         })
         .expect("export graph");

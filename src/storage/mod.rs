@@ -120,16 +120,19 @@ fn canonical_graph(graph: &Graph) -> SerializedGraph {
     SerializedGraph { nodes, edges }
 }
 
-/// Save graph as canonical JSON using an atomic replacement.
-pub fn save_graph_json(graph: &Graph, output: &Path) -> Result<()> {
+/// Render graph as canonical JSON string.
+pub fn graph_to_json_string(graph: &Graph) -> Result<String> {
     let mut graph = graph.clone();
     graph.canonicalize()?;
-    let json = serde_json::to_vec_pretty(&canonical_graph(&graph)).map_err(|error| {
-        GraphiaError::Storage {
-            message: error.to_string(),
-        }
-    })?;
-    atomic_write(output, &json)
+    serde_json::to_string_pretty(&canonical_graph(&graph)).map_err(|error| GraphiaError::Storage {
+        message: error.to_string(),
+    })
+}
+
+/// Save graph as canonical JSON using an atomic replacement.
+pub fn save_graph_json(graph: &Graph, output: &Path) -> Result<()> {
+    let json = graph_to_json_string(graph)?;
+    atomic_write(output, json.as_bytes())
 }
 
 /// Load graph from canonical JSON.

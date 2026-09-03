@@ -3,6 +3,7 @@ pub mod cli;
 pub mod context;
 pub mod daemon;
 pub mod error;
+pub mod export;
 pub mod graph;
 pub mod incremental;
 pub mod intelligence;

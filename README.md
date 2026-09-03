@@ -133,6 +133,19 @@ Every language below gets the same treatment — full structural extraction and 
 
 ## Installation & Requirements
 
+### Quick Install (Prebuilt Binaries)
+
+**Linux & macOS:**
+```bash
+curl -fsSL https://raw.githubusercontent.com/agungprasastia/graphia/main/install.sh | sh
+```
+
+**Windows (PowerShell):**
+```powershell
+irm https://raw.githubusercontent.com/agungprasastia/graphia/main/install.ps1 | iex
+```
+
+### Build from Source
 - **Rust Toolchain**: Rust 1.98+ (2024 Edition).
 - **Zero Runtime Dependencies**: No Python runtime, SQLite, or background services required.
 
@@ -178,14 +191,9 @@ graphia scan .
 # Build canonical graph index (writes graph.json and .graphia/index.bin)
 graphia build .
 
-# Perform a clean full rebuild
-graphia build . --clean
-
-# Display graph statistics
+# Load and inspect index summary
+graphia load .
 graphia stats .
-
-# Export binary index to JSON
-graphia export . --format json
 ```
 
 ### 3. Unified AI Exploration & Structural Queries
@@ -251,7 +259,31 @@ graphia entrypoints
 graphia architecture
 ```
 
-### 6. AI Context Slicing
+### 6. Multi-Format Graph Export
+
+Export the native code graph to rich visual formats, markdown vaults, and graph engines:
+
+```bash
+# Export to Graphviz DOT format (for SVG/PNG diagrams)
+graphia export . --format dot --output architecture.dot
+
+# Export to Mermaid flowchart (for GitHub READMEs, PRs, and Notion)
+graphia export . --format mermaid --output graph.mmd
+
+# Export as an interactive Obsidian knowledge vault (with [[wikilinks]] & color graph)
+graphia export . --format obsidian --output my-obsidian-vault/
+
+# Export to GraphML (for Gephi, Cytoscape, and yEd)
+graphia export . --format graphml --output graph.graphml
+
+# Export to Gephi GEXF format
+graphia export . --format gexf --output graph.gexf
+
+# Export to Cytoscape.js elements JSON
+graphia export . --format cytoscape --output cytoscape.json
+```
+
+### 7. AI Context Slicing
 
 ```bash
 # Generate minimal sufficient context bundle for a symbol
@@ -264,7 +296,7 @@ graphia context --query "user authentication" --budget-type approx_tokens --form
 graphia context --changed
 ```
 
-### 7. Model Context Protocol (MCP) Server
+### 8. Model Context Protocol (MCP) Server
 
 Graphia includes a native, read-only MCP server over standard input/output (`stdio`):
 
