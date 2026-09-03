@@ -199,23 +199,34 @@ fn test_daemon_server_lifecycle_and_status_reporting() {
     });
 
     // Wait for daemon to initialize and write status file
-    sleep(Duration::from_millis(150));
-
-    let status = DaemonServer::read_daemon_status(&repo_path)
-        .expect("read status")
-        .expect("status should exist");
+    let mut status = None;
+    for _ in 0..50 {
+        if let Ok(Some(s)) = DaemonServer::read_daemon_status(&repo_path) {
+            status = Some(s);
+            break;
+        }
+        sleep(Duration::from_millis(50));
+    }
+    let status = status.expect("status should exist within timeout");
     assert!(status.running);
     assert_eq!(status.generation, GraphGeneration(1));
     assert!(status.node_count >= 1);
 
     // Create a new source file while daemon is running
     fs::write(repo_path.join("extra.rs"), "pub fn extra() {}").expect("write extra");
-    sleep(Duration::from_millis(250));
 
-    // Status or internal state should be updated
-    let status2 = DaemonServer::read_daemon_status(&repo_path)
-        .expect("read status")
-        .expect("status should exist");
+    let mut status2 = None;
+    for _ in 0..50 {
+        if let Ok(Some(s)) = DaemonServer::read_daemon_status(&repo_path) {
+            if s.node_count > status.node_count || s.generation > status.generation {
+                status2 = Some(s);
+                break;
+            }
+            status2 = Some(s);
+        }
+        sleep(Duration::from_millis(50));
+    }
+    let status2 = status2.expect("status should exist within timeout");
     assert!(status2.generation >= GraphGeneration(1));
 
     // Signal graceful shutdown
@@ -223,7 +234,14 @@ fn test_daemon_server_lifecycle_and_status_reporting() {
     daemon_thread.join().expect("join daemon thread");
 
     // Status file should be cleaned up on clean exit
-    let status_post = DaemonServer::read_daemon_status(&repo_path).expect("read status post");
+    let mut status_post = Some(());
+    for _ in 0..50 {
+        if let Ok(None) = DaemonServer::read_daemon_status(&repo_path) {
+            status_post = None;
+            break;
+        }
+        sleep(Duration::from_millis(50));
+    }
     assert!(status_post.is_none());
 }
 
