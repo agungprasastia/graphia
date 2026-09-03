@@ -159,7 +159,17 @@ graphia init
 graphia init --yes
 ```
 
-### 2. Repository Scanning & Graph Building
+### 2. Interactive Browser Explorer
+
+```bash
+# Launch interactive local browser graph explorer at http://127.0.0.1:4747
+graphia ui
+
+# Custom port or disable auto-opening the browser
+graphia ui --port 8080 --no-open
+```
+
+### 3. Repository Scanning & Graph Building
 
 ```bash
 # Scan supported source files

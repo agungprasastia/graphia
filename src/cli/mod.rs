@@ -348,6 +348,14 @@ pub enum Commands {
         #[arg(long, value_enum, default_value_t = CliFormat::Human)]
         format: CliFormat,
     },
+    Ui {
+        #[arg(long)]
+        repo: Option<PathBuf>,
+        #[arg(long, default_value_t = 4747)]
+        port: u16,
+        #[arg(long)]
+        no_open: bool,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -1612,6 +1620,16 @@ pub fn run(cli: Cli) -> crate::error::Result<()> {
                     );
                 }
             }
+            Ok(())
+        }
+        Commands::Ui {
+            repo,
+            port,
+            no_open,
+        } => {
+            let target_repo = repo
+                .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+            crate::ui::run_ui(&target_repo, port, !no_open)?;
             Ok(())
         }
     }

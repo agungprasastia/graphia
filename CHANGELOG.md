@@ -19,8 +19,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Executive Architectural Report (`graphia report` / `GRAPH_REPORT.md`)**:
   - Comprehensive architectural audit covering repository metrics, God nodes & hotspots, circular dependency cycles, community clusters, entrypoints, and AI agent safety guidelines.
   - CLI command `graphia report [--repo <path>] [--output <path>] [--format human|json]`.
+- **Interactive Browser Explorer (`graphia ui`)**:
+  - Parity with `codegraph ui` serving at `http://127.0.0.1:4747` with zero external runtime dependencies.
+  - 3-column layout: inbound callers and references (left), symbol definition and syntax source slice (center), outbound callees and blast radius (right).
+  - Interactive HTML5 canvas graph for visual radial neighborhood navigation with zoom, pan, and click-to-explore.
+  - Live symbol search with keyboard shortcut (`Ctrl+K` or `/`), and drawer inspector for God nodes & circular cycles.
+  - CLI command `graphia ui [--repo <path>] [--port <port>] [--no-open]`.
 - **Integration Test Suite**:
   - Added `tests/agent_dx.rs` testing explore, init, and report workflows end-to-end.
+  - Added `tests/ui_server.rs` verifying embedded HTTP endpoints and lifecycle.
 
 ## [0.1.0] - 2026-09-04
 

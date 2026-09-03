@@ -1,0 +1,1296 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Graphia · Code Graph Explorer</title>
+  <style>
+    :root {
+      --bg: #0d1117;
+      --card-bg: #161b22;
+      --card-bg-subtle: #21262d;
+      --border: #30363d;
+      --border-subtle: #21262d;
+      --text: #e6edf3;
+      --text-muted: #8b949e;
+      --text-dim: #6e7681;
+      --accent-blue: #2f81f7;
+      --accent-blue-bg: rgba(56, 139, 253, 0.15);
+      --accent-green: #3fb950;
+      --accent-green-bg: rgba(63, 185, 80, 0.15);
+      --accent-purple: #bc8cff;
+      --accent-purple-bg: rgba(188, 140, 255, 0.15);
+      --accent-orange: #d29922;
+      --accent-orange-bg: rgba(210, 153, 34, 0.15);
+      --accent-red: #f85149;
+      --accent-red-bg: rgba(248, 81, 73, 0.15);
+      --code-bg: #090d13;
+      --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background-color: var(--bg);
+      color: var(--text);
+      font-family: var(--font-sans);
+      font-size: 14px;
+      line-height: 1.5;
+      height: 100vh;
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+    }
+
+    /* Header */
+    header {
+      background: var(--card-bg);
+      border-bottom: 1px solid var(--border);
+      padding: 10px 20px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      z-index: 50;
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      font-weight: 700;
+      font-size: 16px;
+      color: #fff;
+      cursor: pointer;
+      text-decoration: none;
+    }
+
+    .brand-badge {
+      font-size: 11px;
+      font-weight: 600;
+      padding: 2px 7px;
+      border-radius: 12px;
+      background: var(--accent-blue-bg);
+      color: var(--accent-blue);
+      border: 1px solid rgba(56, 139, 253, 0.3);
+      letter-spacing: 0.5px;
+    }
+
+    .search-wrapper {
+      position: relative;
+      flex: 1;
+      max-width: 520px;
+    }
+
+    .search-input {
+      width: 100%;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 8px 36px 8px 12px;
+      color: var(--text);
+      font-family: var(--font-sans);
+      font-size: 13px;
+      transition: all 0.15s ease;
+      outline: none;
+    }
+
+    .search-input:focus {
+      border-color: var(--accent-blue);
+      box-shadow: 0 0 0 3px rgba(47, 129, 247, 0.25);
+    }
+
+    .search-hint {
+      position: absolute;
+      right: 10px;
+      top: 50%;
+      transform: translateY(-50%);
+      font-size: 11px;
+      color: var(--text-dim);
+      background: var(--card-bg-subtle);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      padding: 2px 5px;
+      pointer-events: none;
+      font-family: var(--font-mono);
+    }
+
+    .search-dropdown {
+      position: absolute;
+      top: calc(100% + 6px);
+      left: 0;
+      right: 0;
+      background: var(--card-bg);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      box-shadow: 0 12px 28px rgba(0, 0, 0, 0.6);
+      max-height: 400px;
+      overflow-y: auto;
+      display: none;
+      z-index: 100;
+    }
+
+    .search-result-item {
+      padding: 10px 14px;
+      border-bottom: 1px solid var(--border-subtle);
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      transition: background 0.1s ease;
+    }
+
+    .search-result-item:last-child { border-bottom: none; }
+    .search-result-item:hover, .search-result-item.selected {
+      background: var(--card-bg-subtle);
+    }
+
+    .header-stats {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .stat-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 4px 10px;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      font-size: 12px;
+      color: var(--text-muted);
+      cursor: pointer;
+      transition: all 0.15s ease;
+    }
+
+    .stat-pill:hover {
+      border-color: var(--text-dim);
+      color: var(--text);
+    }
+
+    .stat-pill strong { color: var(--text); }
+
+    .view-toggle {
+      display: flex;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 2px;
+      gap: 2px;
+    }
+
+    .view-btn {
+      background: transparent;
+      border: none;
+      color: var(--text-muted);
+      padding: 5px 12px;
+      font-size: 12px;
+      font-weight: 500;
+      border-radius: 4px;
+      cursor: pointer;
+      transition: all 0.15s ease;
+    }
+
+    .view-btn.active {
+      background: var(--card-bg);
+      color: #fff;
+      font-weight: 600;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.3);
+    }
+
+    /* Main Container */
+    main {
+      flex: 1;
+      display: flex;
+      position: relative;
+      overflow: hidden;
+    }
+
+    /* 3-Column Layout */
+    .inspector-layout {
+      flex: 1;
+      display: grid;
+      grid-template-columns: 310px 1fr 330px;
+      height: 100%;
+      overflow: hidden;
+    }
+
+    .panel {
+      display: flex;
+      flex-direction: column;
+      height: 100%;
+      background: var(--bg);
+      border-right: 1px solid var(--border);
+      overflow: hidden;
+    }
+
+    .panel:last-child {
+      border-right: none;
+      border-left: 1px solid var(--border);
+    }
+
+    .panel-header {
+      padding: 12px 16px;
+      background: var(--card-bg);
+      border-bottom: 1px solid var(--border);
+      font-weight: 600;
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      color: var(--text-muted);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    .panel-content {
+      flex: 1;
+      overflow-y: auto;
+      padding: 14px;
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+    }
+
+    /* Cards */
+    .card {
+      background: var(--card-bg);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      overflow: hidden;
+    }
+
+    .card-header {
+      padding: 10px 14px;
+      border-bottom: 1px solid var(--border-subtle);
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--text-muted);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    .card-body {
+      padding: 12px 14px;
+    }
+
+    /* Lists */
+    .node-list {
+      list-style: none;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    .node-item {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 8px 10px;
+      background: var(--bg);
+      border: 1px solid var(--border-subtle);
+      border-radius: 6px;
+      cursor: pointer;
+      transition: all 0.15s ease;
+      gap: 8px;
+    }
+
+    .node-item:hover {
+      border-color: var(--accent-blue);
+      background: var(--card-bg-subtle);
+    }
+
+    .node-item-name {
+      font-family: var(--font-mono);
+      font-size: 12px;
+      font-weight: 500;
+      color: var(--text);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      flex: 1;
+    }
+
+    .badge {
+      font-size: 10px;
+      font-weight: 600;
+      padding: 2px 6px;
+      border-radius: 4px;
+      letter-spacing: 0.3px;
+      text-transform: uppercase;
+      font-family: var(--font-mono);
+    }
+
+    .badge-function, .badge-method { background: var(--accent-blue-bg); color: var(--accent-blue); }
+    .badge-struct, .badge-class { background: var(--accent-green-bg); color: var(--accent-green); }
+    .badge-trait, .badge-interface { background: var(--accent-purple-bg); color: var(--accent-purple); }
+    .badge-module, .badge-file { background: var(--accent-orange-bg); color: var(--accent-orange); }
+
+    /* Center Code View */
+    .symbol-hero {
+      padding: 16px;
+      background: var(--card-bg);
+      border-bottom: 1px solid var(--border);
+    }
+
+    .symbol-title-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 8px;
+    }
+
+    .symbol-title {
+      font-size: 20px;
+      font-weight: 700;
+      font-family: var(--font-mono);
+      color: #fff;
+    }
+
+    .symbol-meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px;
+      font-size: 12px;
+      color: var(--text-muted);
+      font-family: var(--font-mono);
+    }
+
+    .symbol-meta-item {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .code-container {
+      background: var(--code-bg);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+    }
+
+    .code-toolbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 8px 12px;
+      background: #11151c;
+      border-bottom: 1px solid var(--border);
+      font-size: 11px;
+      color: var(--text-muted);
+      font-family: var(--font-mono);
+    }
+
+    .btn-copy {
+      background: var(--card-bg-subtle);
+      border: 1px solid var(--border);
+      color: var(--text-muted);
+      border-radius: 4px;
+      padding: 3px 8px;
+      font-size: 11px;
+      cursor: pointer;
+      transition: all 0.15s ease;
+    }
+
+    .btn-copy:hover {
+      color: var(--text);
+      border-color: var(--text-dim);
+    }
+
+    pre.code-view {
+      padding: 14px;
+      font-family: var(--font-mono);
+      font-size: 12px;
+      line-height: 1.6;
+      overflow-x: auto;
+      color: #e6edf3;
+      white-space: pre;
+    }
+
+    .code-line {
+      display: flex;
+    }
+
+    .code-ln {
+      width: 42px;
+      padding-right: 14px;
+      color: var(--text-dim);
+      user-select: none;
+      text-align: right;
+    }
+
+    .code-text {
+      flex: 1;
+    }
+
+    /* Blast Radius Meter */
+    .impact-stat-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+      margin-bottom: 12px;
+    }
+
+    .impact-box {
+      background: var(--bg);
+      border: 1px solid var(--border-subtle);
+      border-radius: 6px;
+      padding: 10px;
+      text-align: center;
+    }
+
+    .impact-box .number {
+      font-size: 22px;
+      font-weight: 700;
+      color: var(--accent-blue);
+      font-family: var(--font-mono);
+    }
+
+    .impact-box .label {
+      font-size: 11px;
+      color: var(--text-muted);
+      margin-top: 2px;
+    }
+
+    /* Canvas Mode */
+    .canvas-layout {
+      position: absolute;
+      top: 0; left: 0; right: 0; bottom: 0;
+      display: none;
+      background: #090d13;
+    }
+
+    #graphCanvas {
+      width: 100%;
+      height: 100%;
+      cursor: grab;
+    }
+
+    #graphCanvas:active {
+      cursor: grabbing;
+    }
+
+    .canvas-controls {
+      position: absolute;
+      bottom: 20px;
+      right: 20px;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      background: var(--card-bg);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 6px;
+      box-shadow: 0 8px 24px rgba(0,0,0,0.5);
+    }
+
+    .canvas-btn {
+      width: 32px;
+      height: 32px;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      color: var(--text);
+      border-radius: 4px;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 16px;
+      transition: all 0.15s ease;
+    }
+
+    .canvas-btn:hover {
+      background: var(--card-bg-subtle);
+      border-color: var(--accent-blue);
+    }
+
+    .canvas-legend {
+      position: absolute;
+      top: 20px;
+      left: 20px;
+      background: rgba(22, 27, 34, 0.85);
+      backdrop-filter: blur(8px);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 10px 14px;
+      font-size: 11px;
+      display: flex;
+      gap: 14px;
+      color: var(--text-muted);
+    }
+
+    .legend-item {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .legend-dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+    }
+
+    /* Empty state */
+    .empty-state {
+      padding: 30px 20px;
+      text-align: center;
+      color: var(--text-dim);
+      font-size: 12px;
+    }
+
+    /* Modal Drawer */
+    .drawer {
+      position: fixed;
+      top: 0; right: -400px;
+      width: 400px;
+      height: 100vh;
+      background: var(--card-bg);
+      border-left: 1px solid var(--border);
+      box-shadow: -10px 0 30px rgba(0,0,0,0.6);
+      transition: right 0.25s ease;
+      z-index: 200;
+      display: flex;
+      flex-direction: column;
+    }
+
+    .drawer.open { right: 0; }
+    .drawer-header {
+      padding: 16px;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      font-size: 14px;
+      font-weight: 600;
+    }
+
+    .drawer-body {
+      flex: 1;
+      overflow-y: auto;
+      padding: 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+    }
+  </style>
+</head>
+<body>
+
+  <!-- Top Header -->
+  <header>
+    <a href="#" class="brand" onclick="loadInitialOverview(); return false;">
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#2f81f7" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+        <circle cx="18" cy="5" r="3"></circle>
+        <circle cx="6" cy="12" r="3"></circle>
+        <circle cx="18" cy="19" r="3"></circle>
+        <line x1="8.59" y1="13.51" x2="15.42" y2="17.49"></line>
+        <line x1="15.41" y1="6.51" x2="8.59" y2="10.49"></line>
+      </svg>
+      <span>graphia</span>
+      <span class="brand-badge">UI</span>
+    </a>
+
+    <!-- Global Search -->
+    <div class="search-wrapper">
+      <input type="text" id="searchInput" class="search-input" placeholder="Search symbol or function..." autocomplete="off" />
+      <span class="search-hint">Ctrl K</span>
+      <div id="searchDropdown" class="search-dropdown"></div>
+    </div>
+
+    <!-- Stats Overview -->
+    <div class="header-stats">
+      <div class="stat-pill" title="Repository Node Count">
+        <span>Nodes:</span> <strong id="statNodes">0</strong>
+      </div>
+      <div class="stat-pill" title="Repository Edge Count">
+        <span>Edges:</span> <strong id="statEdges">0</strong>
+      </div>
+      <div class="stat-pill" id="btnHotspots" title="Click to view God Nodes & Hotspots">
+        <span>Hotspots:</span> <strong id="statHotspots">0</strong>
+      </div>
+      <div class="stat-pill" id="btnCycles" title="Click to view Circular Dependency Cycles">
+        <span>Cycles:</span> <strong id="statCycles">0</strong>
+      </div>
+    </div>
+
+    <!-- View Mode Switcher -->
+    <div class="view-toggle">
+      <button id="btnInspectorView" class="view-btn active" onclick="switchView('inspector')">3-Column</button>
+      <button id="btnCanvasView" class="view-btn" onclick="switchView('canvas')">Graph Canvas</button>
+    </div>
+  </header>
+
+  <!-- Main View Area -->
+  <main>
+    <!-- 3-Column Inspector Mode -->
+    <div id="inspectorLayout" class="inspector-layout">
+      <!-- Left Panel: Inbound Callers & Hierarchy -->
+      <section class="panel">
+        <div class="panel-header">
+          <span>Inbound Callers & References</span>
+          <span id="callerCountBadge" class="badge badge-function">0</span>
+        </div>
+        <div class="panel-content">
+          <!-- Parent Container -->
+          <div class="card" id="containerCard" style="display:none;">
+            <div class="card-header">Container Parent</div>
+            <div class="card-body">
+              <div id="containerNode" class="node-item" onclick="exploreItem(this.dataset.id)">
+                <span class="node-item-name" id="containerName">-</span>
+                <span class="badge badge-struct" id="containerKind">STRUCT</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Callers List -->
+          <div class="card">
+            <div class="card-header">Inbound Callers (<span id="callersCount">0</span>)</div>
+            <div class="card-body">
+              <ul id="callersList" class="node-list">
+                <li class="empty-state">No callers found for this symbol</li>
+              </ul>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Center Panel: Definition & Source Code View -->
+      <section class="panel">
+        <div class="panel-header">
+          <span>Symbol Definition & Source Slice</span>
+          <span id="symbolLangBadge" class="badge badge-trait">RUST</span>
+        </div>
+        <div class="symbol-hero">
+          <div class="symbol-title-row">
+            <div class="symbol-title" id="symbolTitle">Select a symbol to inspect</div>
+            <span id="symbolKindBadge" class="badge badge-function">-</span>
+          </div>
+          <div class="symbol-meta">
+            <div class="symbol-meta-item">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline></svg>
+              <span id="symbolFile">-</span>
+            </div>
+            <div class="symbol-meta-item">
+              <span>Lines:</span> <strong id="symbolLines">-</strong>
+            </div>
+          </div>
+        </div>
+
+        <div class="panel-content">
+          <div class="code-container">
+            <div class="code-toolbar">
+              <span id="codeFilePath">-</span>
+              <button class="btn-copy" onclick="copySourceCode()">Copy Code</button>
+            </div>
+            <pre class="code-view" id="codeView"><code>// Select a symbol or search with Ctrl+K to inspect source code</code></pre>
+          </div>
+
+          <!-- Discovered Tests -->
+          <div class="card" id="testsCard" style="display:none;">
+            <div class="card-header">
+              <span>Discovered Tests (<span id="testCount">0</span>)</span>
+            </div>
+            <div class="card-body">
+              <ul id="testsList" class="node-list"></ul>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Right Panel: Outbound Callees & Blast Radius -->
+      <section class="panel">
+        <div class="panel-header">
+          <span>Outbound Callees & Impact</span>
+          <span id="calleeCountBadge" class="badge badge-method">0</span>
+        </div>
+        <div class="panel-content">
+          <!-- Blast Radius Card -->
+          <div class="card">
+            <div class="card-header">Blast Radius & Change Surface</div>
+            <div class="card-body">
+              <div class="impact-stat-grid">
+                <div class="impact-box">
+                  <div class="number" id="impactDirect">0</div>
+                  <div class="label">Direct Impact</div>
+                </div>
+                <div class="impact-box">
+                  <div class="number" id="impactTransitive">0</div>
+                  <div class="label">Transitive Impact</div>
+                </div>
+              </div>
+              <div style="font-size: 11px; color: var(--text-muted); margin-bottom: 6px;">Impacted Files:</div>
+              <div id="impactFilesList" style="font-size: 11px; font-family: var(--font-mono); color: var(--text); max-height: 120px; overflow-y: auto;">
+                None
+              </div>
+            </div>
+          </div>
+
+          <!-- Callees List -->
+          <div class="card">
+            <div class="card-header">Outbound Invocations (<span id="calleesCount">0</span>)</div>
+            <div class="card-body">
+              <ul id="calleesList" class="node-list">
+                <li class="empty-state">No callees found</li>
+              </ul>
+            </div>
+          </div>
+        </div>
+      </section>
+    </div>
+
+    <!-- Canvas Mode -->
+    <div id="canvasLayout" class="canvas-layout">
+      <div class="canvas-legend">
+        <div class="legend-item"><div class="legend-dot" style="background:#2f81f7;"></div> Target</div>
+        <div class="legend-item"><div class="legend-dot" style="background:#bc8cff;"></div> Callers</div>
+        <div class="legend-item"><div class="legend-dot" style="background:#3fb950;"></div> Callees</div>
+        <div class="legend-item"><div class="legend-dot" style="background:#8b949e;"></div> Connected</div>
+      </div>
+      <canvas id="graphCanvas"></canvas>
+      <div class="canvas-controls">
+        <button class="canvas-btn" onclick="zoomCanvas(1.2)" title="Zoom In">+</button>
+        <button class="canvas-btn" onclick="zoomCanvas(0.8)" title="Zoom Out">-</button>
+        <button class="canvas-btn" onclick="resetCanvasZoom()" title="Reset View">⤢</button>
+      </div>
+    </div>
+  </main>
+
+  <!-- Side Drawer for Hotspots & Cycles -->
+  <aside id="drawer" class="drawer">
+    <div class="drawer-header">
+      <span id="drawerTitle">Architectural Hotspots</span>
+      <button class="btn-copy" onclick="closeDrawer()">✕</button>
+    </div>
+    <div class="drawer-body" id="drawerContent"></div>
+  </aside>
+
+  <script>
+    let activeSymbol = null;
+    let currentExploreData = null;
+    let canvasData = { nodes: [], edges: [] };
+    let searchDebounce = null;
+    let rawSourceCode = "";
+
+    // Initialization
+    window.addEventListener('DOMContentLoaded', () => {
+      fetchStats();
+      setupSearch();
+      setupDrawerTriggers();
+      setupKeyboardShortcuts();
+      setupCanvas();
+    });
+
+    // View Switcher
+    function switchView(viewName) {
+      const inspector = document.getElementById('inspectorLayout');
+      const canvas = document.getElementById('canvasLayout');
+      const btnInspector = document.getElementById('btnInspectorView');
+      const btnCanvas = document.getElementById('btnCanvasView');
+
+      if (viewName === 'canvas') {
+        inspector.style.display = 'none';
+        canvas.style.display = 'block';
+        btnInspector.classList.remove('active');
+        btnCanvas.classList.add('active');
+        resizeCanvas();
+        if (activeSymbol) fetchNeighborhood(activeSymbol);
+      } else {
+        canvas.style.display = 'none';
+        inspector.style.display = 'grid';
+        btnInspector.classList.add('active');
+        btnCanvas.classList.remove('active');
+      }
+    }
+
+    // Stats
+    async function fetchStats() {
+      try {
+        const res = await fetch('/api/stats');
+        if (!res.ok) return;
+        const data = await res.json();
+        document.getElementById('statNodes').textContent = data.node_count.toLocaleString();
+        document.getElementById('statEdges').textContent = data.edge_count.toLocaleString();
+        document.getElementById('statHotspots').textContent = data.hotspots_count || 0;
+        document.getElementById('statCycles').textContent = data.cycles_count || 0;
+
+        // Auto explore first God node or first search item if available
+        if (data.initial_symbol) {
+          exploreItem(data.initial_symbol);
+        }
+      } catch (err) {
+        console.error("Failed to load stats", err);
+      }
+    }
+
+    // Search
+    function setupSearch() {
+      const input = document.getElementById('searchInput');
+      const dropdown = document.getElementById('searchDropdown');
+
+      input.addEventListener('input', (e) => {
+        clearTimeout(searchDebounce);
+        const q = e.target.value.trim();
+        if (!q) {
+          dropdown.style.display = 'none';
+          return;
+        }
+        searchDebounce = setTimeout(async () => {
+          try {
+            const res = await fetch(`/api/search?q=${encodeURIComponent(q)}&limit=10`);
+            const data = await res.json();
+            renderSearchResults(data);
+          } catch (err) {
+            console.error(err);
+          }
+        }, 150);
+      });
+
+      document.addEventListener('click', (e) => {
+        if (!e.target.closest('.search-wrapper')) {
+          dropdown.style.display = 'none';
+        }
+      });
+    }
+
+    function renderSearchResults(results) {
+      const dropdown = document.getElementById('searchDropdown');
+      if (!results || results.length === 0) {
+        dropdown.innerHTML = '<div class="empty-state">No matching symbols found</div>';
+        dropdown.style.display = 'block';
+        return;
+      }
+
+      dropdown.innerHTML = results.map(item => `
+        <div class="search-result-item" onclick="selectSearchResult('${item.node.qualified_name}')">
+          <div style="flex:1; overflow:hidden;">
+            <div style="font-weight:600; font-family:var(--font-mono); color:#fff; text-overflow:ellipsis; overflow:hidden; white-space:nowrap;">
+              ${escapeHtml(item.node.qualified_name)}
+            </div>
+            <div style="font-size:11px; color:var(--text-dim); text-overflow:ellipsis; overflow:hidden; white-space:nowrap;">
+              ${escapeHtml(item.node.location.file)}:${item.node.location.line_start}
+            </div>
+          </div>
+          <span class="badge badge-${item.node.kind.toLowerCase()}">${item.node.kind}</span>
+        </div>
+      `).join('');
+      dropdown.style.display = 'block';
+    }
+
+    function selectSearchResult(name) {
+      document.getElementById('searchDropdown').style.display = 'none';
+      document.getElementById('searchInput').value = name;
+      exploreItem(name);
+    }
+
+    // Explore Symbol
+    async function exploreItem(symbolName) {
+      if (!symbolName) return;
+      activeSymbol = symbolName;
+      try {
+        const res = await fetch(`/api/explore?symbol=${encodeURIComponent(symbolName)}&depth=2`);
+        if (!res.ok) return;
+        const data = await res.json();
+        currentExploreData = data;
+        renderExplore(data);
+        if (document.getElementById('canvasLayout').style.display === 'block') {
+          fetchNeighborhood(symbolName);
+        }
+      } catch (err) {
+        console.error("Explore error", err);
+      }
+    }
+
+    function renderExplore(data) {
+      const t = data.target;
+      document.getElementById('symbolTitle').textContent = t.name;
+      document.getElementById('symbolKindBadge').textContent = t.kind;
+      document.getElementById('symbolKindBadge').className = `badge badge-${t.kind.toLowerCase()}`;
+      document.getElementById('symbolLangBadge').textContent = t.language.toUpperCase();
+      document.getElementById('symbolFile').textContent = t.location.file;
+      document.getElementById('codeFilePath').textContent = `${t.location.file} (lines ${t.location.line_start}-${t.location.line_end})`;
+      document.getElementById('symbolLines').textContent = `${t.location.line_start} - ${t.location.line_end}`;
+
+      // Parent container
+      const containerCard = document.getElementById('containerCard');
+      if (data.container) {
+        containerCard.style.display = 'block';
+        document.getElementById('containerName').textContent = data.container.name;
+        document.getElementById('containerKind').textContent = data.container.kind;
+        document.getElementById('containerNode').dataset.id = data.container.qualified_name;
+      } else {
+        containerCard.style.display = 'none';
+      }
+
+      // Callers
+      const callersList = document.getElementById('callersList');
+      document.getElementById('callersCount').textContent = data.callers.length;
+      document.getElementById('callerCountBadge').textContent = data.callers.length;
+      if (data.callers.length === 0) {
+        callersList.innerHTML = '<li class="empty-state">No inbound callers</li>';
+      } else {
+        callersList.innerHTML = data.callers.map(c => `
+          <li class="node-item" onclick="exploreItem('${escapeJs(c.qualified_name)}')">
+            <span class="node-item-name">${escapeHtml(c.name)}</span>
+            <span class="badge badge-${c.kind.toLowerCase()}">${c.kind}</span>
+          </li>
+        `).join('');
+      }
+
+      // Callees
+      const calleesList = document.getElementById('calleesList');
+      document.getElementById('calleesCount').textContent = data.callees.length;
+      document.getElementById('calleeCountBadge').textContent = data.callees.length;
+      if (data.callees.length === 0) {
+        calleesList.innerHTML = '<li class="empty-state">No outbound callees</li>';
+      } else {
+        calleesList.innerHTML = data.callees.map(c => `
+          <li class="node-item" onclick="exploreItem('${escapeJs(c.qualified_name)}')">
+            <span class="node-item-name">${escapeHtml(c.name)}</span>
+            <span class="badge badge-${c.kind.toLowerCase()}">${c.kind}</span>
+          </li>
+        `).join('');
+      }
+
+      // Blast radius
+      document.getElementById('impactDirect').textContent = data.direct_impact_count;
+      document.getElementById('impactTransitive').textContent = data.transitive_impact_count;
+      const fileContainer = document.getElementById('impactFilesList');
+      if (data.impacted_files && data.impacted_files.length > 0) {
+        fileContainer.innerHTML = data.impacted_files.map(f => `<div style="padding:2px 0;">• ${escapeHtml(f)}</div>`).join('');
+      } else {
+        fileContainer.textContent = 'None';
+      }
+
+      // Source code
+      rawSourceCode = data.source_code || '// Source slice unavailable';
+      renderSourceCode(rawSourceCode, t.location.line_start);
+
+      // Tests
+      const testsCard = document.getElementById('testsCard');
+      const testsList = document.getElementById('testsList');
+      if (data.related_tests && data.related_tests.length > 0) {
+        testsCard.style.display = 'block';
+        document.getElementById('testCount').textContent = data.related_tests.length;
+        testsList.innerHTML = data.related_tests.map(test => `
+          <li class="node-item" onclick="exploreItem('${escapeJs(test.test_symbol)}')">
+            <span class="node-item-name">${escapeHtml(test.test_name)}</span>
+            <span class="badge badge-function">${escapeHtml(test.framework)}</span>
+          </li>
+        `).join('');
+      } else {
+        testsCard.style.display = 'none';
+      }
+    }
+
+    function renderSourceCode(code, startLine) {
+      const view = document.getElementById('codeView');
+      const lines = code.split('\n');
+      view.innerHTML = lines.map((line, idx) => `
+        <div class="code-line">
+          <span class="code-ln">${startLine + idx}</span>
+          <span class="code-text">${escapeHtml(line)}</span>
+        </div>
+      `).join('');
+    }
+
+    function copySourceCode() {
+      if (!rawSourceCode) return;
+      navigator.clipboard.writeText(rawSourceCode).then(() => {
+        const btn = document.querySelector('.btn-copy');
+        const prev = btn.textContent;
+        btn.textContent = 'Copied!';
+        setTimeout(() => btn.textContent = prev, 1500);
+      });
+    }
+
+    // Neighborhood for Canvas
+    async function fetchNeighborhood(symbol) {
+      try {
+        const res = await fetch(`/api/neighborhood?symbol=${encodeURIComponent(symbol)}&depth=1`);
+        if (!res.ok) return;
+        const data = await res.json();
+        buildCanvasGraph(data, symbol);
+      } catch (err) {
+        console.error(err);
+      }
+    }
+
+    // Canvas Implementation
+    let canvas, ctx, transform = { x: 0, y: 0, scale: 1 };
+    let isDragging = false, dragStart = { x: 0, y: 0 };
+    let simNodes = [], simEdges = [];
+
+    function setupCanvas() {
+      canvas = document.getElementById('graphCanvas');
+      ctx = canvas.getContext('2d');
+      window.addEventListener('resize', resizeCanvas);
+
+      canvas.addEventListener('mousedown', (e) => {
+        isDragging = true;
+        dragStart = { x: e.clientX - transform.x, y: e.clientY - transform.y };
+      });
+
+      window.addEventListener('mousemove', (e) => {
+        if (!isDragging) return;
+        transform.x = e.clientX - dragStart.x;
+        transform.y = e.clientY - dragStart.y;
+        drawCanvas();
+      });
+
+      window.addEventListener('mouseup', () => isDragging = false);
+
+      canvas.addEventListener('wheel', (e) => {
+        e.preventDefault();
+        const factor = e.deltaY < 0 ? 1.1 : 0.9;
+        zoomCanvas(factor, e.clientX, e.clientY);
+      });
+
+      canvas.addEventListener('click', (e) => {
+        const rect = canvas.getBoundingClientRect();
+        const clickX = (e.clientX - rect.left - transform.x) / transform.scale;
+        const clickY = (e.clientY - rect.top - transform.y) / transform.scale;
+
+        for (const n of simNodes) {
+          const dx = clickX - n.x;
+          const dy = clickY - n.y;
+          if (dx * dx + dy * dy < n.radius * n.radius) {
+            exploreItem(n.id);
+            break;
+          }
+        }
+      });
+    }
+
+    function resizeCanvas() {
+      if (!canvas) return;
+      canvas.width = canvas.parentElement.clientWidth;
+      canvas.height = canvas.parentElement.clientHeight;
+      drawCanvas();
+    }
+
+    function zoomCanvas(factor, centerX, centerY) {
+      const cx = centerX !== undefined ? centerX : canvas.width / 2;
+      const cy = centerY !== undefined ? centerY : canvas.height / 2;
+      transform.x = cx - (cx - transform.x) * factor;
+      transform.y = cy - (cy - transform.y) * factor;
+      transform.scale *= factor;
+      drawCanvas();
+    }
+
+    function resetCanvasZoom() {
+      transform = { x: canvas.width / 2, y: canvas.height / 2, scale: 1 };
+      drawCanvas();
+    }
+
+    function buildCanvasGraph(data, targetName) {
+      simNodes = [];
+      simEdges = [];
+      if (!data || !data.target) return;
+
+      const nodeMap = new Map();
+      const addNode = (n, role) => {
+        if (!nodeMap.has(n.qualified_name)) {
+          const item = {
+            id: n.qualified_name,
+            name: n.name,
+            kind: n.kind,
+            role: role,
+            x: 0, y: 0,
+            radius: role === 'target' ? 24 : 16
+          };
+          nodeMap.set(n.qualified_name, item);
+          simNodes.push(item);
+        }
+      };
+
+      addNode(data.target, 'target');
+      (data.callers || []).forEach(c => addNode(c, 'caller'));
+      (data.callees || []).forEach(c => addNode(c, 'callee'));
+      (data.children || []).forEach(c => addNode(c, 'child'));
+
+      // Arrange in radial layout
+      const targetNode = nodeMap.get(data.target.qualified_name);
+      targetNode.x = 0;
+      targetNode.y = 0;
+
+      const others = simNodes.filter(n => n.role !== 'target');
+      const angleStep = (Math.PI * 2) / (others.length || 1);
+      const radius = 180;
+
+      others.forEach((n, idx) => {
+        const angle = idx * angleStep;
+        n.x = Math.cos(angle) * radius;
+        n.y = Math.sin(angle) * radius;
+
+        if (n.role === 'caller') {
+          simEdges.push({ from: n, to: targetNode, label: 'calls' });
+        } else if (n.role === 'callee') {
+          simEdges.push({ from: targetNode, to: n, label: 'calls' });
+        } else {
+          simEdges.push({ from: targetNode, to: n, label: 'relates' });
+        }
+      });
+
+      resetCanvasZoom();
+    }
+
+    function drawCanvas() {
+      if (!ctx || !canvas) return;
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      ctx.save();
+      ctx.translate(transform.x, transform.y);
+      ctx.scale(transform.scale, transform.scale);
+
+      // Draw Edges
+      for (const edge of simEdges) {
+        ctx.beginPath();
+        ctx.moveTo(edge.from.x, edge.from.y);
+        ctx.lineTo(edge.to.x, edge.to.y);
+        ctx.strokeStyle = '#30363d';
+        ctx.lineWidth = 1.5;
+        ctx.stroke();
+
+        // Edge direction indicator
+        const midX = (edge.from.x + edge.to.x) / 2;
+        const midY = (edge.from.y + edge.to.y) / 2;
+        ctx.fillStyle = '#6e7681';
+        ctx.font = '10px var(--font-mono)';
+        ctx.textAlign = 'center';
+        ctx.fillText(edge.label, midX, midY - 4);
+      }
+
+      // Draw Nodes
+      for (const node of simNodes) {
+        ctx.beginPath();
+        ctx.arc(node.x, node.y, node.radius, 0, Math.PI * 2);
+
+        if (node.role === 'target') {
+          ctx.fillStyle = '#2f81f7';
+          ctx.strokeStyle = '#58a6ff';
+        } else if (node.role === 'caller') {
+          ctx.fillStyle = '#bc8cff';
+          ctx.strokeStyle = '#d2a8ff';
+        } else if (node.role === 'callee') {
+          ctx.fillStyle = '#3fb950';
+          ctx.strokeStyle = '#56d364';
+        } else {
+          ctx.fillStyle = '#8b949e';
+          ctx.strokeStyle = '#c9d1d9';
+        }
+
+        ctx.fill();
+        ctx.lineWidth = 2;
+        ctx.stroke();
+
+        // Label
+        ctx.fillStyle = '#ffffff';
+        ctx.font = '12px var(--font-mono)';
+        ctx.textAlign = 'center';
+        ctx.fillText(node.name, node.x, node.y + node.radius + 14);
+      }
+
+      ctx.restore();
+    }
+
+    // Drawer Helpers (Hotspots & Cycles)
+    function setupDrawerTriggers() {
+      document.getElementById('btnHotspots').addEventListener('click', async () => {
+        document.getElementById('drawerTitle').textContent = 'Architectural God Nodes & Hotspots';
+        openDrawer();
+        try {
+          const res = await fetch('/api/hotspots');
+          const hotspots = await res.json();
+          renderHotspotsDrawer(hotspots);
+        } catch (e) {
+          console.error(e);
+        }
+      });
+
+      document.getElementById('btnCycles').addEventListener('click', async () => {
+        document.getElementById('drawerTitle').textContent = 'Circular Dependency Cycles';
+        openDrawer();
+        try {
+          const res = await fetch('/api/cycles');
+          const cycles = await res.json();
+          renderCyclesDrawer(cycles);
+        } catch (e) {
+          console.error(e);
+        }
+      });
+    }
+
+    function openDrawer() { document.getElementById('drawer').classList.add('open'); }
+    function closeDrawer() { document.getElementById('drawer').classList.remove('open'); }
+
+    function renderHotspotsDrawer(hotspots) {
+      const container = document.getElementById('drawerContent');
+      if (!hotspots || hotspots.length === 0) {
+        container.innerHTML = '<div class="empty-state">No hotspots detected. Clean modularity!</div>';
+        return;
+      }
+      container.innerHTML = hotspots.map((h, i) => `
+        <div class="node-item" onclick="selectAndCloseDrawer('${escapeJs(h.id)}')">
+          <div style="flex:1; overflow:hidden;">
+            <div style="font-weight:600; font-family:var(--font-mono); color:#fff;">${i+1}. ${escapeHtml(h.id)}</div>
+            <div style="font-size:11px; color:var(--text-dim);">Score: ${h.score.toFixed(2)} | In: ${h.fan_in} | Out: ${h.fan_out}</div>
+          </div>
+          <span class="badge badge-struct">${h.in_scc ? 'SCC' : 'HOT'}</span>
+        </div>
+      `).join('');
+    }
+
+    function renderCyclesDrawer(cycles) {
+      const container = document.getElementById('drawerContent');
+      if (!cycles || cycles.length === 0) {
+        container.innerHTML = '<div class="empty-state">0 Circular cycles detected (DAG is clean)!</div>';
+        return;
+      }
+      container.innerHTML = cycles.map((c, i) => `
+        <div class="card" style="margin-bottom:8px;">
+          <div class="card-header">Cycle #${i+1} (${c.length} nodes)</div>
+          <div class="card-body" style="font-family:var(--font-mono); font-size:11px;">
+            ${(c.path || []).map(p => `<div>↳ ${escapeHtml(p)}</div>`).join('')}
+          </div>
+        </div>
+      `).join('');
+    }
+
+    function selectAndCloseDrawer(id) {
+      closeDrawer();
+      exploreItem(id);
+    }
+
+    // Keyboard Shortcuts
+    function setupKeyboardShortcuts() {
+      window.addEventListener('keydown', (e) => {
+        if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') {
+          e.preventDefault();
+          document.getElementById('searchInput').focus();
+        } else if (e.key === '/' && document.activeElement.tagName !== 'INPUT') {
+          e.preventDefault();
+          document.getElementById('searchInput').focus();
+        } else if (e.key === 'Escape') {
+          document.getElementById('searchDropdown').style.display = 'none';
+          closeDrawer();
+        }
+      });
+    }
+
+    function escapeHtml(s) {
+      return (s || '').toString().replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+    }
+
+    function escapeJs(s) {
+      return (s || '').toString().replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+    }
+  </script>
+</body>
+</html>

@@ -14,3 +14,4 @@ pub mod query;
 pub mod resolve;
 pub mod scan;
 pub mod storage;
+pub mod ui;
