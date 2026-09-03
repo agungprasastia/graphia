@@ -6,8 +6,33 @@ on:
       - 'v*'
 
 jobs:
-  publish-release:
+  create-release:
+    name: Create GitHub Release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Extract Release Notes from CHANGELOG
+        shell: bash
+        run: |
+          python3 .github/scripts/extract_changelog.py "${{ github.ref_name }}" CHANGELOG.md release_notes.md
+
+      - name: Publish Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: ${{ github.ref_name }}
+          body_path: release_notes.md
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  upload-assets:
     name: Build Binary (${{ matrix.target }})
+    needs: create-release
     runs-on: ${{ matrix.os }}
     permissions:
       contents: write
@@ -57,5 +82,6 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: dist/${{ matrix.asset_name }}
+          tag_name: ${{ github.ref_name }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
