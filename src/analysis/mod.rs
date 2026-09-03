@@ -5,6 +5,7 @@ pub mod coupling;
 pub mod cycles;
 pub mod hotspots;
 pub mod projection;
+pub mod report;
 pub mod scc;
 
 use serde::{Deserialize, Serialize};
@@ -17,6 +18,7 @@ pub use hotspots::{Hotspot, compute_hotspots};
 pub use projection::{
     AdjacencyGraph, AnalysisLevel, ProjectedEdge, ProjectedGraph, ProjectedNode, project_graph,
 };
+pub use report::{ReportConfig, generate_graph_report};
 pub use scc::{StronglyConnectedComponent, tarjan_scc};
 
 use crate::graph::Graph;

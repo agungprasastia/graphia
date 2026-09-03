@@ -1,5 +1,6 @@
 pub mod architecture;
 pub mod entrypoints;
+pub mod explore;
 pub mod impact;
 pub mod neighborhood;
 pub mod relevance;
@@ -8,6 +9,9 @@ pub mod tests;
 
 pub use architecture::{ArchitectureOverview, get_architecture_overview};
 pub use entrypoints::{Entrypoint, EntrypointKind, detect_entrypoints};
+pub use explore::{
+    ExploreResult, explore_symbol, explore_symbol_with_cancel, format_explore_markdown,
+};
 pub use impact::{
     ImpactAnalysis, ImpactExplanation, ImpactKind, ImpactedNode, analyze_impact,
     analyze_impact_with_cancel,

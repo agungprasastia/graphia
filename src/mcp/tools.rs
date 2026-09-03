@@ -302,6 +302,24 @@ pub fn get_tool_definitions() -> Vec<Tool> {
                 }
             }),
         },
+        Tool {
+            name: "graphia_explore".to_string(),
+            description: Some("Unified 1-call code exploration: returns symbol definition slice, container, callers, callees, blast radius, and related tests.".to_string()),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Symbol name or path query to explore (e.g. function, class, or method name)"
+                    },
+                    "depth": {
+                        "type": "integer",
+                        "description": "Traversal depth for call hierarchy and blast radius (default: 2)"
+                    }
+                },
+                "required": ["query"]
+            }),
+        },
     ]
 }
 
@@ -340,6 +358,7 @@ pub fn call_tool_with_cancellation(
         "graphia_find_tests" => tool_find_tests(graph, args),
         "graphia_architecture" => tool_architecture(graph),
         "graphia_context" => tool_context(graph, repo_root, args, token),
+        "graphia_explore" => tool_explore(graph, repo_root, args, token),
         _ => Err(McpError::MethodNotFound(format!("Tool '{name}' not found"))),
     }
     .and_then(|result| {
@@ -808,6 +827,42 @@ fn tool_context(
     Ok(CallToolResult::text(output))
 }
 
+fn tool_explore(
+    graph: &Graph,
+    repo_root: Option<&Path>,
+    args: &serde_json::Map<String, serde_json::Value>,
+    token: &CancellationToken,
+) -> Result<CallToolResult> {
+    let query = args
+        .get("query")
+        .or_else(|| args.get("symbol"))
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| {
+            McpError::InvalidParams("Missing 'query' or 'symbol' argument".to_string())
+        })?;
+
+    let depth = parse_checked_depth(args, 2)?;
+
+    let cancelled = || token.is_cancelled();
+    let result = crate::intelligence::explore_symbol_with_cancel(
+        graph,
+        query,
+        depth,
+        repo_root,
+        Some(&cancelled),
+    );
+
+    let Some(res) = result else {
+        if token.is_cancelled() {
+            return Err(McpError::Cancelled);
+        }
+        return Ok(CallToolResult::error(format!("Symbol '{query}' not found")));
+    };
+
+    let markdown = crate::intelligence::format_explore_markdown(&res);
+    Ok(CallToolResult::text(markdown))
+}
+
 #[cfg(test)]
 mod tests {
     use super::super::protocol::Content;
@@ -850,9 +905,9 @@ mod tests {
     }
 
     #[test]
-    fn tool_definitions_contains_all_11_tools() {
+    fn tool_definitions_contains_all_12_tools() {
         let tools = get_tool_definitions();
-        assert_eq!(tools.len(), 11);
+        assert_eq!(tools.len(), 12);
         let names: Vec<_> = tools.iter().map(|t| t.name.as_str()).collect();
         assert!(names.contains(&"graphia_search_symbol"));
         assert!(names.contains(&"graphia_get_symbol"));
@@ -865,6 +920,19 @@ mod tests {
         assert!(names.contains(&"graphia_find_tests"));
         assert!(names.contains(&"graphia_architecture"));
         assert!(names.contains(&"graphia_context"));
+        assert!(names.contains(&"graphia_explore"));
+    }
+
+    #[test]
+    fn test_explore_tool() {
+        let graph = sample_graph();
+        let mut args = serde_json::Map::new();
+        args.insert("query".to_string(), json!("foo"));
+        let res = call_tool(&graph, None, "graphia_explore", Some(&args)).unwrap();
+        assert_eq!(res.is_error, None);
+        let Content::Text { text } = &res.content[0];
+        assert!(text.contains("foo"));
+        assert!(text.contains("Callees"));
     }
 
     #[test]

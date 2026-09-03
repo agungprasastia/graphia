@@ -1,3 +1,5 @@
+pub mod init;
+
 use std::path::PathBuf;
 
 use clap::{Parser, Subcommand, ValueEnum};
@@ -320,6 +322,29 @@ pub enum Commands {
     ApiDiff {
         old_index: PathBuf,
         new_index: PathBuf,
+        #[arg(long, value_enum, default_value_t = CliFormat::Human)]
+        format: CliFormat,
+    },
+    Explore {
+        #[arg(long)]
+        repo: Option<PathBuf>,
+        symbol: String,
+        #[arg(long, default_value_t = 2)]
+        depth: usize,
+        #[arg(long, value_enum, default_value_t = CliFormat::Human)]
+        format: CliFormat,
+    },
+    Init {
+        #[arg(long)]
+        repo: Option<PathBuf>,
+        #[arg(long)]
+        yes: bool,
+    },
+    Report {
+        #[arg(long)]
+        repo: Option<PathBuf>,
+        #[arg(long)]
+        output: Option<PathBuf>,
         #[arg(long, value_enum, default_value_t = CliFormat::Human)]
         format: CliFormat,
     },
@@ -1490,6 +1515,101 @@ pub fn run(cli: Cli) -> crate::error::Result<()> {
                     for n in &diff.removed_public_symbols {
                         println!("  - [{}] {}", n.kind.as_str(), n.qualified_name);
                     }
+                }
+            }
+            Ok(())
+        }
+        Commands::Explore {
+            repo,
+            symbol,
+            depth,
+            format,
+        } => {
+            let target_repo = repo
+                .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+            let graph = load_or_build(&target_repo)?;
+            let Some(res) =
+                crate::intelligence::explore_symbol(&graph, &symbol, depth, Some(&target_repo))
+            else {
+                return Err(crate::error::GraphiaError::InvalidArgument(format!(
+                    "symbol '{symbol}' not found"
+                )));
+            };
+
+            match format {
+                CliFormat::Json => {
+                    let json = serde_json::to_string_pretty(&res).map_err(|e| {
+                        crate::error::GraphiaError::Storage {
+                            message: e.to_string(),
+                        }
+                    })?;
+                    println!("{json}");
+                }
+                CliFormat::Human => {
+                    let md = crate::intelligence::format_explore_markdown(&res);
+                    println!("{md}");
+                }
+            }
+            Ok(())
+        }
+        Commands::Init { repo, yes } => {
+            let summary = init::run_init(repo, yes)?;
+            println!(
+                "Initialized Graphia in repository: {}",
+                summary.repo_root.display()
+            );
+            if summary.gitignore_updated {
+                println!("  [+] Updated .gitignore with Graphia index rules");
+            }
+            if summary.configured_targets.is_empty() {
+                println!("  [i] No IDE/agent configurations detected to update");
+            } else {
+                println!("  [+] Configured MCP for agents:");
+                for target in &summary.configured_targets {
+                    println!("      - {target}");
+                }
+            }
+            println!(
+                "  [+] Built initial code graph: {} nodes, {} relationships",
+                summary.index_nodes, summary.index_edges
+            );
+            Ok(())
+        }
+        Commands::Report {
+            repo,
+            output,
+            format,
+        } => {
+            let target_repo = repo
+                .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+            let graph = load_or_build(&target_repo)?;
+            let report_md = crate::analysis::generate_graph_report(
+                &graph,
+                &crate::analysis::ReportConfig::default(),
+            );
+
+            match format {
+                CliFormat::Json => {
+                    let overview = crate::intelligence::get_architecture_overview(&graph);
+                    let json = serde_json::to_string_pretty(&overview).map_err(|e| {
+                        crate::error::GraphiaError::Storage {
+                            message: e.to_string(),
+                        }
+                    })?;
+                    println!("{json}");
+                }
+                CliFormat::Human => {
+                    let output_file = output.unwrap_or_else(|| target_repo.join("GRAPH_REPORT.md"));
+                    std::fs::write(&output_file, &report_md).map_err(|e| {
+                        crate::error::GraphiaError::Io {
+                            path: output_file.clone(),
+                            message: e.to_string(),
+                        }
+                    })?;
+                    println!(
+                        "Generated architectural audit report: {}",
+                        output_file.display()
+                    );
                 }
             }
             Ok(())

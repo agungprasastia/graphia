@@ -143,7 +143,7 @@ fn build_mock_graph() -> Graph {
 #[test]
 fn test_mcp_tool_definitions_count_and_schema() {
     let tools = get_tool_definitions();
-    assert_eq!(tools.len(), 11);
+    assert_eq!(tools.len(), 12);
 
     let expected_names = [
         "graphia_search_symbol",
@@ -157,6 +157,7 @@ fn test_mcp_tool_definitions_count_and_schema() {
         "graphia_find_tests",
         "graphia_architecture",
         "graphia_context",
+        "graphia_explore",
     ];
 
     for name in &expected_names {
@@ -223,7 +224,7 @@ fn test_mcp_tools_list() {
 
     let list_res: ListToolsResult =
         serde_json::from_value(resp.result.unwrap()).expect("parse list tools result");
-    assert_eq!(list_res.tools.len(), 11);
+    assert_eq!(list_res.tools.len(), 12);
 }
 
 #[test]
@@ -463,6 +464,26 @@ fn test_mcp_all_11_tools_execution() {
     let val: CallToolResult = serde_json::from_value(resp.result.unwrap()).unwrap();
     let Content::Text { text } = &val.content[0];
     assert!(text.contains("calculate_total"));
+
+    // 12. graphia_explore
+    let resp = server.handle_request(
+        JsonRpcRequest {
+            jsonrpc: "2.0".to_string(),
+            id: Some(RequestId::Number(12)),
+            method: "tools/call".to_string(),
+            params: Some(serde_json::json!({
+                "name": "graphia_explore",
+                "arguments": {
+                    "query": "calculate_total"
+                }
+            })),
+        },
+        RequestId::Number(12),
+    );
+    let val: CallToolResult = serde_json::from_value(resp.result.unwrap()).unwrap();
+    let Content::Text { text } = &val.content[0];
+    assert!(text.contains("calculate_total"));
+    assert!(text.contains("apply_discount"));
 }
 
 #[test]
