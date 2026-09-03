@@ -166,6 +166,9 @@ fn test_cli_init_command() {
 
     assert!(repo.path().join(".graphia").exists());
     assert!(repo.path().join(".graphia/index.bin").exists());
+    assert!(repo.path().join(".graphia/.gitignore").exists());
+    let internal_gi = fs::read_to_string(repo.path().join(".graphia/.gitignore")).unwrap();
+    assert!(internal_gi.contains("*\n!.gitignore"));
 
     // Verify .gitignore updated
     let gitignore = fs::read_to_string(repo.path().join(".gitignore")).expect("read gitignore");

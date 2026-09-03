@@ -36,6 +36,7 @@ pub fn run_init(repo: Option<PathBuf>, _yes: bool) -> Result<InitSummary> {
         path: graphia_dir.clone(),
         message: e.to_string(),
     })?;
+    crate::storage::ensure_graphia_gitignore(&graphia_dir);
 
     // 2. Update .gitignore
     let gitignore_path = repo_root.join(".gitignore");

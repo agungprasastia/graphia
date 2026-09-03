@@ -383,6 +383,22 @@ pub fn build_or_update(root: &Path, clean: bool) -> Result<(Graph, Vec<FileChang
     Ok((graph, changes))
 }
 
+/// Ensure `.graphia/.gitignore` exists to keep local graph data and caches out of git.
+pub fn ensure_graphia_gitignore(dir: &Path) {
+    let mut current = Some(dir);
+    while let Some(d) = current {
+        if d.file_name().and_then(|n| n.to_str()) == Some(".graphia") {
+            let gitignore = d.join(".gitignore");
+            if !gitignore.exists() {
+                let content = b"# Graphia data files \xe2\x80\x94 local to each machine, not for committing.\n# Ignore everything in .graphia/ except this file itself.\n*\n!.gitignore\n";
+                let _ = fs::write(&gitignore, content);
+            }
+            break;
+        }
+        current = d.parent();
+    }
+}
+
 pub(crate) fn atomic_write(path: &Path, bytes: &[u8]) -> Result<()> {
     if let Some(parent) = path.parent()
         && !parent.as_os_str().is_empty()
@@ -391,6 +407,7 @@ pub(crate) fn atomic_write(path: &Path, bytes: &[u8]) -> Result<()> {
             path: parent.to_path_buf(),
             message: error.to_string(),
         })?;
+        ensure_graphia_gitignore(parent);
     }
     let (tmp, mut file) = temporary_file(path)?;
     let cleanup = TempCleanup(tmp.clone());

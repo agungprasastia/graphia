@@ -14,8 +14,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - 1-call code exploration returning symbol definition, source code slice, container, callers, callees, blast radius, and related tests.
   - Registered as the 12th tool `graphia_explore` in MCP server.
   - CLI command `graphia explore <symbol> [--depth <n>] [--format human|json]`.
-- **Zero-Config Agent Setup (`graphia init`)**:
+- **Zero-Config Agent Setup (`graphia init` & `.graphia/.gitignore`)**:
   - Automatic initialization for `.graphia/`, `.gitignore` rules, and initial code graph index priming.
+  - Self-contained internal `.graphia/.gitignore` (`*` and `!.gitignore`) auto-generated on any index write to prevent local graph cache and daemon files from ever showing up in git.
   - Auto-configures MCP server configurations for Claude Code (`.claude/mcp.json`), Cursor (`.cursor/mcp.json`), VS Code (`.vscode/mcp.json`), and Claude Desktop.
   - CLI command `graphia init [--yes]`.
 - **Executive Architectural Report (`graphia report` / `GRAPH_REPORT.md`)**:

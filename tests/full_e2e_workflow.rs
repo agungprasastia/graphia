@@ -96,6 +96,7 @@ fn test_comprehensive_e2e_workflow() {
     assert!(root.join(".cursor/mcp.json").exists());
     assert!(root.join(".vscode/mcp.json").exists());
     assert!(root.join(".graphia/index.bin").exists());
+    assert!(root.join(".graphia/.gitignore").exists());
 
     // 3. Test `graphia build`
     let (success, stdout, stderr) = run_binary_cmd(bin, &["build", "."], root);
