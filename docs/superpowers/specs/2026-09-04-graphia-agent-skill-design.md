@@ -40,11 +40,26 @@ OpenCode also discovers `.claude/skills` and `.agents/skills`; duplicate install
 - Skill installation is idempotent and replaces only Graphia-owned skill directories/files.
 - Failure to install one optional agent adapter emits a warning but does not remove a successfully installed binary.
 - Installers support an environment override for a temporary destination root so installation behavior can be tested without touching a real home directory.
-- `graphia init` installs or updates the project Cursor rule while keeping unrelated rules intact.
+
+## Hybrid Init Lifecycle
+
+Machine installation owns the user-global skill. Repository initialization owns the index and agent connections. `graphia init` joins both lifecycles without copying a skill into every repository by default:
+
+1. Initialize or update the repository index.
+2. Detect supported agent configuration already present in the repository or user environment.
+3. Check whether the global Graphia skill is installed and current.
+4. If missing or stale, ask before installing it. The prompt defaults to yes; `--yes` accepts it without prompting, `--no-skill` skips it, and a non-interactive run without either flag skips it with a warning instead of blocking.
+5. Configure supported MCP integrations and install or update the project Cursor rule while preserving unrelated configuration.
+6. Print a concise summary for index, MCP, rules, and skill status.
+
+`graphia skill status`, `graphia skill install`, and `graphia skill update` provide explicit repair and inspection paths. Status is current only when every installed Graphia-owned file matches the embedded canonical content. Skill installation uses content embedded in the Graphia binary so Cargo-installed and standalone binaries do not depend on a nearby release archive.
+
+Project-scoped installation is opt-in through `graphia init --skill-scope project`. It writes the canonical skill to `.agents/skills/graphia`, which is shared by OpenCode, GitHub Copilot, and other Agent Skills consumers. It is mutually exclusive with `--no-skill`. Vendor-specific project adapters may still be generated when their documented format differs. Global scope remains the default to avoid Git noise, stale per-repository copies, and project copies unexpectedly shadowing updates.
 
 ## Compatibility and Safety
 
 - Existing Graphia CLI and MCP configuration behavior remains compatible.
+- Existing non-interactive use remains deterministic: `--yes` installs a missing or stale global skill, while `--no-skill` performs no skill writes.
 - No broad `AGENTS.md`, `CLAUDE.md`, or Copilot instruction file is overwritten.
 - No shell tool is pre-approved in skill metadata.
 - Paths are quoted and resolved safely on Windows, macOS, and Linux.
@@ -55,7 +70,8 @@ OpenCode also discovers `.claude/skills` and `.agents/skills`; duplicate install
 - Validate `skills/graphia` with the bundled skill validator.
 - Check skill name, description, links, absence of placeholders, and progressive disclosure.
 - Test installer copies in isolated temporary directories.
-- Test `graphia init` creates an idempotent Cursor MDC rule without changing unrelated files.
+- Test `graphia init` skill detection, prompt-free flags, global default, project opt-in, summary, and idempotent Cursor MDC rule without changing unrelated files.
+- Test embedded skill output matches `skills/graphia` and repeated installation stays byte-identical.
 - Run PowerShell syntax validation and `bash -n`.
 - Run Rust format, Clippy with warnings denied, and all targets tests.
 - Add the new skill, supported agents, and automatic installation to `CHANGELOG.md` and user documentation.
