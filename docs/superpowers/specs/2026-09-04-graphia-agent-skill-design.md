@@ -59,6 +59,7 @@ Project-scoped installation is opt-in through `graphia init --skill-scope projec
 ## Compatibility and Safety
 
 - Existing Graphia CLI and MCP configuration behavior remains compatible.
+- Repository initialization does not rewrite global MCP configuration whose repository binding would change whenever another project is initialized.
 - Existing non-interactive use remains deterministic: `--yes` installs a missing or stale global skill, while `--no-skill` performs no skill writes.
 - No broad `AGENTS.md`, `CLAUDE.md`, or Copilot instruction file is overwritten.
 - No shell tool is pre-approved in skill metadata.
