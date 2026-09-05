@@ -1,4 +1,5 @@
 target/
+.graphia/
 docs/superpowers/
 .superpowers/
 .codegraph/

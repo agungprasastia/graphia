@@ -78,6 +78,24 @@ pub struct ResolutionEngine {
     pub node_by_id: BTreeMap<NodeId, Node>,
 }
 
+/// Short-lived memoization, borrowing the engine so its public indexes cannot
+/// change underneath cached results. Released when the graph pass completes.
+pub(crate) struct ResolutionSession<'a> {
+    engine: &'a ResolutionEngine,
+    imported_files: std::cell::RefCell<BTreeMap<String, std::rc::Rc<BTreeSet<String>>>>,
+    reexports: std::cell::RefCell<ReexportCache>,
+}
+
+type ReexportCache = BTreeMap<(String, String), Option<(String, String)>>;
+
+impl std::ops::Deref for ResolutionSession<'_> {
+    type Target = ResolutionEngine;
+
+    fn deref(&self) -> &Self::Target {
+        self.engine
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SymbolEntry {
     pub name: String,
@@ -271,6 +289,7 @@ impl ResolutionEngine {
     ) -> (Vec<Edge>, ResolutionSummary) {
         let mut resolved_edges = Vec::new();
         let mut summary = ResolutionSummary::default();
+        let session = self.session();
 
         for (file, call) in calls {
             let caller_node = nodes
@@ -303,7 +322,7 @@ impl ResolutionEngine {
                 continue;
             };
 
-            let state = self.resolve_single_call(file, caller, &call.callee, existing_imports);
+            let state = session.resolve_single_call(file, caller, &call.callee, existing_imports);
 
             match &state {
                 ResolutionState::Resolved { target, reason } => {
@@ -344,6 +363,79 @@ impl ResolutionEngine {
         (resolved_edges, summary)
     }
 
+    pub(crate) fn session(&self) -> ResolutionSession<'_> {
+        ResolutionSession {
+            engine: self,
+            imported_files: Default::default(),
+            reexports: Default::default(),
+        }
+    }
+
+    #[must_use]
+    pub fn resolve_reference(
+        &self,
+        file: &str,
+        caller_id: Option<NodeId>,
+        target_name: &str,
+        kind: EdgeKind,
+        param_count: Option<usize>,
+    ) -> Resolution {
+        self.session()
+            .resolve_reference(file, caller_id, target_name, kind, param_count)
+    }
+
+    #[must_use]
+    pub fn resolve_type_reference(&self, file: &str, type_name: &str) -> Resolution {
+        self.session().resolve_type_reference(file, type_name)
+    }
+
+    #[must_use]
+    pub fn resolve_instantiation(
+        &self,
+        file: &str,
+        caller_id: Option<NodeId>,
+        type_name: &str,
+    ) -> Resolution {
+        self.session()
+            .resolve_instantiation(file, caller_id, type_name)
+    }
+
+    #[must_use]
+    pub fn resolve_inheritance(
+        &self,
+        file: &str,
+        derived_type: &str,
+        base_name: &str,
+    ) -> Resolution {
+        self.session()
+            .resolve_inheritance(file, derived_type, base_name)
+    }
+
+    #[must_use]
+    pub fn resolve_implementation(
+        &self,
+        file: &str,
+        implementing_type: &str,
+        trait_or_interface: &str,
+    ) -> Resolution {
+        self.session()
+            .resolve_implementation(file, implementing_type, trait_or_interface)
+    }
+
+    #[must_use]
+    pub fn resolve_single_call(
+        &self,
+        caller_file: &str,
+        caller: &Node,
+        callee: &str,
+        existing_imports: &[(NodeId, NodeId)],
+    ) -> ResolutionState {
+        self.session()
+            .resolve_single_call(caller_file, caller, callee, existing_imports)
+    }
+}
+
+impl ResolutionSession<'_> {
     /// Resolve a general reference or call.
     #[must_use]
     pub fn resolve_reference(
@@ -624,7 +716,10 @@ impl ResolutionEngine {
         false
     }
 
-    fn collect_all_imported_files(&self, file: &str) -> BTreeSet<String> {
+    fn collect_all_imported_files(&self, file: &str) -> std::rc::Rc<BTreeSet<String>> {
+        if let Some(imported) = self.imported_files.borrow().get(file) {
+            return std::rc::Rc::clone(imported);
+        }
         let mut imported = BTreeSet::new();
         if let Some(dirs) = self.import_table.directives(file) {
             for d in dirs {
@@ -635,6 +730,10 @@ impl ResolutionEngine {
                 }
             }
         }
+        let imported = std::rc::Rc::new(imported);
+        self.imported_files
+            .borrow_mut()
+            .insert(file.to_string(), std::rc::Rc::clone(&imported));
         imported
     }
 
@@ -688,8 +787,14 @@ impl ResolutionEngine {
     }
 
     fn trace_reexport_path(&self, target_path: &str, sym_name: &str) -> Option<(String, String)> {
+        let key = (target_path.to_string(), sym_name.to_string());
+        if let Some(result) = self.reexports.borrow().get(&key) {
+            return result.clone();
+        }
         let mut visited = BTreeSet::new();
-        self.trace_reexport_path_internal(target_path, sym_name, &mut visited)
+        let result = self.trace_reexport_path_internal(target_path, sym_name, &mut visited);
+        self.reexports.borrow_mut().insert(key, result.clone());
+        result
     }
 
     fn trace_reexport_path_internal(
@@ -884,8 +989,8 @@ impl ResolutionEngine {
             .filter_map(|(from, to)| (*from == caller_file_node_id).then_some(*to))
             .collect();
         let imported_paths = self.collect_all_imported_files(caller_file);
-        for p in imported_paths {
-            if let Some(id) = self.file_nodes.get(&p)
+        for p in imported_paths.iter() {
+            if let Some(id) = self.file_nodes.get(p)
                 && !imported_file_ids.contains(id)
             {
                 imported_file_ids.push(*id);
@@ -1047,33 +1152,43 @@ impl ResolutionEngine {
 }
 
 fn matches_import_target(file_path: &str, target_path: &str) -> bool {
-    let normalize = |path: &str| {
-        path.replace('\\', "/")
-            .replace("::", "/")
-            .trim_start_matches("./")
+    fn normalize(path: &str) -> std::borrow::Cow<'_, str> {
+        if path.contains('\\') || path.contains("::") {
+            std::borrow::Cow::Owned(path.replace('\\', "/").replace("::", "/"))
+        } else {
+            std::borrow::Cow::Borrowed(path)
+        }
+    }
+    fn trim(path: &str) -> &str {
+        path.trim_start_matches("./")
             .trim_start_matches('/')
             .trim_end_matches("/mod")
             .trim_end_matches("/index")
-            .to_string()
-    };
+    }
     let file = normalize(file_path);
     let target = normalize(target_path);
+    let file = trim(&file);
+    let target = trim(&target);
     if target.is_empty() {
         return false;
     }
 
     fn without_extension(path: &str) -> &str {
-        [
-            ".rs", ".py", ".ts", ".tsx", ".js", ".jsx", ".go", ".c", ".h", ".cpp", ".java", ".cs",
-            ".kt", ".kts", ".zig", ".php", ".rb", ".swift",
-        ]
-        .iter()
-        .find_map(|extension| path.strip_suffix(extension))
-        .unwrap_or(path)
+        match path.rsplit_once('.') {
+            Some((
+                stem,
+                "rs" | "py" | "ts" | "tsx" | "js" | "jsx" | "go" | "c" | "h" | "cpp" | "java"
+                | "cs" | "kt" | "kts" | "zig" | "php" | "rb" | "swift",
+            )) => stem,
+            _ => path,
+        }
     }
-    let file = without_extension(&file);
-    let target = without_extension(&target);
-    file == target || file.ends_with(&format!("/{target}"))
+    let file = without_extension(file);
+    let target = without_extension(target);
+    file == target
+        || file
+            .strip_suffix(target)
+            .is_some_and(|prefix| prefix.ends_with('/'))
 }
 
 fn extract_param_count_from_signature(signature: &str) -> Option<usize> {
@@ -1117,4 +1232,151 @@ fn extract_param_count_from_signature(signature: &str) -> Option<usize> {
         count += 1;
     }
     Some(count)
+}
+
+#[cfg(test)]
+mod performance_tests {
+    use super::*;
+
+    #[test]
+    fn path_matching_preserves_normalization_and_boundaries() {
+        let paths = [
+            "",
+            "/",
+            "./src/foo.rs",
+            "src/foo.rs",
+            "src/foo",
+            "foo",
+            "oo",
+            "src\\foo.rs",
+            "src::foo",
+            "././foo",
+            "/foo",
+            "foo/mod",
+            "foo/index",
+            "foo/mod.rs",
+            "foo/index.ts",
+            "foo.json",
+            "foo.tsx",
+            "foo.cpp",
+            "foo.swift",
+            "nested/foo.py",
+            "nested/food.rs",
+            "foo/index/mod",
+            "é/foo.js",
+        ];
+        fn previous(file: &str, target: &str) -> bool {
+            fn normalize(path: &str) -> String {
+                path.replace('\\', "/")
+                    .replace("::", "/")
+                    .trim_start_matches("./")
+                    .trim_start_matches('/')
+                    .trim_end_matches("/mod")
+                    .trim_end_matches("/index")
+                    .to_string()
+            }
+            fn strip(path: &str) -> &str {
+                [
+                    ".rs", ".py", ".ts", ".tsx", ".js", ".jsx", ".go", ".c", ".h", ".cpp", ".java",
+                    ".cs", ".kt", ".kts", ".zig", ".php", ".rb", ".swift",
+                ]
+                .iter()
+                .find_map(|ext| path.strip_suffix(ext))
+                .unwrap_or(path)
+            }
+            let file = normalize(file);
+            let target = normalize(target);
+            if target.is_empty() {
+                return false;
+            }
+            strip(&file) == strip(&target)
+                || strip(&file).ends_with(&format!("/{}", strip(&target)))
+        }
+        for file in paths {
+            for target in paths {
+                assert_eq!(
+                    matches_import_target(file, target),
+                    previous(file, target),
+                    "{file} -> {target}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn session_reuses_results_and_does_not_survive_index_changes() {
+        let mut engine = ResolutionEngine::new();
+        engine.file_nodes.insert("a.rs".into(), NodeId(1));
+        engine.file_nodes.insert("b.rs".into(), NodeId(2));
+        engine
+            .export_table
+            .insert(("a.rs".into(), "Foo".into()), "b::Bar".into());
+        {
+            let session = engine.session();
+            let first = session.collect_all_imported_files("a.rs");
+            assert!(std::rc::Rc::ptr_eq(
+                &first,
+                &session.collect_all_imported_files("a.rs")
+            ));
+            for _ in 0..3 {
+                assert_eq!(
+                    session.trace_reexport_path("a", "Foo"),
+                    Some(("Bar".into(), "b.rs".into()))
+                );
+                assert_eq!(session.trace_reexport_path("a", "Missing"), None);
+            }
+            assert_eq!(session.reexports.borrow().len(), 2);
+        }
+        engine
+            .export_table
+            .insert(("a.rs".into(), "Foo".into()), "b::New".into());
+        assert_eq!(
+            engine.session().trace_reexport_path("a", "Foo"),
+            Some(("New".into(), "b.rs".into()))
+        );
+    }
+
+    #[test]
+    fn recursive_import_preserves_matching_file_traversal_order() {
+        let mut engine = ResolutionEngine::new();
+        for (id, file) in [(1, "a/foo.rs"), (2, "b/foo.rs")] {
+            engine.file_nodes.insert(file.into(), NodeId(id));
+            engine
+                .name_index
+                .entry("Foo".into())
+                .or_default()
+                .push(SymbolEntry {
+                    name: "Foo".into(),
+                    qualified_name: format!("{file}::Foo"),
+                    node_id: NodeId(id + 2),
+                    file: file.into(),
+                    parent_type: None,
+                    kind: NodeKind::Struct,
+                    language: Some(Language::Rust),
+                    signature: None,
+                    container: None,
+                });
+        }
+        engine.import_table.register_file_imports(
+            "a/foo.rs",
+            Some(Language::Rust),
+            &[Import {
+                path: "use foo::Foo;".into(),
+                location: SourceLocation {
+                    file: "a/foo.rs".into(),
+                    start_line: 1,
+                    start_col: 1,
+                    end_line: 1,
+                    end_col: 14,
+                },
+            }],
+        );
+        let session = engine.session();
+        for _ in 0..2 {
+            assert_eq!(
+                session.trace_reexport_path("foo", "Foo"),
+                Some(("Foo".into(), "b/foo.rs".into()))
+            );
+        }
+    }
 }

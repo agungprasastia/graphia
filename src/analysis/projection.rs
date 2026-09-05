@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
@@ -112,10 +112,45 @@ fn project_symbols(graph: &Graph, edge_filter: Option<EdgeKind>) -> ProjectedGra
         symbol_nodes = graph.nodes.iter().collect();
     }
 
+    let mut name_counts = HashMap::new();
+    for node in &symbol_nodes {
+        *name_counts
+            .entry(node.qualified_name.as_str())
+            .or_insert(0usize) += 1;
+    }
+    let mut used_ids: HashSet<String> = symbol_nodes
+        .iter()
+        .filter(|node| name_counts[&node.qualified_name.as_str()] == 1)
+        .map(|node| node.qualified_name.clone())
+        .collect();
+    let mut id_to_name = HashMap::new();
+    for node in symbol_nodes
+        .iter()
+        .filter(|node| name_counts[&node.qualified_name.as_str()] == 1)
+    {
+        id_to_name.insert(node.id, node.qualified_name.clone());
+    }
+    let mut collisions: Vec<_> = symbol_nodes
+        .iter()
+        .filter(|node| name_counts[&node.qualified_name.as_str()] > 1)
+        .copied()
+        .collect();
+    collisions.sort_by_key(|node| (node.qualified_name.as_str(), node.id));
+    for node in collisions {
+        let base = format!("{}#{}", node.qualified_name, node.id.0);
+        let mut projected_id = base.clone();
+        let mut suffix = 1usize;
+        while !used_ids.insert(projected_id.clone()) {
+            projected_id = format!("{base}#{suffix}");
+            suffix += 1;
+        }
+        id_to_name.insert(node.id, projected_id);
+    }
+
     let mut nodes: Vec<ProjectedNode> = symbol_nodes
         .iter()
         .map(|node| ProjectedNode {
-            id: node.qualified_name.clone(),
+            id: id_to_name[&node.id].clone(),
             name: node.name.clone(),
             level: AnalysisLevel::Symbol,
             member_count: 1,
@@ -123,14 +158,6 @@ fn project_symbols(graph: &Graph, edge_filter: Option<EdgeKind>) -> ProjectedGra
         .collect();
 
     nodes.sort_by(|a, b| a.id.cmp(&b.id));
-    nodes.dedup_by(|a, b| a.id == b.id);
-
-    let id_to_name: HashMap<_, _> = graph
-        .nodes
-        .iter()
-        .map(|n| (n.id, n.qualified_name.clone()))
-        .collect();
-
     let mut edge_map: BTreeMap<(String, String), (usize, BTreeSet<EdgeKind>)> = BTreeMap::new();
 
     for edge in &graph.edges {

@@ -14,6 +14,7 @@ fn run_binary_cmd(
     let output = Command::new(bin)
         .args(args)
         .current_dir(current_dir)
+        .env("GRAPHIA_INSTALL_HOME", current_dir.join(".test-home"))
         .output()
         .expect("execute graphia binary");
 
@@ -27,6 +28,114 @@ impl Drop for ChildGuard {
     fn drop(&mut self) {
         let _ = self.0.kill();
         let _ = self.0.wait();
+    }
+}
+
+#[test]
+fn all_mcp_tools_work_through_binary_stdio() {
+    use serde_json::{Value, json};
+    let repo = tempdir().unwrap();
+    fs::write(repo.path().join("lib.rs"),
+        "pub fn checkout() { calculate_total(); }\npub fn calculate_total() { apply_discount(); }\npub fn apply_discount() {}\n#[test]\nfn test_calculate_total() { calculate_total(); }\n").unwrap();
+    let cases = [
+        (
+            "graphia_search_symbol",
+            json!({"query":"calculate"}),
+            "calculate_total",
+        ),
+        (
+            "graphia_get_symbol",
+            json!({"symbol":"calculate_total"}),
+            "calculate_total",
+        ),
+        (
+            "graphia_find_callers",
+            json!({"symbol":"calculate_total"}),
+            "checkout",
+        ),
+        (
+            "graphia_find_callees",
+            json!({"symbol":"calculate_total"}),
+            "apply_discount",
+        ),
+        (
+            "graphia_find_references",
+            json!({"symbol":"calculate_total"}),
+            "checkout",
+        ),
+        (
+            "graphia_dependency_path",
+            json!({"from":"checkout","to":"apply_discount"}),
+            "calculate_total",
+        ),
+        (
+            "graphia_neighborhood",
+            json!({"symbol":"calculate_total"}),
+            "apply_discount",
+        ),
+        (
+            "graphia_impact",
+            json!({"symbol":"apply_discount"}),
+            "calculate_total",
+        ),
+        (
+            "graphia_find_tests",
+            json!({"symbol":"calculate_total"}),
+            "test_calculate_total",
+        ),
+        ("graphia_architecture", json!({}), "total_nodes"),
+        (
+            "graphia_context",
+            json!({"symbol":"calculate_total","token_budget":500}),
+            "calculate_total",
+        ),
+        (
+            "graphia_explore",
+            json!({"query":"calculate_total"}),
+            "apply_discount",
+        ),
+    ];
+    let mut child = Command::new(env!("CARGO_BIN_EXE_graphia"))
+        .args(["mcp", "--auto-index"])
+        .current_dir(repo.path())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut input = child.stdin.take().unwrap();
+    use std::io::{BufRead, BufReader};
+    let mut reader = BufReader::new(child.stdout.take().unwrap());
+    let mut responses = Vec::<Value>::new();
+    writeln!(input, "{}", json!({"jsonrpc":"2.0","id":0,"method":"initialize","params":{"protocolVersion":"2024-11-05"}})).unwrap();
+    let mut line = String::new();
+    reader.read_line(&mut line).unwrap();
+    responses.push(serde_json::from_str(&line).unwrap());
+    for (index, (name, arguments, _)) in cases.iter().enumerate() {
+        writeln!(input, "{}", json!({"jsonrpc":"2.0","id":index+1,"method":"tools/call","params":{"name":name,"arguments":arguments}})).unwrap();
+        line.clear();
+        reader.read_line(&mut line).unwrap();
+        responses.push(serde_json::from_str(&line).unwrap());
+    }
+    drop(input);
+    let output = child.wait_with_output().unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(responses.len(), cases.len() + 1);
+    for (index, (name, _, expected)) in cases.iter().enumerate() {
+        let response = responses
+            .iter()
+            .find(|response| response["id"] == index + 1)
+            .unwrap();
+        assert!(response["error"].is_null(), "{name}: {response}");
+        assert_ne!(response["result"]["isError"], true, "{name}: {response}");
+        assert!(
+            response["result"].to_string().contains(expected),
+            "{name}: {response}"
+        );
     }
 }
 
@@ -82,26 +191,54 @@ fn test_comprehensive_e2e_workflow() {
     )
     .expect("write client.ts");
 
-    // Pre-create .claude, .cursor and .vscode dirs so init configures all targets
+    // Pre-create agent dirs so init configures all detected targets.
     fs::create_dir_all(root.join(".claude")).expect("create .claude");
     fs::create_dir_all(root.join(".cursor")).expect("create .cursor");
     fs::create_dir_all(root.join(".vscode")).expect("create .vscode");
+    fs::create_dir_all(root.join(".opencode")).expect("create .opencode");
 
     // 2. Test `graphia init --yes`
     let (success, stdout, stderr) = run_binary_cmd(bin, &["init", "--yes"], root);
     assert!(success, "init failed: {stdout} {stderr}");
+    assert!(stdout.contains("Configured MCP for agents:"));
+    assert!(stdout.contains("Configured agent rules:"));
+    assert!(stdout.contains("Graphia agent skill: current (user scope, 5 target(s))"));
     assert!(root.join(".graphia").is_dir());
     assert!(root.join(".gitignore").exists());
     assert!(root.join(".claude/mcp.json").exists());
     assert!(root.join(".cursor/mcp.json").exists());
+    assert!(root.join(".cursor/rules/graphia.mdc").exists());
     assert!(root.join(".vscode/mcp.json").exists());
+    assert!(root.join("opencode.json").exists());
     assert!(root.join(".graphia/index.bin").exists());
     assert!(root.join(".graphia/.gitignore").exists());
+    assert!(
+        root.join(".test-home/.codex/skills/graphia/SKILL.md")
+            .exists()
+    );
+    assert!(
+        root.join(".test-home/.config/opencode/skills/graphia/SKILL.md")
+            .exists()
+    );
+    let (success, stdout, stderr) = run_binary_cmd(bin, &["skill", "status"], root);
+    assert!(success, "skill status failed: {stdout} {stderr}");
+    assert!(stdout.contains("current (user scope, 5 target(s))"));
+
+    let codex_skill = root.join(".test-home/.codex/skills/graphia/SKILL.md");
+    fs::write(&codex_skill, "stale").expect("make skill stale");
+    let (success, stdout, stderr) = run_binary_cmd(bin, &["init", "--yes"], root);
+    assert!(success, "stale skill update failed: {stdout} {stderr}");
+    assert!(stdout.contains("Graphia agent skill: current (user scope, 5 target(s))"));
+    assert_eq!(
+        fs::read_to_string(codex_skill).expect("updated skill"),
+        include_str!("../skills/graphia/SKILL.md")
+    );
 
     // 3. Test `graphia build`
     let (success, stdout, stderr) = run_binary_cmd(bin, &["build", "."], root);
     assert!(success, "build failed: {stdout} {stderr}");
-    assert!(root.join("graph.json").exists());
+    assert!(root.join(".graphia/graph.json").exists());
+    assert!(!root.join("graph.json").exists());
 
     // 4. Test `graphia explore authenticate_user`
     let (success, stdout, stderr) = run_binary_cmd(bin, &["explore", "authenticate_user"], root);
@@ -327,4 +464,86 @@ fn test_comprehensive_e2e_workflow() {
     let (status, cycles_body) = http_get(port, "/api/cycles");
     assert_eq!(status, 200);
     assert!(!cycles_body.is_empty());
+}
+
+#[test]
+fn test_init_skill_skip_paths_are_non_interactive_and_home_independent() {
+    let bin = env!("CARGO_BIN_EXE_graphia");
+
+    let skipped = tempdir().expect("skip repo");
+    fs::write(skipped.path().join("main.rs"), "fn main() {}\n").expect("source");
+    let (success, stdout, stderr) =
+        run_binary_cmd(bin, &["init", "--yes", "--no-skill"], skipped.path());
+    assert!(success, "--no-skill init failed: {stdout} {stderr}");
+    assert!(stdout.contains("Graphia agent skill: skipped (--no-skill)"));
+    assert!(stdout.contains("Graphia initialization may create or update:"));
+    assert!(stdout.contains(".gitignore"));
+    assert!(
+        stdout.find("may create or update").unwrap() < stdout.find("Initialized Graphia").unwrap()
+    );
+    assert!(!skipped.path().join(".test-home").exists());
+
+    let explicit_user = tempdir().expect("explicit user repo");
+    fs::write(explicit_user.path().join("main.rs"), "fn main() {}\n").expect("source");
+    let (success, stdout, stderr) = run_binary_cmd(
+        bin,
+        &["init", "--skill-scope", "user"],
+        explicit_user.path(),
+    );
+    assert!(!success, "unconfirmed init succeeded: {stdout} {stderr}");
+    assert!(stderr.contains("use --yes"));
+    assert!(!explicit_user.path().join(".graphia").exists());
+    assert!(!explicit_user.path().join(".gitignore").exists());
+    assert!(!explicit_user.path().join(".claude").exists());
+    assert!(!explicit_user.path().join(".test-home").exists());
+
+    let missing_home = tempdir().expect("missing home repo");
+    fs::write(missing_home.path().join("main.rs"), "fn main() {}\n").expect("source");
+    let output = Command::new(bin)
+        .arg("init")
+        .current_dir(missing_home.path())
+        .env_remove("GRAPHIA_INSTALL_HOME")
+        .env_remove("HOME")
+        .env_remove("USERPROFILE")
+        .stdin(Stdio::null())
+        .output()
+        .expect("run without home");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !output.status.success(),
+        "unconfirmed missing-home init succeeded: {stdout} {stderr}"
+    );
+    assert!(stderr.contains("use --yes"));
+    assert!(!missing_home.path().join(".graphia").exists());
+}
+
+#[test]
+fn export_without_output_and_unconfirmed_init_do_not_write() {
+    let bin = env!("CARGO_BIN_EXE_graphia");
+    for args in [
+        vec!["export", "."],
+        vec!["init"],
+        vec!["init", "--no-skill"],
+        vec!["init", "--skill-scope", "project"],
+    ] {
+        let repo = tempdir().unwrap();
+        fs::write(repo.path().join("main.rs"), "fn main() {}\n").unwrap();
+        fs::write(repo.path().join(".gitignore"), "keep-me\n").unwrap();
+        let (success, _, stderr) = run_binary_cmd(bin, &args, repo.path());
+        assert!(!success, "unexpected success: {args:?}");
+        assert!(
+            stderr.contains("--output") || stderr.contains("--yes"),
+            "{stderr}"
+        );
+        assert_eq!(
+            fs::read_to_string(repo.path().join(".gitignore")).unwrap(),
+            "keep-me\n"
+        );
+        assert_eq!(
+            fs::read_dir(repo.path()).unwrap().count(),
+            2,
+            "unexpected write: {args:?}"
+        );
+    }
 }

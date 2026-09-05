@@ -74,12 +74,17 @@ pub fn compute_pagerank(graph: &AdjacencyGraph, config: PageRankConfig) -> Vec<f
     let inv_n = 1.0 / (n as f64);
     let mut ranks = vec![inv_n; n];
     let mut next_ranks = vec![0.0; n];
+    let outgoing_weights: Vec<usize> = graph
+        .outgoing
+        .iter()
+        .map(|edges| edges.iter().map(|(_, weight)| weight).sum())
+        .collect();
 
     for _ in 0..config.max_iterations {
         // Collect dangling weight (nodes with out_degree = 0)
         let mut dangling_sum = 0.0;
         for (i, &rank) in ranks.iter().enumerate() {
-            if graph.outgoing[i].is_empty() {
+            if outgoing_weights[i] == 0 {
                 dangling_sum += rank;
             }
         }
@@ -88,10 +93,10 @@ pub fn compute_pagerank(graph: &AdjacencyGraph, config: PageRankConfig) -> Vec<f
 
         for (j, next_rank) in next_ranks.iter_mut().enumerate() {
             let mut sum_in = 0.0;
-            for &(source, _) in &graph.incoming[j] {
-                let out_deg = graph.outgoing[source].len();
-                if out_deg > 0 {
-                    sum_in += ranks[source] / (out_deg as f64);
+            for &(source, weight) in &graph.incoming[j] {
+                let total_weight = outgoing_weights[source];
+                if total_weight > 0 {
+                    sum_in += ranks[source] * (weight as f64) / (total_weight as f64);
                 }
             }
             *next_rank = base_score + config.damping * sum_in;

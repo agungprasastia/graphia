@@ -17,6 +17,7 @@
 [![Codex](https://img.shields.io/badge/Codex-supported-blueviolet.svg)](#7-model-context-protocol-mcp-server)
 [![Antigravity](https://img.shields.io/badge/Antigravity-supported-blueviolet.svg)](#7-model-context-protocol-mcp-server)
 [![VS Code](https://img.shields.io/badge/VS_Code-supported-blueviolet.svg)](#7-model-context-protocol-mcp-server)
+[![OpenCode](https://img.shields.io/badge/OpenCode-supported-blueviolet.svg)](#7-model-context-protocol-mcp-server)
 
 </div>
 
@@ -145,6 +146,11 @@ curl -fsSL https://raw.githubusercontent.com/agungprasastia/graphia/main/install
 irm https://raw.githubusercontent.com/agungprasastia/graphia/main/install.ps1 | iex
 ```
 
+Prebuilt installers also install Graphia's token-efficient Agent Skill for Codex,
+Claude Code, GitHub Copilot CLI, OpenCode, and other Agent Skills-compatible clients.
+OpenCode receives its native `~/.config/opencode/skills/graphia` copy. Reinstalling
+Graphia updates only Graphia-owned skill files.
+
 ### Build from Source
 - **Rust Toolchain**: Rust 1.98+ (2024 Edition).
 - **Zero Runtime Dependencies**: No Python runtime, SQLite, or background services required.
@@ -165,12 +171,35 @@ cargo build --release
 ### 1. Zero-Config Project Initialization
 
 ```bash
-# Initialize project, configure Claude Code/Cursor/VS Code MCP, and prime index
+# Initialize project, configure detected Claude Code/Cursor/VS Code/OpenCode
+# MCP clients, install agent guidance, and prime the index
 graphia init
 
-# Run non-interactively
+# Run non-interactively and install/update the user-global skill
 graphia init --yes
+
+# Keep agent skill files unchanged
+graphia init --no-skill
+
+# Store a shared skill in this repository instead of user directories
+graphia init --skill-scope project
+
+# Inspect or repair the embedded skill independently
+graphia skill status
+graphia skill install
+graphia skill update
+graphia skill status --repo path/to/project # --repo implies project scope
 ```
+
+Interactive `graphia init` lists index, ignore-rule, agent-configuration, and skill
+destinations before asking for confirmation (default: no). Without a terminal,
+`--yes` is required and no files are changed without it. Use `--yes --no-skill`
+for unattended setup without changing skill files. Project skill scope writes only
+`.agents/skills/graphia`; global scope updates Graphia-owned files for all supported
+agents. OpenCode MCP configuration is added to `opencode.json` only when OpenCode
+is detected, while unrelated settings remain intact.
+Existing `opencode.jsonc` takes precedence over `opencode.json`. JSONC comments and
+trailing commas are accepted; saving normalizes the file to formatted JSON and removes comments.
 
 ### 2. Interactive Browser Explorer
 
@@ -188,13 +217,18 @@ graphia ui --port 8080 --no-open
 # Scan supported source files
 graphia scan .
 
-# Build canonical graph index (writes graph.json and .graphia/index.bin)
+# Build canonical graph index (writes .graphia/graph.json and .graphia/index.bin)
 graphia build .
 
 # Load and inspect index summary
 graphia load .
 graphia stats .
 ```
+
+Automatic indexes stay inside `.graphia/`. Readers prefer `.graphia/index.bin`,
+then `.graphia/graph.json`, with root `graph.json` retained as a legacy fallback.
+Build, update, and init do not overwrite or delete legacy root files. Explicit
+exports require `--output <PATH>`; no default root export is created.
 
 ### 3. Unified AI Exploration & Structural Queries
 

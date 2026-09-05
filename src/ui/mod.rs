@@ -26,6 +26,8 @@ pub fn open_browser_window(url: &str) {
 pub fn run_ui(repo_path: &Path, port: u16, open_browser: bool) -> Result<(), GraphiaError> {
     let graph = if repo_path.join(".graphia/index.bin").exists() {
         crate::storage::load_graph_binary(&repo_path.join(".graphia/index.bin"))?
+    } else if repo_path.join(".graphia/graph.json").exists() {
+        crate::storage::load_graph_json(&repo_path.join(".graphia/graph.json"))?
     } else if repo_path.join("graph.json").exists() {
         crate::storage::load_graph_json(&repo_path.join("graph.json"))?
     } else {

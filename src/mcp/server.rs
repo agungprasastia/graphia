@@ -47,6 +47,7 @@ enum StreamEvent {
 }
 
 struct StreamJob {
+    sequence: u64,
     request: JsonRpcRequest,
     id: RequestId,
     repo_root: PathBuf,
@@ -56,6 +57,11 @@ struct StreamJob {
     token: Option<CancellationToken>,
     #[cfg(test)]
     instrumentation: Option<Arc<TestInstrumentation>>,
+}
+
+struct StreamResponse {
+    sequence: u64,
+    response: JsonRpcResponse,
 }
 
 struct ActiveRequestGuard {
@@ -295,7 +301,10 @@ impl McpServer {
                         if is_tool_call && let Some(instrumentation) = &instrumentation {
                             instrumentation.record_worker_finished();
                         }
-                        let _ = response_tx.send(response);
+                        let _ = response_tx.send(StreamResponse {
+                            sequence: job.sequence,
+                            response,
+                        });
                     }
                 });
             }
@@ -303,14 +312,15 @@ impl McpServer {
 
             let mut eof = false;
             let mut pending = 0usize;
+            let mut next_sequence = 0u64;
             let mut response_order = VecDeque::new();
             let mut completed = BTreeMap::new();
             loop {
                 while let Ok(response) = response_rx.try_recv() {
-                    completed.insert(response.id.clone(), response);
+                    completed.insert(response.sequence, response.response);
                 }
-                while let Some(id) = response_order.front() {
-                    let Some(response) = completed.remove(id) else {
+                while let Some(sequence) = response_order.front() {
+                    let Some(response) = completed.remove(sequence) else {
                         break;
                     };
                     response_order.pop_front();
@@ -364,6 +374,7 @@ impl McpServer {
                             registry.insert(id.clone(), token.clone());
                         }
                         let job = StreamJob {
+                            sequence: next_sequence,
                             request,
                             id: id.clone(),
                             repo_root: self.repo_root.clone(),
@@ -376,7 +387,8 @@ impl McpServer {
                         };
                         match job_tx.try_send(job) {
                             Ok(()) => {
-                                response_order.push_back(id);
+                                response_order.push_back(next_sequence);
+                                next_sequence = next_sequence.wrapping_add(1);
                                 pending += 1;
                             }
                             Err(mpsc::TrySendError::Full(_)) => {
@@ -761,6 +773,30 @@ mod tests {
             assert!(!timeout.timed_out(), "response {id:?} timed out");
             Self::response(&bytes, &id).expect("response present")
         }
+
+        fn response_count(bytes: &[u8], id: &RequestId) -> usize {
+            String::from_utf8_lossy(bytes)
+                .lines()
+                .filter_map(|line| serde_json::from_str::<JsonRpcResponse>(line).ok())
+                .filter(|response| &response.id == id)
+                .count()
+        }
+
+        fn wait_response_count(&self, id: RequestId, expected: usize) {
+            let bytes = self.0.0.lock().expect("output lock");
+            let (bytes, timeout) = self
+                .0
+                .1
+                .wait_timeout_while(bytes, Duration::from_secs(5), |bytes| {
+                    Self::response_count(bytes, &id) < expected
+                })
+                .expect("output wait");
+            assert!(
+                !timeout.timed_out(),
+                "{expected} responses for {id:?} timed out"
+            );
+            assert_eq!(Self::response_count(&bytes, &id), expected);
+        }
     }
 
     fn send_line(sender: &mpsc::Sender<Vec<u8>>, line: &str) {
@@ -930,6 +966,37 @@ mod tests {
 
         let res2: serde_json::Value = serde_json::from_str(lines[1]).unwrap();
         assert_eq!(res2["id"], 2);
+    }
+
+    #[test]
+    fn stream_preserves_duplicate_request_id_occurrences() {
+        let instrumentation = Arc::new(TestInstrumentation::default());
+        instrumentation.hold_workers.store(true, Ordering::Release);
+        let (input_sender, input_receiver) = mpsc::channel();
+        let output = SynchronizedOutput::default();
+        let mut server = McpServer::new(None)
+            .with_graph(chain_graph(4))
+            .with_instrumentation(Arc::clone(&instrumentation));
+        let server_output = output.clone();
+        let server_thread = std::thread::spawn(move || {
+            server.run_stream(ChannelReader::new(input_receiver), server_output)
+        });
+
+        let request = r#"{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"graphia_search_symbol","arguments":{"query":"n1"}}}"#;
+        send_line(&input_sender, request);
+        send_line(&input_sender, request);
+        assert!(
+            instrumentation
+                .wait_until(|| { instrumentation.workers_started.load(Ordering::Acquire) == 2 })
+        );
+        instrumentation.release_workers();
+
+        output.wait_response_count(RequestId::Number(7), 2);
+        drop(input_sender);
+        server_thread
+            .join()
+            .expect("server thread")
+            .expect("server result");
     }
 
     #[test]

@@ -36,6 +36,22 @@ jobs:
       - name: Format check
         run: cargo fmt --check
 
+      - name: Validate Unix installer syntax
+        if: runner.os != 'Windows'
+        run: bash -n install.sh
+
+      - name: Validate Windows installer syntax
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $tokens = $null
+          $errors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path install.ps1), [ref]$tokens, [ref]$errors) | Out-Null
+          if ($errors.Count) {
+            $errors | ForEach-Object { Write-Error $_ }
+            exit 1
+          }
+
       - name: Repository suppression audit
         shell: bash
         run: |

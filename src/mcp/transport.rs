@@ -3,6 +3,8 @@ use std::io::{BufRead, BufReader, Read, Write};
 use super::error::{McpError, Result};
 use super::protocol::{JsonRpcRequest, JsonRpcResponse};
 
+const MAX_JSON_RPC_LINE_BYTES: usize = 1024 * 1024;
+
 /// Stdio transport reader reading line-delimited JSON-RPC messages from a buffered input stream.
 pub struct StdioReader<R> {
     reader: BufReader<R>,
@@ -20,21 +22,49 @@ impl<R: Read> StdioReader<R> {
     /// Read next JSON-RPC request/notification from stream.
     /// Returns `None` on EOF.
     pub fn read_message(&mut self) -> Result<Option<JsonRpcRequest>> {
-        self.buffer.clear();
-        let bytes_read = self.reader.read_line(&mut self.buffer)?;
-        if bytes_read == 0 {
-            return Ok(None);
-        }
+        loop {
+            self.buffer.clear();
+            let bytes_read = self
+                .reader
+                .by_ref()
+                .take((MAX_JSON_RPC_LINE_BYTES + 1) as u64)
+                .read_line(&mut self.buffer)?;
+            if bytes_read == 0 {
+                return Ok(None);
+            }
+            if bytes_read > MAX_JSON_RPC_LINE_BYTES {
+                if !self.buffer.ends_with('\n') {
+                    loop {
+                        let available = self.reader.fill_buf()?;
+                        if available.is_empty() {
+                            break;
+                        }
+                        let consumed = available
+                            .iter()
+                            .position(|byte| *byte == b'\n')
+                            .map_or(available.len(), |position| position + 1);
+                        let found_newline = consumed <= available.len()
+                            && available.get(consumed - 1) == Some(&b'\n');
+                        self.reader.consume(consumed);
+                        if found_newline {
+                            break;
+                        }
+                    }
+                }
+                return Err(McpError::Parse(format!(
+                    "JSON-RPC line exceeds {MAX_JSON_RPC_LINE_BYTES} byte limit"
+                )));
+            }
 
-        let trimmed = self.buffer.trim();
-        if trimmed.is_empty() {
-            // Recurse to skip empty lines if any
-            return self.read_message();
-        }
+            let trimmed = self.buffer.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
 
-        let request: JsonRpcRequest = serde_json::from_str(trimmed)
-            .map_err(|e| McpError::Parse(format!("Failed to parse JSON-RPC line: {e}")))?;
-        Ok(Some(request))
+            let request: JsonRpcRequest = serde_json::from_str(trimmed)
+                .map_err(|e| McpError::Parse(format!("Failed to parse JSON-RPC line: {e}")))?;
+            return Ok(Some(request));
+        }
     }
 }
 
@@ -90,6 +120,35 @@ mod tests {
 
         let eof = reader.read_message().unwrap();
         assert!(eof.is_none());
+    }
+
+    #[test]
+    fn stdio_reader_skips_many_blank_lines_without_recursion() {
+        let mut input = "\n".repeat(100_000);
+        input.push_str("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"ping\"}\n");
+        let mut reader = StdioReader::new(Cursor::new(input.into_bytes()));
+
+        let message = reader
+            .read_message()
+            .expect("read message")
+            .expect("message");
+
+        assert_eq!(message.method, "ping");
+    }
+
+    #[test]
+    fn stdio_reader_rejects_oversized_line_and_resynchronizes() {
+        let mut input = vec![b' '; MAX_JSON_RPC_LINE_BYTES + 1];
+        input.extend_from_slice(b"\n{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"ping\"}\n");
+        let mut reader = StdioReader::new(Cursor::new(input));
+
+        assert!(matches!(reader.read_message(), Err(McpError::Parse(_))));
+        let message = reader
+            .read_message()
+            .expect("read message")
+            .expect("message");
+
+        assert_eq!(message.method, "ping");
     }
 
     #[test]

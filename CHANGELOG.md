@@ -7,6 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.5] - 2026-09-05
+
+### Added
+- Added a portable, token-efficient Graphia Agent Skill with focused CLI/MCP routing for Codex, Claude Code, GitHub Copilot, OpenCode, and Agent Skills-compatible clients.
+- Added automatic global skill installation to the Windows, Linux, and macOS installers, including OpenCode's native skill directory.
+- Added an idempotent Cursor project rule during `graphia init` without modifying unrelated Cursor rules.
+- Included the Graphia skill and command reference in every release archive.
+- Added hybrid `graphia init` skill lifecycle with interactive installation, deterministic `--yes`/`--no-skill` behavior, and opt-in project scope.
+- Added embedded `graphia skill status`, `install`, and `update` commands so standalone and Cargo-installed binaries can repair agent skills without release assets.
+- Added native, idempotent OpenCode MCP configuration for detected projects while preserving unrelated `opencode.json` settings.
+
+### Fixed
+- Require an explicit `export --output` destination. Preview init destinations before confirming any writes; default to no, require `--yes` without a terminal, and support `--yes --no-skill` for unattended setup without skill installation.
+- Store automatic JSON indexes in `.graphia/graph.json`, alongside the binary index; retain root JSON read compatibility and explicit export destinations. Remove duplicate index writes from build, update, and init.
+- Reuse import sets and completed re-export lookups within immutable resolver sessions, released after each graph pass; avoid temporary allocations during import-path matching. Local release self-indexing now completes in 2.77–3.60 seconds (three clean runs); see `docs/audit-0.2.5.md` for measurement limits.
+- Detect OpenCode `opencode.jsonc` and accept comments/trailing commas; reject agent configuration paths resolving outside the repository.
+- Preserve unreadable `.gitignore` files and distinguish actual ignore rules from comments and negations during initialization.
+- Avoid repeated import resolution per call and repeated identical reference resolution during graph construction.
+- Stopped `graphia init` from rewriting the global Claude Desktop MCP repository binding; initialization now keeps agent connections project-scoped.
+- Prevented MCP stdio stack overflow on long blank-line runs and bounded JSON-RPC line size to 1 MiB.
+- Preserved concurrent MCP responses with duplicate request IDs without hanging during ordered shutdown.
+- Preserved existing MCP configuration files when JSON or `mcpServers` has an invalid shape instead of overwriting user settings.
+- Blocked source-slice paths and symlinks that escape the repository root.
+- Applied source-location columns safely to UTF-8 source slices instead of returning entire boundary lines.
+- Kept same-named symbols from different source nodes distinct in symbol-level graph projections.
+- Stabilized deterministic community detection when synchronous labels enter a two-cycle.
+- Applied projected edge weights during PageRank calculation.
+- Corrected selective incremental-update added/removed node and edge counters.
+- Decoded percent-encoded UI query parameters as UTF-8 and bounded concurrent UI connections.
+- Rejected invalid visibility discriminants in binary graph indexes.
+- Preserved repeated spaces and tabs in filenames parsed from Git numstat output.
+
 ## [0.2.0] - 2026-09-04
 
 ### Added

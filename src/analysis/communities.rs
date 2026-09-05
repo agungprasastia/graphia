@@ -48,7 +48,8 @@ pub fn detect_communities(graph: &AdjacencyGraph, config: CommunityConfig) -> Ve
         *adj = neighbors_map.into_iter().collect();
     }
 
-    // Synchronous / Deterministic update iterations
+    // A self-vote prevents adjacent nodes from swapping labels forever while
+    // retaining synchronous, order-independent updates.
     for _ in 0..config.max_iterations {
         let mut next_labels = labels.clone();
         let mut changed = false;
@@ -65,6 +66,7 @@ pub fn detect_communities(graph: &AdjacencyGraph, config: CommunityConfig) -> Ve
                 let lbl = labels[v];
                 *label_weights.entry(lbl).or_insert(0) += w;
             }
+            *label_weights.entry(labels[u]).or_insert(0) += 1;
 
             // Canonical tie-breaking: max weight, then smallest label ID
             let mut best_label = labels[u];

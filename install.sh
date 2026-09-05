@@ -30,16 +30,28 @@ TMP_DIR="$(mktemp -d)"
 trap 'rm -rf "${TMP_DIR}"' EXIT
 
 echo "Downloading ${DOWNLOAD_URL}..."
-curl -fsSL "${DOWNLOAD_URL}" -o "${TMP_DIR}/${ARCHIVE_NAME}"
+if [ -n "${GRAPHIA_ARCHIVE_PATH:-}" ]; then
+  cp "${GRAPHIA_ARCHIVE_PATH}" "${TMP_DIR}/${ARCHIVE_NAME}"
+else
+  curl -fsSL "${DOWNLOAD_URL}" -o "${TMP_DIR}/${ARCHIVE_NAME}"
+fi
 
 echo "Extracting binary..."
 tar -xzf "${TMP_DIR}/${ARCHIVE_NAME}" -C "${TMP_DIR}"
 
-INSTALL_DIR="/usr/local/bin"
-if [ ! -w "${INSTALL_DIR}" ]; then
-  INSTALL_DIR="${HOME}/.local/bin"
+AGENT_HOME="${GRAPHIA_INSTALL_HOME:-${HOME}}"
+if [ -n "${GRAPHIA_INSTALL_HOME:-}" ]; then
+  INSTALL_DIR="${AGENT_HOME}/.local/bin"
+elif [ -w "/usr/local/bin" ]; then
+  INSTALL_DIR="/usr/local/bin"
+else
+  INSTALL_DIR="${AGENT_HOME}/.local/bin"
+fi
+if [ ! -d "${INSTALL_DIR}" ]; then
   mkdir -p "${INSTALL_DIR}"
-  if [[ ":$PATH:" != *":${INSTALL_DIR}:"* ]]; then
+fi
+if [[ ":$PATH:" != *":${INSTALL_DIR}:"* ]]; then
+  if [ "${INSTALL_DIR}" != "/usr/local/bin" ]; then
     echo "Notice: Add ${INSTALL_DIR} to your PATH to run graphia from anywhere:"
     echo "  export PATH=\"${INSTALL_DIR}:\$PATH\""
   fi
@@ -50,3 +62,20 @@ chmod +x "${INSTALL_DIR}/graphia"
 
 echo "Successfully installed graphia to ${INSTALL_DIR}/graphia"
 "${INSTALL_DIR}/graphia" --version || true
+
+SKILL_SOURCE="${TMP_DIR}/skills/graphia"
+if [ -f "${SKILL_SOURCE}/SKILL.md" ]; then
+  for SKILL_TARGET in \
+    "${AGENT_HOME}/.codex/skills/graphia" \
+    "${AGENT_HOME}/.claude/skills/graphia" \
+    "${AGENT_HOME}/.agents/skills/graphia" \
+    "${AGENT_HOME}/.copilot/skills/graphia" \
+    "${AGENT_HOME}/.config/opencode/skills/graphia"
+  do
+    mkdir -p "${SKILL_TARGET}"
+    cp -R "${SKILL_SOURCE}/." "${SKILL_TARGET}/"
+  done
+  echo "Installed Graphia skill for Codex, Claude Code, Copilot, OpenCode, and Agent Skills clients."
+else
+  echo "Warning: release does not contain skills/graphia; binary installation remains usable." >&2
+fi

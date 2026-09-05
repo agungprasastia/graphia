@@ -154,18 +154,23 @@ fn test_cli_init_command() {
     // Pre-create a dummy .gitignore and .cursor folder
     fs::write(repo.path().join(".gitignore"), "target/\n").expect("gitignore");
     fs::create_dir_all(repo.path().join(".cursor")).expect(".cursor");
+    fs::create_dir_all(repo.path().join(".opencode")).expect(".opencode");
 
     // First init
     run(Cli {
         command: Commands::Init {
             repo: Some(repo.path().to_path_buf()),
             yes: true,
+            no_skill: false,
+            skill_scope: Some(graphia::cli::CliSkillScope::Project),
         },
     })
     .expect("run init");
 
     assert!(repo.path().join(".graphia").exists());
     assert!(repo.path().join(".graphia/index.bin").exists());
+    assert!(repo.path().join(".graphia/graph.json").exists());
+    assert!(!repo.path().join("graph.json").exists());
     assert!(repo.path().join(".graphia/.gitignore").exists());
     let internal_gi = fs::read_to_string(repo.path().join(".graphia/.gitignore")).unwrap();
     assert!(internal_gi.contains("*\n!.gitignore"));
@@ -181,12 +186,32 @@ fn test_cli_init_command() {
     let cursor_json: serde_json::Value =
         serde_json::from_str(&fs::read_to_string(&cursor_mcp).unwrap()).unwrap();
     assert!(cursor_json["mcpServers"]["graphia"].is_object());
+    let cursor_rule = repo.path().join(".cursor/rules/graphia.mdc");
+    assert!(cursor_rule.exists());
+    assert!(
+        fs::read_to_string(cursor_rule)
+            .expect("read Cursor rule")
+            .contains("graphia explore")
+    );
+
+    // Verify OpenCode receives its native MCP shape.
+    let opencode_config = repo.path().join("opencode.json");
+    let opencode_json: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(opencode_config).unwrap()).unwrap();
+    assert_eq!(opencode_json["mcp"]["graphia"]["type"], "local");
+    assert_eq!(
+        opencode_json["mcp"]["graphia"]["command"],
+        serde_json::json!(["graphia", "mcp", "--auto-index"])
+    );
+    assert!(repo.path().join(".agents/skills/graphia/SKILL.md").exists());
 
     // Second init is idempotent
     run(Cli {
         command: Commands::Init {
             repo: Some(repo.path().to_path_buf()),
             yes: true,
+            no_skill: false,
+            skill_scope: Some(graphia::cli::CliSkillScope::Project),
         },
     })
     .expect("run init second time");

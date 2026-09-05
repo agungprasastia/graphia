@@ -334,6 +334,7 @@ impl Graph {
             })
             .collect::<Vec<_>>();
         let (resolved_calls, call_summary) = engine.resolve_calls(&calls, &self.nodes, &imports);
+        let engine = engine.session();
         for edge in resolved_calls {
             if touched.contains(&edge.from) || touched.contains(&edge.to) {
                 self.edges.push(edge);
@@ -680,6 +681,7 @@ pub fn build_graph(files: Vec<(String, Option<Language>, ParsedFile)>) -> Graph 
         .map(|e| (e.path.clone(), e.language, e.parsed.clone()))
         .collect();
     engine.index_files(&nodes, &file_data);
+    let engine = engine.session();
 
     for (file, symbol) in &all_symbols {
         if let (Some(&file_id), Some(symbol_ids)) = (
@@ -733,6 +735,12 @@ pub fn build_graph(files: Vec<(String, Option<Language>, ParsedFile)>) -> Graph 
 
     for entry in &entries {
         let mut calls = entry.parsed.calls.clone();
+        let imported_files: Vec<_> = entry
+            .parsed
+            .imports
+            .iter()
+            .filter_map(|import| resolve_import(&entry.path, &import.path, &entries))
+            .collect();
         calls.sort_by(|a, b| {
             a.caller
                 .cmp(&b.caller)
@@ -800,12 +808,6 @@ pub fn build_graph(files: Vec<(String, Option<Language>, ParsedFile)>) -> Graph 
                 .iter()
                 .filter(|(qname, _, file)| file == &entry.path && qname != &call.caller)
                 .cloned()
-                .collect();
-            let imported_files: Vec<_> = entry
-                .parsed
-                .imports
-                .iter()
-                .filter_map(|import| resolve_import(&entry.path, &import.path, &entries))
                 .collect();
             let imported_candidates: Vec<_> = language_candidates
                 .iter()
@@ -881,6 +883,7 @@ pub fn build_graph(files: Vec<(String, Option<Language>, ParsedFile)>) -> Graph 
                 }
             }
 
+            let mut reference_results = BTreeMap::new();
             for rref in &entry.parsed.references {
                 let from_id = if let Some(caller) = &rref.caller {
                     symbol_node_ids
@@ -897,13 +900,18 @@ pub fn build_graph(files: Vec<(String, Option<Language>, ParsedFile)>) -> Graph 
                         .get(caller)
                         .and_then(|ids| (ids.len() == 1).then_some(ids[0]))
                 });
-                if let Resolution::Resolved(target_id) = engine.resolve_reference(
-                    &entry.path,
-                    caller_id,
-                    &rref.name,
-                    EdgeKind::References,
-                    None,
-                ) {
+                let result = reference_results
+                    .entry((caller_id, rref.name.as_str()))
+                    .or_insert_with(|| {
+                        engine.resolve_reference(
+                            &entry.path,
+                            caller_id,
+                            &rref.name,
+                            EdgeKind::References,
+                            None,
+                        )
+                    });
+                if let Resolution::Resolved(target_id) = *result {
                     add_edge(
                         EdgeKind::References,
                         from_id,

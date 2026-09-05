@@ -1,0 +1,7 @@
+interface:
+  display_name: "Graphia"
+  short_description: "Token-efficient code graph navigation"
+  default_prompt: "Use $graphia to locate the relevant code, trace its impact, and gather only the context needed for this task."
+
+policy:
+  allow_implicit_invocation: true

@@ -670,7 +670,7 @@ fn read_node(cursor: &mut Cursor<&[u8]>) -> Result<Node> {
         Some(Language::from_code(language_code).ok_or_else(|| storage_error("invalid language"))?)
     };
     let visibility = crate::model::Visibility::from_code(read_byte(cursor)?)
-        .unwrap_or(crate::model::Visibility::Unknown);
+        .ok_or_else(|| storage_error("invalid visibility"))?;
     let name = read_string(cursor)?;
     let qualified_name = read_string(cursor)?;
     let file = read_string(cursor)?;
@@ -823,7 +823,7 @@ mod tests {
         let dir = tempdir().expect("tempdir");
         let path = dir.path().join("index.bin");
         save_graph_binary(&sample_graph(), &path).expect("write index");
-        for offset in [104, 105] {
+        for offset in [104, 105, 106] {
             save_graph_binary(&sample_graph(), &path).expect("rewrite index");
             let mut bytes = fs::read(&path).expect("read index");
             bytes[offset] = 255;

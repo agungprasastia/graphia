@@ -1,5 +1,7 @@
 pub mod init;
+pub mod skill;
 
+use std::io::IsTerminal;
 use std::path::PathBuf;
 
 use clap::{Parser, Subcommand, ValueEnum};
@@ -103,6 +105,37 @@ pub enum CliFormat {
     Json,
 }
 
+#[derive(Debug, Clone, Copy, ValueEnum, PartialEq, Eq)]
+pub enum CliSkillScope {
+    User,
+    Project,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum SkillAction {
+    /// Report whether installed skill files match this Graphia binary.
+    Status {
+        #[arg(long, value_enum)]
+        scope: Option<CliSkillScope>,
+        #[arg(long)]
+        repo: Option<PathBuf>,
+    },
+    /// Install the embedded Graphia skill.
+    Install {
+        #[arg(long, value_enum)]
+        scope: Option<CliSkillScope>,
+        #[arg(long)]
+        repo: Option<PathBuf>,
+    },
+    /// Replace installed Graphia skill files with the embedded version.
+    Update {
+        #[arg(long, value_enum)]
+        scope: Option<CliSkillScope>,
+        #[arg(long)]
+        repo: Option<PathBuf>,
+    },
+}
+
 #[derive(Debug, Parser)]
 #[command(name = "graphia", version, about = "Native code graph engine")]
 pub struct Cli {
@@ -142,7 +175,7 @@ pub enum Commands {
         repo: PathBuf,
         #[arg(long, default_value = "json")]
         format: String,
-        #[arg(long, short)]
+        #[arg(long, short, required = true)]
         output: Option<PathBuf>,
     },
     Explain {
@@ -336,11 +369,21 @@ pub enum Commands {
         #[arg(long, value_enum, default_value_t = CliFormat::Human)]
         format: CliFormat,
     },
+    /// Initialize a repository, agent integrations, and Graphia skill.
     Init {
         #[arg(long)]
         repo: Option<PathBuf>,
         #[arg(long)]
         yes: bool,
+        #[arg(long, conflicts_with = "skill_scope")]
+        no_skill: bool,
+        #[arg(long, value_enum)]
+        skill_scope: Option<CliSkillScope>,
+    },
+    /// Inspect or install Graphia agent skills.
+    Skill {
+        #[command(subcommand)]
+        action: SkillAction,
     },
     Report {
         #[arg(long)]
@@ -370,6 +413,43 @@ pub enum DaemonAction {
     },
 }
 
+fn skill_targets(
+    scope: CliSkillScope,
+    repo_root: &std::path::Path,
+) -> crate::error::Result<(String, skill::SkillTargets)> {
+    match scope {
+        CliSkillScope::User => {
+            let home = skill::user_home()?;
+            Ok(("user".into(), skill::user_targets(&home)?))
+        }
+        CliSkillScope::Project => Ok(("project".into(), skill::project_target(repo_root)?)),
+    }
+}
+
+fn accepts_confirmation(read: usize, answer: &str) -> bool {
+    read > 0 && matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes")
+}
+
+fn resolve_skill_scope(
+    requested: Option<CliSkillScope>,
+    has_repo: bool,
+) -> crate::error::Result<CliSkillScope> {
+    match (requested, has_repo) {
+        (Some(CliSkillScope::User), true) => Err(crate::error::GraphiaError::InvalidArgument(
+            "--repo cannot be combined with --scope user".into(),
+        )),
+        (Some(scope), _) => Ok(scope),
+        (None, true) => Ok(CliSkillScope::Project),
+        (None, false) => Ok(CliSkillScope::User),
+    }
+}
+
+fn current_repo(repo: Option<PathBuf>) -> PathBuf {
+    let raw =
+        repo.unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+    raw.canonicalize().unwrap_or(raw)
+}
+
 /// Execute selected command.
 ///
 /// # Errors
@@ -390,9 +470,7 @@ pub fn run(cli: Cli) -> crate::error::Result<()> {
         }
         Commands::Build { repo, clean } => {
             let (graph, changes) = crate::storage::build_or_update(&repo, clean)?;
-            let output = repo.join("graph.json");
-            crate::storage::save_graph_json(&graph, &output)?;
-            crate::storage::save_graph_binary(&graph, &repo.join(".graphia/index.bin"))?;
+            let output = repo.join(".graphia/graph.json");
             let counts = change_counts(&changes);
             println!(
                 "built graph: {} nodes, {} edges -> {} ({} changed files)",
@@ -414,12 +492,7 @@ pub fn run(cli: Cli) -> crate::error::Result<()> {
             Ok(())
         }
         Commands::Stats { repo } => {
-            let graph_path = repo.join("graph.json");
-            let graph = if graph_path.exists() {
-                crate::storage::load_graph_json(&graph_path)?
-            } else {
-                crate::storage::build_graph_from_repo(&repo)?
-            };
+            let graph = load_or_build(&repo)?;
             println!("nodes: {}", graph.node_count());
             println!("edges: {}", graph.edge_count());
             let mut by_kind = std::collections::BTreeMap::new();
@@ -489,8 +562,6 @@ pub fn run(cli: Cli) -> crate::error::Result<()> {
         }
         Commands::Update { repo } => {
             let (graph, changes) = crate::storage::build_or_update(&repo, false)?;
-            crate::storage::save_graph_json(&graph, &repo.join("graph.json"))?;
-            crate::storage::save_graph_binary(&graph, &repo.join(".graphia/index.bin"))?;
             let counts = change_counts(&changes);
             println!(
                 "updated graph: {} nodes, {} edges ({} changed files)",
@@ -506,14 +577,13 @@ pub fn run(cli: Cli) -> crate::error::Result<()> {
             format,
             output,
         } => {
-            let graph = if repo.join(".graphia/index.bin").exists() {
-                crate::storage::load_graph_binary(&repo.join(".graphia/index.bin"))?
-            } else if repo.join("graph.json").exists() {
-                crate::storage::load_graph_json(&repo.join("graph.json"))?
-            } else {
-                load_or_build(&repo)?
-            };
-            let dest = crate::export::export_graph(&graph, &format, output.as_deref(), &repo)?;
+            let output = output.ok_or_else(|| {
+                crate::error::GraphiaError::InvalidArgument(
+                    "export requires --output <PATH>".into(),
+                )
+            })?;
+            let graph = load_or_build(&repo)?;
+            let dest = crate::export::export_graph(&graph, &format, Some(&output), &repo)?;
             println!("exported {} format to {}", format, dest.display());
             Ok(())
         }
@@ -1563,8 +1633,63 @@ pub fn run(cli: Cli) -> crate::error::Result<()> {
             }
             Ok(())
         }
-        Commands::Init { repo, yes } => {
-            let summary = init::run_init(repo, yes)?;
+        Commands::Init {
+            repo,
+            yes,
+            no_skill,
+            skill_scope,
+        } => {
+            if !yes && !std::io::stdin().is_terminal() {
+                return Err(crate::error::GraphiaError::InvalidArgument(
+                    "init requires confirmation; use --yes in non-interactive mode".into(),
+                ));
+            }
+            let repo = match repo {
+                Some(repo) => repo,
+                None => std::env::current_dir().map_err(|error| {
+                    crate::error::GraphiaError::InvalidArgument(error.to_string())
+                })?,
+            };
+            let scope = skill_scope.unwrap_or(CliSkillScope::User);
+            if !no_skill {
+                let (scope_name, targets) = skill_targets(scope, &repo)?;
+                println!("Graphia skill files may be installed/updated ({scope_name} scope):");
+                for path in targets.paths() {
+                    println!("  {}", path.display());
+                }
+            }
+            init::confirm_initialization(&repo, yes)?;
+            let mut summary = init::initialize_repository(Some(repo))?;
+            let skill_status = if no_skill {
+                "skipped (--no-skill)".to_string()
+            } else {
+                let (scope_name, targets) = skill_targets(scope, &summary.repo_root)?;
+                let before = skill::status(&targets)?;
+                let should_install = before != skill::SkillState::Current;
+
+                if should_install {
+                    let installed = skill::install(&targets);
+                    skill::print_install_warnings(&installed);
+                    skill::require_install_success(&installed)?;
+                    if installed.failures.is_empty() {
+                        format!(
+                            "current ({scope_name} scope, {} target(s))",
+                            installed.installed
+                        )
+                    } else {
+                        format!(
+                            "partial ({scope_name} scope, {}/{} target(s))",
+                            installed.installed,
+                            targets.target_count()
+                        )
+                    }
+                } else {
+                    format!("current ({scope_name} scope)")
+                }
+            };
+
+            init::configure_agents(&mut summary)?;
+
             println!(
                 "Initialized Graphia in repository: {}",
                 summary.repo_root.display()
@@ -1573,10 +1698,18 @@ pub fn run(cli: Cli) -> crate::error::Result<()> {
                 println!("  [+] Updated .gitignore with Graphia index rules");
             }
             if summary.configured_targets.is_empty() {
-                println!("  [i] No IDE/agent configurations detected to update");
+                println!("  [i] No MCP configuration changes needed");
             } else {
                 println!("  [+] Configured MCP for agents:");
                 for target in &summary.configured_targets {
+                    println!("      - {target}");
+                }
+            }
+            if summary.configured_rules.is_empty() {
+                println!("  [i] No agent rule changes needed");
+            } else {
+                println!("  [+] Configured agent rules:");
+                for target in &summary.configured_rules {
                     println!("      - {target}");
                 }
             }
@@ -1584,6 +1717,39 @@ pub fn run(cli: Cli) -> crate::error::Result<()> {
                 "  [+] Built initial code graph: {} nodes, {} relationships",
                 summary.index_nodes, summary.index_edges
             );
+            println!("  [+] Graphia agent skill: {skill_status}");
+            Ok(())
+        }
+        Commands::Skill { action } => {
+            let (operation, requested_scope, repo) = match action {
+                SkillAction::Status { scope, repo } => ("status", scope, repo),
+                SkillAction::Install { scope, repo } => ("install", scope, repo),
+                SkillAction::Update { scope, repo } => ("update", scope, repo),
+            };
+            let scope = resolve_skill_scope(requested_scope, repo.is_some())?;
+            let repo_root = current_repo(repo);
+            let (scope_name, targets) = skill_targets(scope, &repo_root)?;
+            if operation == "status" {
+                println!(
+                    "Graphia agent skill: {} ({scope_name} scope, {} target(s))",
+                    skill::status(&targets)?,
+                    targets.target_count()
+                );
+            } else {
+                let installed = skill::install(&targets);
+                skill::print_install_warnings(&installed);
+                skill::require_install_success(&installed)?;
+                let state = if installed.failures.is_empty() {
+                    "current"
+                } else {
+                    "partial"
+                };
+                println!(
+                    "Graphia agent skill: {state} ({scope_name} scope, {}/{} target(s))",
+                    installed.installed,
+                    targets.target_count()
+                );
+            }
             Ok(())
         }
         Commands::Report {
@@ -1705,6 +1871,8 @@ fn format_change_summary(counts: &ChangeCounts) -> String {
 fn load_or_build(repo: &std::path::Path) -> crate::error::Result<crate::graph::Graph> {
     if repo.join(".graphia/index.bin").exists() {
         crate::storage::load_graph_binary(&repo.join(".graphia/index.bin"))
+    } else if repo.join(".graphia/graph.json").exists() {
+        crate::storage::load_graph_json(&repo.join(".graphia/graph.json"))
     } else if repo.join("graph.json").exists() {
         crate::storage::load_graph_json(&repo.join("graph.json"))
     } else {
@@ -1745,6 +1913,59 @@ mod tests {
     }
 
     #[test]
+    fn cli_init_accepts_skill_controls() {
+        let cli = Cli::try_parse_from(["graphia", "init", "--yes", "--skill-scope", "project"])
+            .expect("parse");
+        assert!(matches!(
+            cli.command,
+            Commands::Init {
+                yes: true,
+                no_skill: false,
+                skill_scope: Some(CliSkillScope::Project),
+                ..
+            }
+        ));
+        assert!(Cli::try_parse_from(["graphia", "init", "--no-skill", "--yes"]).is_ok());
+    }
+
+    #[test]
+    fn cli_skill_subcommands_parse() {
+        let cli = Cli::try_parse_from(["graphia", "skill", "status", "--scope", "project"])
+            .expect("parse");
+        assert!(matches!(
+            cli.command,
+            Commands::Skill {
+                action: SkillAction::Status {
+                    scope: Some(CliSkillScope::Project),
+                    ..
+                }
+            }
+        ));
+    }
+
+    #[test]
+    fn init_prompt_requires_explicit_yes() {
+        assert!(!accepts_confirmation(1, "\n"));
+        assert!(accepts_confirmation(2, "y\n"));
+        assert!(accepts_confirmation(4, "YES\n"));
+        assert!(!accepts_confirmation(0, ""));
+        assert!(!accepts_confirmation(2, "n\n"));
+    }
+
+    #[test]
+    fn skill_repo_implies_project_and_cannot_be_ignored_by_user_scope() {
+        assert_eq!(
+            resolve_skill_scope(None, true).expect("implicit project"),
+            CliSkillScope::Project
+        );
+        assert!(resolve_skill_scope(Some(CliSkillScope::User), true).is_err());
+        assert_eq!(
+            resolve_skill_scope(None, false).expect("default user"),
+            CliSkillScope::User
+        );
+    }
+
+    #[test]
     fn cli_load_reads_existing_repository() {
         let repo = tempdir().expect("temporary repository");
         let graph = crate::graph::Graph::new(vec![], vec![]);
@@ -1756,6 +1977,70 @@ mod tests {
             },
         })
         .expect("load graph");
+    }
+
+    #[test]
+    fn json_index_prefers_internal_location_and_accepts_legacy() {
+        let repo = tempdir().expect("repository");
+        std::fs::write(repo.path().join("app.rs"), "fn current() {}").unwrap();
+        let current = crate::storage::build_graph_from_repo(repo.path()).unwrap();
+        let legacy = crate::graph::Graph::new(vec![], vec![]);
+        crate::storage::save_graph_json(&legacy, &repo.path().join("graph.json")).unwrap();
+        assert_eq!(load_or_build(repo.path()).unwrap(), legacy);
+        crate::storage::save_graph_json(&current, &repo.path().join(".graphia/graph.json"))
+            .unwrap();
+        assert_eq!(load_or_build(repo.path()).unwrap(), current);
+        run(Cli {
+            command: Commands::Stats {
+                repo: repo.path().to_path_buf(),
+            },
+        })
+        .unwrap();
+        let output = repo.path().join("explicit.json");
+        run(Cli {
+            command: Commands::Export {
+                repo: repo.path().to_path_buf(),
+                format: "json".into(),
+                output: Some(output.clone()),
+            },
+        })
+        .unwrap();
+        assert_eq!(crate::storage::load_graph_json(&output).unwrap(), current);
+        assert_eq!(
+            crate::storage::load_graph_json(&repo.path().join("graph.json")).unwrap(),
+            legacy
+        );
+    }
+
+    #[test]
+    fn build_and_update_keep_generated_indexes_internal() {
+        let repo = tempdir().expect("repository");
+        std::fs::write(repo.path().join("app.rs"), "fn current() {}").unwrap();
+        run(Cli {
+            command: Commands::Build {
+                repo: repo.path().to_path_buf(),
+                clean: false,
+            },
+        })
+        .unwrap();
+        assert!(repo.path().join(".graphia/graph.json").exists());
+        assert!(!repo.path().join("graph.json").exists());
+        let legacy = b"user-owned export must not be overwritten";
+        std::fs::write(repo.path().join("graph.json"), legacy).unwrap();
+        run(Cli {
+            command: Commands::Update {
+                repo: repo.path().to_path_buf(),
+            },
+        })
+        .unwrap();
+        assert_eq!(
+            std::fs::read(repo.path().join("graph.json")).unwrap(),
+            legacy
+        );
+        assert_eq!(
+            crate::storage::load_graph_json(&repo.path().join(".graphia/graph.json")).unwrap(),
+            crate::storage::load_graph_binary(&repo.path().join(".graphia/index.bin")).unwrap()
+        );
     }
 
     #[test]
@@ -1777,6 +2062,23 @@ mod tests {
     }
 
     #[test]
+    fn export_requires_output_even_when_called_without_clap() {
+        assert!(Cli::try_parse_from(["graphia", "export", "."]).is_err());
+        let repo = tempdir().unwrap();
+        assert!(
+            run(Cli {
+                command: Commands::Export {
+                    repo: repo.path().into(),
+                    format: "json".into(),
+                    output: None,
+                }
+            })
+            .is_err()
+        );
+        assert_eq!(std::fs::read_dir(repo.path()).unwrap().count(), 0);
+    }
+
+    #[test]
     fn cli_export_reads_binary_index_and_writes_json() {
         let repo = tempdir().expect("temporary repository");
         let graph = crate::graph::Graph::new(vec![], vec![]);
@@ -1786,7 +2088,7 @@ mod tests {
             command: Commands::Export {
                 repo: repo.path().to_path_buf(),
                 format: "json".to_string(),
-                output: None,
+                output: Some(repo.path().join("graph.json")),
             },
         })
         .expect("export graph");

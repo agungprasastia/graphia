@@ -38,11 +38,12 @@ fn persisted_incremental_graph_is_canonical_json() {
     let root = tempdir().expect("tempdir");
     fs::write(root.path().join("a.rs"), "fn a() {}").expect("write a");
     update_repository(root.path()).expect("update");
-    let graph = load_graph_json(&root.path().join("graph.json")).expect("load graph");
+    assert!(!root.path().join("graph.json").exists());
+    let graph = load_graph_json(&root.path().join(".graphia/graph.json")).expect("load graph");
     let copy = root.path().join("copy.json");
     save_graph_json(&graph, &copy).expect("save copy");
     assert_eq!(
-        fs::read(root.path().join("graph.json")).expect("read graph"),
+        fs::read(root.path().join(".graphia/graph.json")).expect("read graph"),
         fs::read(copy).expect("read copy")
     );
 }
@@ -52,7 +53,8 @@ fn unchanged_update_reuses_valid_cache_and_schema_mismatch_rebuilds() {
     let root = tempdir().expect("tempdir");
     fs::write(root.path().join("a.rs"), "fn a() {}").expect("write a");
     update_repository(root.path()).expect("initial update");
-    let first = load_graph_json(&root.path().join("graph.json")).expect("load first graph");
+    let first =
+        load_graph_json(&root.path().join(".graphia/graph.json")).expect("load first graph");
     let cache = root.path().join(".graphia/parsed.json");
     let mut cache_json: serde_json::Value =
         serde_json::from_str(&fs::read_to_string(&cache).expect("read cache"))
@@ -137,7 +139,8 @@ fn incremental_and_clean_persisted_bytes_match() {
     )
     .expect("save clean binary");
     assert_eq!(
-        fs::read(incremental_root.path().join("graph.json")).expect("read incremental JSON"),
+        fs::read(incremental_root.path().join(".graphia/graph.json"))
+            .expect("read incremental JSON"),
         fs::read(clean_root.path().join("graph.json")).expect("read clean JSON")
     );
     assert_eq!(

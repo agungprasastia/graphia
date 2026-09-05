@@ -46,7 +46,8 @@ pub fn analyze_git_history(repo_root: &Path, max_commits: Option<usize>) -> GitH
             "log",
             &limit_arg,
             "--numstat",
-            "--pretty=format:COMMIT:%H|%an|%at",
+            "-z",
+            "--pretty=format:COMMIT:%H|%an|%at%x00",
         ])
         .current_dir(repo_root)
         .output();
@@ -75,56 +76,56 @@ pub fn analyze_git_history(repo_root: &Path, max_commits: Option<usize>) -> GitH
         };
     }
     {
-        let stdout = String::from_utf8_lossy(&out.stdout);
         let mut current_commit: Option<GitCommitRecord> = None;
+        let fields: Vec<&[u8]> = out.stdout.split(|byte| *byte == 0).collect();
+        let mut field_index = 0;
 
-        for line in stdout.lines() {
-            let trimmed = line.trim();
-            if trimmed.is_empty() {
+        while field_index < fields.len() {
+            let field = String::from_utf8_lossy(fields[field_index]);
+            field_index += 1;
+            let record = field.trim_start_matches(['\r', '\n']);
+            if record.is_empty() {
                 continue;
             }
-            if let Some(rest) = trimmed.strip_prefix("COMMIT:") {
+            if let Some(rest) = record.strip_prefix("COMMIT:") {
                 if let Some(c) = current_commit.take() {
                     commits.push(c);
                 }
                 let parts: Vec<&str> = rest.split('|').collect();
                 if parts.len() >= 3 {
-                    let hash = parts[0].to_string();
-                    let author = parts[1].to_string();
-                    let ts = parts[2].parse::<u64>().unwrap_or(0);
                     current_commit = Some(GitCommitRecord {
-                        commit_hash: hash,
-                        author,
-                        timestamp: ts,
+                        commit_hash: parts[0].to_string(),
+                        author: parts[1].to_string(),
+                        timestamp: parts[2].parse::<u64>().unwrap_or(0),
                         files_changed: Vec::new(),
                     });
                 }
-            } else if let Some(ref mut c) = current_commit {
-                let numstat_parts: Vec<&str> = trimmed.split_whitespace().collect();
-                if numstat_parts.len() >= 3 {
-                    let is_binary = numstat_parts[0] == "-" || numstat_parts[1] == "-";
-                    let adds = numstat_parts[0].parse::<usize>().unwrap_or(0);
-                    let dels = numstat_parts[1].parse::<usize>().unwrap_or(0);
-                    let file_path = numstat_parts[2..].join(" ");
-                    let file_norm = file_path.replace('\\', "/");
-                    c.files_changed.push(file_norm.clone());
-                    let entry = file_map
-                        .entry(file_norm)
-                        .or_insert((0, 0, 0, 0, HashSet::new()));
-                    entry.0 += 1;
-                    entry.1 += adds;
-                    entry.2 += dels;
-                    entry.3 += usize::from(is_binary);
-                    entry.4.insert(c.author.clone());
-                } else {
-                    let file_norm = trimmed.replace('\\', "/");
-                    c.files_changed.push(file_norm.clone());
-                    let entry = file_map
-                        .entry(file_norm)
-                        .or_insert((0, 0, 0, 0, HashSet::new()));
-                    entry.0 += 1;
-                    entry.4.insert(c.author.clone());
+            } else if let Some(ref mut commit) = current_commit
+                && let Some((additions, deletions, mut file_path)) = parse_numstat_record(record)
+            {
+                let renamed_path;
+                if file_path.is_empty() && field_index + 1 < fields.len() {
+                    renamed_path = String::from_utf8_lossy(fields[field_index + 1]);
+                    field_index += 2;
+                    file_path = renamed_path.as_ref();
                 }
+                if file_path.is_empty() {
+                    continue;
+                }
+
+                let is_binary = additions == "-" || deletions == "-";
+                let adds = additions.parse::<usize>().unwrap_or(0);
+                let dels = deletions.parse::<usize>().unwrap_or(0);
+                let file_norm = file_path.replace('\\', "/");
+                commit.files_changed.push(file_norm.clone());
+                let entry = file_map
+                    .entry(file_norm)
+                    .or_insert((0, 0, 0, 0, HashSet::new()));
+                entry.0 += 1;
+                entry.1 += adds;
+                entry.2 += dels;
+                entry.3 += usize::from(is_binary);
+                entry.4.insert(commit.author.clone());
             }
         }
         if let Some(c) = current_commit {
@@ -165,4 +166,77 @@ pub fn analyze_git_history(repo_root: &Path, max_commits: Option<usize>) -> GitH
         files,
         commits,
     })
+}
+
+fn parse_numstat_record(record: &str) -> Option<(&str, &str, &str)> {
+    let mut parts = record.splitn(3, '\t');
+    Some((parts.next()?, parts.next()?, parts.next()?))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use tempfile::tempdir;
+
+    #[test]
+    fn numstat_preserves_filename_whitespace() {
+        let repo = tempdir().expect("repo");
+        assert!(
+            Command::new("git")
+                .arg("init")
+                .current_dir(repo.path())
+                .status()
+                .expect("git init")
+                .success()
+        );
+        assert!(
+            Command::new("git")
+                .args(["config", "user.email", "test@example.com"])
+                .current_dir(repo.path())
+                .status()
+                .expect("git config")
+                .success()
+        );
+        assert!(
+            Command::new("git")
+                .args(["config", "user.name", "Test User"])
+                .current_dir(repo.path())
+                .status()
+                .expect("git config")
+                .success()
+        );
+        let filename = "two  spaces.rs";
+        fs::write(repo.path().join(filename), "fn main() {}\n").expect("file");
+        assert!(
+            Command::new("git")
+                .args(["add", "--", filename])
+                .current_dir(repo.path())
+                .status()
+                .expect("git add")
+                .success()
+        );
+        assert!(
+            Command::new("git")
+                .args(["commit", "-m", "initial"])
+                .current_dir(repo.path())
+                .status()
+                .expect("git commit")
+                .success()
+        );
+
+        let GitHistoryResult::Success(summary) = analyze_git_history(repo.path(), None) else {
+            panic!("history should succeed");
+        };
+        assert_eq!(summary.commits[0].files_changed, [filename]);
+        assert_eq!(summary.files[0].file, filename);
+    }
+
+    #[test]
+    fn numstat_parser_preserves_tabs_inside_filename() {
+        assert_eq!(
+            parse_numstat_record("1\t2\tdir/name\twith-tab.rs"),
+            Some(("1", "2", "dir/name\twith-tab.rs"))
+        );
+    }
 }

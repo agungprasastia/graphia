@@ -397,7 +397,6 @@ impl IncrementalWorkspace {
             .chain(changed_files.iter().cloned())
             .collect::<BTreeSet<_>>();
         let old_nodes = self.graph.nodes.len();
-        let old_edges = self.graph.edges.len();
         let old_component_nodes = self
             .graph
             .nodes
@@ -423,6 +422,7 @@ impl IncrementalWorkspace {
             .map(|(p, (lang, parsed))| (p.clone(), *lang, parsed.clone()))
             .collect();
         let fragment = build_graph(parsed_entries);
+        let new_component_nodes = fragment.nodes.len();
         let removed_node_ids = self
             .graph
             .nodes
@@ -451,6 +451,18 @@ impl IncrementalWorkspace {
         );
         self.graph.set_source_root(self.repo_root.clone());
         self.graph.resolve_cross_file_affected(&affected_files)?;
+        let new_component_edges = self
+            .graph
+            .edges
+            .iter()
+            .filter(|edge| {
+                self.graph
+                    .nodes
+                    .iter()
+                    .find(|node| node.id == edge.from)
+                    .is_some_and(|node| mutation_files.contains(&node.file))
+            })
+            .count();
         self.rebuild_indexes();
         self.rebuild_pending_index(resolution_files.clone());
         self.fallback_reason = None;
@@ -460,10 +472,10 @@ impl IncrementalWorkspace {
             affected_files,
             files_affected: mutation_files.len(),
             nodes_mutated: old_nodes.abs_diff(self.graph.nodes.len()),
-            nodes_added: self.graph.nodes.len().saturating_sub(old_nodes) + old_component_nodes,
-            nodes_removed: old_nodes.saturating_sub(self.graph.nodes.len()) + old_component_nodes,
-            edges_added: self.graph.edges.len().saturating_sub(old_edges) + old_component_edges,
-            edges_removed: old_edges.saturating_sub(self.graph.edges.len()) + old_component_edges,
+            nodes_added: new_component_nodes,
+            nodes_removed: old_component_nodes,
+            edges_added: new_component_edges,
+            edges_removed: old_component_edges,
             full_rebuild: false,
             fallback_used: false,
             fallback_reason: None,
@@ -1044,7 +1056,7 @@ pub fn update_repository(root: &Path) -> Result<Graph> {
     })?;
     crate::storage::atomic_write(&cache_path, &bytes)?;
     crate::storage::save_metadata(root, &current)?;
-    crate::storage::save_graph_json(&graph, &root.join("graph.json"))?;
+    crate::storage::save_graph_json(&graph, &root.join(".graphia/graph.json"))?;
     crate::storage::save_graph_binary(&graph, &root.join(".graphia/index.bin"))?;
     Ok(graph)
 }

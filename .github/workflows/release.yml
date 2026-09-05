@@ -59,13 +59,19 @@ jobs:
 
       - name: Package (Unix)
         if: matrix.ext == ''
-        run: tar czf graphia-${{ matrix.target }}.tar.gz -C target/${{ matrix.rust-target }}/release graphia
+        run: |
+          mkdir -p package/skills
+          cp target/${{ matrix.rust-target }}/release/graphia package/graphia
+          cp -R skills/graphia package/skills/graphia
+          tar czf graphia-${{ matrix.target }}.tar.gz -C package graphia skills
 
       - name: Package (Windows)
         if: matrix.ext == '.exe'
         run: |
-          cd target\${{ matrix.rust-target }}\release
-          7z a ..\..\..\graphia-${{ matrix.target }}.zip graphia.exe
+          New-Item -ItemType Directory -Path package\skills -Force | Out-Null
+          Copy-Item target\${{ matrix.rust-target }}\release\graphia.exe package\graphia.exe
+          Copy-Item skills\graphia package\skills\graphia -Recurse
+          Compress-Archive -Path package\* -DestinationPath graphia-${{ matrix.target }}.zip
         shell: pwsh
 
       - uses: actions/upload-artifact@v4

@@ -3,7 +3,7 @@ use std::io::{BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use serde::{Deserialize, Serialize};
 
@@ -17,6 +17,24 @@ use crate::intelligence::neighborhood::{NeighborhoodOptions, get_neighborhood};
 use crate::intelligence::search::{SearchOptions, search_graph};
 
 pub const INDEX_HTML: &str = include_str!("assets/index.html");
+const MAX_CONCURRENT_CONNECTIONS: usize = 32;
+
+struct ConnectionPermit(Arc<AtomicUsize>);
+
+impl Drop for ConnectionPermit {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
+fn try_acquire_connection(active: &Arc<AtomicUsize>) -> Option<ConnectionPermit> {
+    active
+        .fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| {
+            (count < MAX_CONCURRENT_CONNECTIONS).then_some(count + 1)
+        })
+        .ok()
+        .map(|_| ConnectionPermit(Arc::clone(active)))
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UiStats {
@@ -61,6 +79,7 @@ impl UiServer {
         let graph = Arc::clone(&self.graph);
         let repo_root = self.repo_root.clone();
         let running = Arc::clone(&self.running);
+        let active_connections = Arc::new(AtomicUsize::new(0));
 
         // Precompute stats once
         let stats = compute_stats(&graph);
@@ -72,11 +91,21 @@ impl UiServer {
 
             while running.load(Ordering::Relaxed) {
                 match listener.accept() {
-                    Ok((stream, _)) => {
+                    Ok((mut stream, _)) => {
+                        let Some(permit) = try_acquire_connection(&active_connections) else {
+                            respond(
+                                &mut stream,
+                                "503 Service Unavailable",
+                                "text/plain",
+                                b"Too many connections",
+                            );
+                            continue;
+                        };
                         let g = Arc::clone(&graph);
                         let root = repo_root.clone();
                         let s = Arc::clone(&stats);
                         std::thread::spawn(move || {
+                            let _permit = permit;
                             handle_connection(stream, &g, &root, &s);
                         });
                     }
@@ -347,33 +376,26 @@ fn parse_url(raw: &str) -> (String, HashMap<String, String>) {
 }
 
 fn url_decode(s: &str) -> String {
-    let mut result = String::with_capacity(s.len());
-    let mut bytes = s.bytes();
-    while let Some(b) = bytes.next() {
-        if b == b'%' {
-            let h1 = bytes.next().unwrap_or(0);
-            let h2 = bytes.next().unwrap_or(0);
-            let hex = [h1, h2];
-            if let Ok(s) = std::str::from_utf8(&hex)
-                && let Ok(val) = u8::from_str_radix(s, 16)
-            {
-                result.push(val as char);
-            } else {
-                result.push('%');
-                if h1 != 0 {
-                    result.push(h1 as char);
-                }
-                if h2 != 0 {
-                    result.push(h2 as char);
-                }
-            }
-        } else if b == b'+' {
-            result.push(' ');
+    let input = s.as_bytes();
+    let mut decoded = Vec::with_capacity(input.len());
+    let mut index = 0;
+    while index < input.len() {
+        if input[index] == b'%'
+            && index + 2 < input.len()
+            && let Ok(hex) = std::str::from_utf8(&input[index + 1..index + 3])
+            && let Ok(value) = u8::from_str_radix(hex, 16)
+        {
+            decoded.push(value);
+            index += 3;
+        } else if input[index] == b'+' {
+            decoded.push(b' ');
+            index += 1;
         } else {
-            result.push(b as char);
+            decoded.push(input[index]);
+            index += 1;
         }
     }
-    result
+    String::from_utf8_lossy(&decoded).into_owned()
 }
 
 #[cfg(test)]
@@ -385,6 +407,8 @@ mod tests {
         assert_eq!(url_decode("hello%20world"), "hello world");
         assert_eq!(url_decode("foo+bar"), "foo bar");
         assert_eq!(url_decode("symbol%3A%3Atest"), "symbol::test");
+        assert_eq!(url_decode("caf%C3%A9"), "café");
+        assert_eq!(url_decode("%ZZtail"), "%ZZtail");
     }
 
     #[test]
@@ -393,5 +417,16 @@ mod tests {
         assert_eq!(path, "/api/search");
         assert_eq!(params.get("q"), Some(&"foo bar".to_string()));
         assert_eq!(params.get("limit"), Some(&"10".to_string()));
+    }
+
+    #[test]
+    fn connection_limit_releases_permits() {
+        let active = Arc::new(AtomicUsize::new(0));
+        let permits: Vec<_> = (0..MAX_CONCURRENT_CONNECTIONS)
+            .map(|_| try_acquire_connection(&active).expect("permit"))
+            .collect();
+        assert!(try_acquire_connection(&active).is_none());
+        drop(permits);
+        assert!(try_acquire_connection(&active).is_some());
     }
 }
